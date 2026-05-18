@@ -67,8 +67,11 @@ export class MaterialDocsStore {
   }
 
   async getComponentDocs(componentName: string): Promise<Array<{ path: string; title: string; url: string; markdown: string }>> {
-    const query = componentName.trim().toLowerCase().replace(/\s+/g, '-');
-    const titleQuery = componentName.trim().toLowerCase();
+    const normalizedName = componentName.trim();
+    if (!normalizedName) return [];
+
+    const query = normalizedName.toLowerCase().replace(/\s+/g, '-');
+    const titleQuery = normalizedName.toLowerCase();
     const index = await this.getIndex();
     const matched = index.pages.filter((p) => p.section.toLowerCase().includes(`components/${query}`) || p.path.toLowerCase().includes(`/components/${query}`) || p.title.toLowerCase().includes(titleQuery));
     return Promise.all(matched.map(async (p) => ({ path: p.path, title: p.title, url: p.url, markdown: await readPage(p.path, this.cacheDir) })));
