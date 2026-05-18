@@ -101,7 +101,7 @@ describe('MaterialDocsStore', () => {
     await expect(store.getComponentDocs('DIALOGS')).resolves.toEqual([
       { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
     ]);
-    await expect(store.getComponentDocs('dialog overview')).resolves.toEqual([
+    await expect(store.getComponentDocs('Dialogs overview')).resolves.toEqual([
       { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
     ]);
   });
