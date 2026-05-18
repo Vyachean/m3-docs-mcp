@@ -127,6 +127,16 @@ export function assertValidIndex(index: MaterialIndex, minPageCount: number): vo
 export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex: MaterialIndex | null, options: CachePromotionSafetyOptions = {}): void {
   if (options.force) return;
 
+  if (nextIndex.qualityReport?.duplicateContent.length) {
+    const duplicate = nextIndex.qualityReport.duplicateContent[0];
+    throw new Error(`Material 3 crawl produced duplicate page content for ${duplicate?.paths.join(', ') ?? 'multiple pages'}. Keeping the existing cache. Use --force to replace it anyway.`);
+  }
+
+  if (nextIndex.qualityReport?.suspiciousPages.length) {
+    const suspicious = nextIndex.qualityReport.suspiciousPages[0];
+    throw new Error(`Material 3 crawl produced suspicious page content for ${suspicious?.path ?? 'a page'}: ${suspicious?.reason ?? 'unknown reason'}. Keeping the existing cache. Use --force to replace it anyway.`);
+  }
+
   const maxFailedPageRatio = options.maxFailedPageRatio ?? DEFAULT_MAX_FAILED_PAGE_RATIO;
   if (nextIndex.attemptedPageCount >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
     const failedPageRatio = nextIndex.failedPageCount / nextIndex.attemptedPageCount;
@@ -153,6 +163,7 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     attemptedPageCount: index.attemptedPageCount ?? index.pageCount ?? pages.length,
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
+    qualityReport: index.qualityReport,
     pages
   };
 }
