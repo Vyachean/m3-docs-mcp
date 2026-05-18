@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
 import { parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
+import type { CacheStatus } from './types.js';
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -14,6 +15,11 @@ type StartupRefreshState = {
   completedAt: string | null;
   running: boolean;
   error: string | null;
+};
+
+type CacheAvailability = {
+  status: CacheStatus;
+  unavailable: ReturnType<typeof jsonText> | null;
 };
 
 export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number } = {}): Promise<void> {
@@ -32,34 +38,34 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   }
 
   server.tool('search_material_docs', 'Search locally cached official Material 3 documentation from m3.material.io. If the cache is missing or stale, the server starts a refresh in the background instead of blocking this tool call.', {
-    query: z.string().min(1),
+    query: z.string().trim().min(1),
     limit: z.number().int().min(1).max(25).default(10)
   }, async ({ query, limit }) => {
-    const unavailable = await cacheUnavailableResponse(store, startupRefresh.state(), maxAgeHours, 'results', []);
+    const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'results', []);
     if (unavailable) return unavailable;
-    return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), results: await store.searchDocs(query, limit) });
+    return jsonText({ status, refresh: startupRefresh.state(), results: await store.searchDocs(query, limit) });
   });
 
   server.tool('get_material_page', 'Return one cached Material 3 documentation page by cache path or source URL. Does not block on long cache refreshes.', {
-    pathOrUrl: z.string().min(1)
+    pathOrUrl: z.string().trim().min(1)
   }, async ({ pathOrUrl }) => {
-    const unavailable = await cacheUnavailableResponse(store, startupRefresh.state(), maxAgeHours, 'page', null);
+    const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'page', null);
     if (unavailable) return unavailable;
-    return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), page: await store.getPage(pathOrUrl) });
+    return jsonText({ status, refresh: startupRefresh.state(), page: await store.getPage(pathOrUrl) });
   });
 
   server.tool('get_component_docs', 'Return all cached Material 3 documentation pages matching a component name. Does not block on long cache refreshes.', {
-    componentName: z.string().min(1)
+    componentName: z.string().trim().min(1)
   }, async ({ componentName }) => {
-    const unavailable = await cacheUnavailableResponse(store, startupRefresh.state(), maxAgeHours, 'pages', []);
+    const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'pages', []);
     if (unavailable) return unavailable;
-    return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), pages: await store.getComponentDocs(componentName) });
+    return jsonText({ status, refresh: startupRefresh.state(), pages: await store.getComponentDocs(componentName) });
   });
 
   server.tool('list_material_components', 'List component slugs discovered in the cached Material 3 documentation. Does not block on long cache refreshes.', {}, async () => {
-    const unavailable = await cacheUnavailableResponse(store, startupRefresh.state(), maxAgeHours, 'components', []);
+    const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'components', []);
     if (unavailable) return unavailable;
-    return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), components: await store.listComponents() });
+    return jsonText({ status, refresh: startupRefresh.state(), components: await store.listComponents() });
   });
 
   server.tool('material_docs_cache_status', 'Return local Material 3 documentation cache and background refresh status.', {}, async () => {
@@ -118,15 +124,18 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
   };
 }
 
-async function cacheUnavailableResponse(store: MaterialDocsStore, refresh: StartupRefreshState, maxAgeHours: number, key: string, fallback: unknown) {
+async function cacheAvailability(store: MaterialDocsStore, refresh: StartupRefreshState, maxAgeHours: number, key: string, fallback: unknown): Promise<CacheAvailability> {
   const status = await store.getStatus(maxAgeHours);
-  if (status.hasCache) return null;
-  return jsonText({
+  if (status.hasCache) return { status, unavailable: null };
+  return {
     status,
-    refresh,
-    message: refresh.running
-      ? 'Material 3 docs cache is being built. Retry this tool after the background refresh completes.'
-      : 'Material 3 docs cache is not available. Run refresh_material_docs or m3-docs-mcp update.',
-    [key]: fallback
-  });
+    unavailable: jsonText({
+      status,
+      refresh,
+      message: refresh.running
+        ? 'Material 3 docs cache is being built. Retry this tool after the background refresh completes.'
+        : 'Material 3 docs cache is not available. Run refresh_material_docs or m3-docs-mcp update.',
+      [key]: fallback
+    })
+  };
 }
