@@ -29,10 +29,10 @@ export class MaterialDocsStore {
     return this.readCurrentIndex();
   }
 
-  async refresh(maxPages?: number): Promise<MaterialIndex> {
+  async refresh(maxPages?: number, force = false): Promise<MaterialIndex> {
     if (this.refreshPromise) return this.refreshPromise;
 
-    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages })
+    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages, force })
       .then((index) => {
         this.index = index;
         this.indexMtimeMs = null;
