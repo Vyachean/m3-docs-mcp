@@ -23,9 +23,13 @@ Add the server to your MCP client config. No global install is required.
 }
 ```
 
-The first run may take longer because `npx` downloads the package, the server installs Playwright Chromium if it is missing, and the Material docs cache is created locally.
+The server does not run a long documentation crawl during normal read/search tool calls. Create or refresh the local cache explicitly:
 
-By default the server refreshes the cache when it is older than 24 hours.
+```bash
+npx -y m3-docs-mcp update
+```
+
+If the cache is missing, read/search tools return an error that asks the user to run `m3-docs-mcp update`. If the cache exists but is stale, tools still answer from the existing cache and include cache status metadata.
 
 ## Use directly from GitHub before npm publishing
 
@@ -46,9 +50,12 @@ By default the server refreshes the cache when it is older than 24 hours.
 npx -y m3-docs-mcp status
 npx -y m3-docs-mcp update
 npx -y m3-docs-mcp update --max-pages 500
+npx -y m3-docs-mcp update --min-pages 25
 npx -y m3-docs-mcp serve
 npx -y m3-docs-mcp serve --max-age-hours 12
 ```
+
+`--max-age-hours` only marks cache status as fresh/stale. It does not trigger implicit refresh during read/search tool calls.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 
@@ -69,6 +76,8 @@ Override:
 ```bash
 M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 ```
+
+Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation. A failed or suspicious crawl should not replace the previous cache.
 
 ## MCP tools
 
@@ -113,9 +122,13 @@ Arguments:
 
 Lists component slugs discovered under `components/*`.
 
+### `material_docs_cache_status`
+
+Returns local cache status without refreshing it.
+
 ### `refresh_material_docs`
 
-Forces a cache refresh through Playwright.
+Forces a cache refresh through Playwright. This is an explicit long-running operation.
 
 Arguments:
 
