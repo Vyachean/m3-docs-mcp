@@ -61,11 +61,12 @@ async function scrollPage(page: Page): Promise<void> {
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString()): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   const relPath = materialPagePath(url);
-  const titleMatch = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const cleanedHtml = stripNonContentHtml(html);
+  const titleMatch = cleanedHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
   const title = stripHtml(titleMatch?.[1] ?? '').trim() || 'Material 3 page';
-  const headings = Array.from(html.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)).map((match) => stripHtml(match[1]).trim()).filter(Boolean);
-  const body = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
-  const text = stripHtml(html).replace(/\s+/g, ' ').trim();
+  const headings = Array.from(cleanedHtml.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)).map((match) => stripHtml(match[1]).trim()).filter(Boolean);
+  const body = turndown.turndown(cleanedHtml).replace(/\n{3,}/g, '\n\n').trim();
+  const text = stripHtml(cleanedHtml).replace(/\s+/g, ' ').trim();
   const markdown = `---\ntitle: ${JSON.stringify(title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
   return {
     id: materialPageId(url),
@@ -167,6 +168,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   return index;
 }
 
+function stripNonContentHtml(html: string): string {
+  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+}
+
 function stripHtml(html: string): string {
-  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  return stripNonContentHtml(html).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
