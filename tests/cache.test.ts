@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { assertValidIndex, cacheAgeMs, cacheStatus, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
+import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
 let cacheDir: string;
@@ -30,6 +30,25 @@ const index: MaterialIndex = {
   failedUrls: [],
   pages: [page]
 };
+
+function materialIndex(pageCount: number, overrides: Partial<MaterialIndex> = {}): MaterialIndex {
+  const pages = Array.from({ length: pageCount }, (_, i) => ({
+    ...page,
+    id: `page-${i}`,
+    path: `components/page-${i}/overview.md`,
+    url: `https://m3.material.io/components/page-${i}/overview`
+  }));
+  return {
+    source: 'https://m3.material.io',
+    capturedAt: '2026-05-18T00:00:00.000Z',
+    pageCount,
+    attemptedPageCount: pageCount,
+    failedPageCount: 0,
+    failedUrls: [],
+    pages,
+    ...overrides
+  };
+}
 
 describe('cache helpers', () => {
   beforeEach(async () => {
@@ -185,5 +204,39 @@ describe('cache helpers', () => {
     expect(() => assertValidIndex({ ...index, pageCount: 0, pages: [] }, 1)).toThrow('below the required minimum');
     expect(() => assertValidIndex({ ...index, pageCount: 1 }, 1)).not.toThrow();
     expect(() => assertValidIndex({ ...index, pageCount: 2 }, 1)).toThrow('inconsistent index');
+  });
+
+  it('allows safe cache promotion when the new crawl is close to the previous cache size', () => {
+    expect(() => assertSafeCachePromotion(materialIndex(160), materialIndex(200))).not.toThrow();
+    expect(() => assertSafeCachePromotion(materialIndex(10), null)).not.toThrow();
+  });
+
+  it('rejects degraded cache promotion unless forced', () => {
+    const previousIndex = materialIndex(200);
+    const degradedIndex = materialIndex(20);
+
+    expect(() => assertSafeCachePromotion(degradedIndex, previousIndex)).toThrow('below 80% of the previous cache');
+    expect(() => assertSafeCachePromotion(degradedIndex, previousIndex, { force: true })).not.toThrow();
+  });
+
+  it('rejects crawls with too many failed pages unless forced', () => {
+    const failedIndex = materialIndex(20, {
+      attemptedPageCount: 25,
+      failedPageCount: 6,
+      failedUrls: Array.from({ length: 6 }, (_, i) => `https://m3.material.io/failing-${i}`)
+    });
+
+    expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20))).toThrow('above the allowed 20%');
+    expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20), { force: true })).not.toThrow();
+  });
+
+  it('does not reject small crawls by failure ratio alone', () => {
+    const smallIndex = materialIndex(3, {
+      attemptedPageCount: 4,
+      failedPageCount: 1,
+      failedUrls: ['https://m3.material.io/failing']
+    });
+
+    expect(() => assertSafeCachePromotion(smallIndex, null)).not.toThrow();
   });
 });
