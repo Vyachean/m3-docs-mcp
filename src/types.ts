@@ -75,6 +75,15 @@ export type CrawlOptions = {
   cacheDir?: string;
   headless?: boolean;
   force?: boolean;
+  concurrency?: number;
+  signal?: AbortSignal;
+};
+
+export type RefreshOptions = {
+  maxPages?: number;
+  force?: boolean;
+  concurrency?: number;
+  signal?: AbortSignal;
 };
 
 export type SearchResult = {
