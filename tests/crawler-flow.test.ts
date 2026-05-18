@@ -27,11 +27,28 @@ const playwrightMock = vi.hoisted(() => {
     }
   };
 
+  const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const contentMatchesComponent = (componentSlug: string | null | undefined): boolean => {
+    const current = pagesByUrl[currentUrl];
+    if (!current) return false;
+    if (!componentSlug) return htmlText(current.html).length > 80 && Boolean(current.title);
+
+    const pathname = new URL(current.finalUrl ?? currentUrl).pathname.replace(/^\/+|\/+$/g, '');
+    const title = normalize(current.title);
+    const text = normalize(`${current.title} ${htmlText(current.html)}`);
+    const componentWords = normalize(componentSlug.replace(/-/g, ' ')).split(' ').filter((word) => word.length > 1);
+    const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
+    return pathMatches && title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
+  };
+
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
     url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
     waitForSelector: vi.fn(async () => undefined),
-    waitForFunction: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async (_fn: unknown, arg?: { componentSlug?: string | null }) => {
+      if (!contentMatchesComponent(arg?.componentSlug)) throw new Error(`condition did not match for ${currentUrl}`);
+    }),
     close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
@@ -41,7 +58,7 @@ const playwrightMock = vi.hoisted(() => {
         return {
           url: current?.finalUrl ?? currentUrl,
           title: current?.title ?? '',
-          text: current?.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? ''
+          text: current ? htmlText(current.html) : ''
         };
       }
       if (source.includes('clone.innerHTML')) {
@@ -103,6 +120,8 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.page.waitForFunction.mockClear();
     playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
+    delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
+    delete playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'];
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [
       'https://m3.material.io/components/dialogs?tab=usage#actions',
       'https://example.com/external',
@@ -126,6 +145,7 @@ describe('crawlMaterialDocs', () => {
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledWith({ headless: true });
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://example.com/external', expect.anything());
     expect(playwrightMock.page.waitForSelector).toHaveBeenCalled();
@@ -136,7 +156,7 @@ describe('crawlMaterialDocs', () => {
     expect(index).toMatchObject({
       source: 'https://m3.material.io',
       pageCount: 2,
-      attemptedPageCount: 2,
+      attemptedPageCount: 3,
       failedPageCount: 0,
       failedUrls: [],
       qualityReport: {
