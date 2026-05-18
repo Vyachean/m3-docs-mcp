@@ -32,13 +32,15 @@ program.command('update')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-pages <number>', 'Maximum pages to crawl', '250')
   .option('--min-pages <number>', 'Minimum accepted page count before replacing the existing cache', '10')
+  .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
   .action(async (options) => {
     const index = await crawlMaterialDocs({
       cacheDir: options.cacheDir,
       maxPages: parsePositiveIntegerOption('--max-pages', options.maxPages),
       minPageCount: parsePositiveIntegerOption('--min-pages', options.minPages),
-      headless: !options.headed
+      headless: !options.headed,
+      force: options.force
     });
     console.log(JSON.stringify({
       cacheDir: options.cacheDir ?? getDefaultCacheDir(),
@@ -52,9 +54,10 @@ program.command('update')
 
 program.command('install-browser')
   .description('Install the Playwright Chromium browser used by the crawler')
-  .action(async () => {
-    await installPlaywrightChromium();
-    console.log('Playwright Chromium browser installed.');
+  .option('--with-deps', 'Also install Playwright system dependencies on supported Linux distributions')
+  .action(async (options) => {
+    await installPlaywrightChromium(options.withDeps);
+    console.log(options.withDeps ? 'Playwright Chromium browser and system dependencies installed.' : 'Playwright Chromium browser installed.');
   });
 
 program.command('status')
