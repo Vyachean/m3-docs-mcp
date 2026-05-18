@@ -2,9 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
-import { parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
+import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 import type { CacheStatus } from './types.js';
+
+const MAX_CRAWL_CONCURRENCY = 8;
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -27,7 +29,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   const maxAgeHours = parsePositiveNumberOption('M3_DOCS_MAX_AGE_HOURS', options.maxAgeHours ?? process.env.M3_DOCS_MAX_AGE_HOURS, 24);
   const autoUpdate = options.autoUpdate ?? process.env.M3_DOCS_AUTO_UPDATE !== 'false';
   const startupMaxPages = parsePositiveIntegerOption('M3_DOCS_STARTUP_MAX_PAGES', options.startupMaxPages ?? process.env.M3_DOCS_STARTUP_MAX_PAGES, 250);
-  const startupConcurrency = parsePositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1);
+  const startupConcurrency = parseBoundedPositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1, MAX_CRAWL_CONCURRENCY);
   const store = new MaterialDocsStore(cacheDir);
   const startupRefresh = createStartupRefreshController(store, startupMaxPages, startupConcurrency);
   const server = new McpServer({ name: 'm3-docs-mcp', version: '0.1.0' });
@@ -75,7 +77,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
 
   server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
     maxPages: z.number().int().min(1).max(1000).optional(),
-    concurrency: z.number().int().min(1).max(8).default(1),
+    concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
     force: z.boolean().default(false)
   }, async ({ maxPages, concurrency, force }) => {
     return jsonText(await store.refresh({ maxPages, concurrency, force: force ?? false }));
