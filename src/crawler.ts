@@ -23,12 +23,6 @@ const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
 
-type ExtractedContent = {
-  html: string;
-  title: string;
-  headings: string[];
-};
-
 const NOISE_ONLY_MARKDOWN_LINES = new Set([
   'close',
   'link',
@@ -49,6 +43,33 @@ const TOKEN_BROWSER_NOISE_PATTERNS = [
   /gridview/i,
   /folderenabled/i
 ];
+
+const TOKEN_VIEWER_ROW_SELECTORS = [
+  'tr',
+  '[role="row"]',
+  '[class*="token-row"]',
+  '[class*="tokenRow"]',
+  '[class*="table-row"]',
+  '[class*="row"]'
+].join(',');
+
+const TOKEN_VIEWER_CELL_SELECTORS = [
+  'th',
+  'td',
+  '[role="columnheader"]',
+  '[role="cell"]',
+  '[class*="cell"]',
+  '[class*="column"]',
+  '[class*="name"]',
+  '[class*="value"]',
+  '[class*="token"]'
+].join(',');
+
+type ExtractedContent = {
+  html: string;
+  title: string;
+  headings: string[];
+};
 
 type StableSnapshot = {
   url: string;
@@ -235,8 +256,10 @@ function abortError(signal: AbortSignal): Error {
 
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
+  addMaterialMarkdownRules(turndown);
+
   const relPath = materialPagePath(url);
-  const sanitizedHtml = stripUnsafeHtml(html);
+  const sanitizedHtml = preserveTokenViewerTextLines(stripUnsafeHtml(html));
   const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
   const rawBody = turndown.turndown(sanitizedHtml)
@@ -258,11 +281,203 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   };
 }
 
+function addMaterialMarkdownRules(turndown: TurndownService): void {
+  turndown.addRule('materialTables', {
+    filter: (node) => isElementNode(node) && nodeName(node) === 'table',
+    replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
+  });
+
+  turndown.addRule('materialTokenViewer', {
+    filter: (node) => isElementNode(node) && nodeName(node) === 'token-viewer',
+    replacement: (_content, node) => tokenViewerElementToMarkdown(turndown, node as Element)
+  });
+
+  turndown.addRule('materialBackgroundImage', {
+    filter: (node) => isElementNode(node) && Boolean(node.getAttribute('data-background-image')),
+    replacement: (content, node) => {
+      if (!isElementNode(node)) return content;
+      const imageUrl = node.getAttribute('data-background-image')?.trim();
+      if (!imageUrl) return content;
+      const alt = normalizeInlineText(content || node.textContent || '').slice(0, 120);
+      return `\n\n![${escapeMarkdownAttribute(alt)}](${preferLargeImageUrl(imageUrl)})\n\n`;
+    }
+  });
+}
+
+function tableElementToMarkdown(turndown: TurndownService, table: Element): string {
+  const rows = Array.from(table.querySelectorAll('tr'))
+    .filter((row) => row.closest('table') === table);
+  const markdownRows = rows
+    .map((row) => cellsFromRow(turndown, row))
+    .filter((cells) => cells.some(Boolean));
+  return markdownTable(markdownRows);
+}
+
+function cellsFromRow(turndown: TurndownService, row: Element): string[] {
+  return Array.from(row.querySelectorAll('th, td'))
+    .filter((cell) => cell.closest('tr') === row)
+    .map((cell) => elementToTableCellMarkdown(turndown, cell));
+}
+
+function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element): string {
+  const nestedTable = viewer.querySelector('table');
+  if (nestedTable) return tableElementToMarkdown(turndown, nestedTable);
+
+  const rowCandidates = Array.from(viewer.querySelectorAll(TOKEN_VIEWER_ROW_SELECTORS))
+    .filter((row) => row !== viewer && !hasAncestorMatching(row, viewer, TOKEN_VIEWER_ROW_SELECTORS));
+  const rows = rowCandidates
+    .map((row) => tokenViewerCellsFromRow(turndown, row))
+    .filter((cells) => cells.length > 0 && cells.some(Boolean));
+
+  if (rows.length > 0) return tokenRowsToMarkdown(rows);
+
+  const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
+  if (lines.length >= 4 && lines.length % 2 === 0) {
+    const pairs: string[][] = [];
+    for (let i = 0; i < lines.length; i += 2) pairs.push([lines[i] ?? '', lines[i + 1] ?? '']);
+    return markdownTable([['Name', 'Value'], ...pairs]);
+  }
+  return lines.length ? `\n\n${lines.map((line) => `- ${escapeMarkdownListText(line)}`).join('\n')}\n\n` : '';
+}
+
+function tokenViewerCellsFromRow(turndown: TurndownService, row: Element): string[] {
+  const explicitCells = Array.from(row.querySelectorAll(TOKEN_VIEWER_CELL_SELECTORS))
+    .filter((cell) => cell !== row && !hasAncestorMatching(cell, row, TOKEN_VIEWER_CELL_SELECTORS));
+  if (explicitCells.length > 1) {
+    return explicitCells.map((cell) => elementToTableCellMarkdown(turndown, cell)).filter((cell) => cell && !isTokenViewerNoise(cell));
+  }
+
+  const childCells = Array.from(row.children)
+    .filter((child) => normalizeInlineText(child.textContent ?? '') && !isTokenViewerNoise(child.textContent ?? ''))
+    .map((child) => elementToTableCellMarkdown(turndown, child));
+  if (childCells.length > 1) return childCells;
+
+  const lines = visibleTextLines(row.textContent ?? '').filter((line) => !isTokenViewerNoise(line));
+  return lines.length > 1 ? lines.map(escapeMarkdownTableCell) : [];
+}
+
+function tokenViewerFallbackLines(viewer: Element): string[] {
+  const childNodeLines = Array.from(viewer.childNodes).flatMap((node) => {
+    if (node.nodeType === 3) return visibleTextLines(node.textContent ?? '');
+    if (isElementNode(node)) return visibleTextLines(node.textContent ?? '');
+    return [];
+  });
+  if (childNodeLines.length > 1) return childNodeLines;
+
+  const htmlLines = visibleTextLines(viewer.innerHTML
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|span|li|tr|th|td|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' '));
+  if (htmlLines.length > childNodeLines.length) return htmlLines;
+
+  return childNodeLines.length ? childNodeLines : visibleTextLines(viewer.textContent ?? '');
+}
+
+function tokenRowsToMarkdown(rows: string[][]): string {
+  const maxColumns = Math.max(...rows.map((row) => row.length));
+  if (maxColumns <= 1) return `\n\n${rows.flat().map((line) => `- ${escapeMarkdownListText(line)}`).join('\n')}\n\n`;
+
+  const firstRow = rows[0] ?? [];
+  const firstRowLooksLikeHeader = firstRow.some((cell) => /^(element|attribute|token|value|default|property|name|description)$/i.test(normalizeInlineText(cell)));
+  const fallbackHeaders = ['Name', 'Value', 'Description', 'State', 'Notes'].slice(0, maxColumns);
+  const tableRows = firstRowLooksLikeHeader ? rows : [fallbackHeaders, ...rows];
+  return markdownTable(tableRows.map((row) => padRow(row, maxColumns)));
+}
+
+function markdownTable(rows: string[][]): string {
+  if (rows.length === 0) return '';
+  const width = Math.max(...rows.map((row) => row.length));
+  if (width === 0) return '';
+
+  const header = padRow(rows[0] ?? [], width).map((cell, index) => cell || `Column ${index + 1}`);
+  const body = rows.slice(1).map((row) => padRow(row, width));
+  const lines = [
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...body.map((row) => `| ${row.join(' | ')} |`)
+  ];
+  return `\n\n${lines.join('\n')}\n\n`;
+}
+
+function padRow(row: string[], width: number): string[] {
+  return Array.from({ length: width }, (_, index) => row[index] ?? '');
+}
+
+function elementToTableCellMarkdown(turndown: TurndownService, element: Element): string {
+  const clone = element.cloneNode(true) as Element;
+  for (const nestedTable of Array.from(clone.querySelectorAll('table'))) nestedTable.remove();
+
+  const html = clone.innerHTML || clone.textContent || '';
+  const markdown = turndown.turndown(html).replace(/\n{2,}/g, '<br>').replace(/\n/g, '<br>');
+  return escapeMarkdownTableCell(normalizeInlineText(markdown));
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\|/g, '\\|').trim();
+}
+
+function escapeMarkdownAttribute(value: string): string {
+  return value.replace(/[\[\]\\]/g, '\\$&').trim();
+}
+
+function escapeMarkdownListText(value: string): string {
+  return value.replace(/^([-*+]\s+)/, '\\$1').trim();
+}
+
+function normalizeInlineText(value: string): string {
+  return value.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function visibleTextLines(value: string): string[] {
+  return value.split(/\r?\n|\t/).map(normalizeInlineText).filter(Boolean);
+}
+
+function isTokenViewerNoise(value: string): boolean {
+  const normalized = normalizeNoiseText(value);
+  return NOISE_ONLY_MARKDOWN_LINES.has(normalized) || TOKEN_BROWSER_NOISE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isElementNode(node: unknown): node is Element {
+  return Boolean(node && (node as Node).nodeType === 1);
+}
+
+function nodeName(node: Element): string {
+  return node.nodeName.toLowerCase();
+}
+
+function hasAncestorMatching(node: Element, boundary: Element, selector: string): boolean {
+  let parent = node.parentElement;
+  while (parent && parent !== boundary) {
+    if (parent.matches(selector)) return true;
+    parent = parent.parentElement;
+  }
+  return false;
+}
+
+function preferLargeImageUrl(url: string): string {
+  return url.replace(/=s0(?=($|[)&]))/g, '=w1600');
+}
+
 function stripUnsafeHtml(html: string): string {
   return html
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+}
+
+function preserveTokenViewerTextLines(html: string): string {
+  return html.replace(/<token-viewer\b([^>]*)>([\s\S]*?)<\/token-viewer>/gi, (match, attributes: string, body: string) => {
+    if (/<(?:table|thead|tbody|tfoot|tr|th|td)\b/i.test(body)) return match;
+    if (/\b(?:role|class)\s*=/i.test(body)) return match;
+
+    const lines = visibleTextLines(stripHtml(body));
+    if (lines.length <= 1) return match;
+    return `<token-viewer${attributes}>${lines.map(escapeHtmlText).join('<br>')}</token-viewer>`;
+  });
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
@@ -312,7 +527,8 @@ function postProcessMarkdown(markdown: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/[^\S\n]+$/gm, '')
     .replace(/\u200b/g, '')
-    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+)\)!\[\1\]\(([^)]*=s0)\)/g, '![$1]($3)')
+    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)\s*!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
+    .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)\s*!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
     .split('\n');
 
   const cleaned: string[] = [];
