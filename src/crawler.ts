@@ -14,11 +14,20 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 const SHORT_PAGE_TEXT_LENGTH = 160;
+const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
+const COMPONENTS_WITHOUT_OVERVIEW = new Set(['all-buttons']);
+const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 
 type ExtractedContent = {
   html: string;
   title: string;
   headings: string[];
+};
+
+type StableSnapshot = {
+  url: string;
+  title: string;
+  text: string;
 };
 
 export async function installPlaywrightChromium(withDependencies = false): Promise<void> {
@@ -41,13 +50,26 @@ async function launchChromium(headless: boolean): Promise<Browser> {
 
 async function autoExpand(page: Page): Promise<void> {
   await page.evaluate(async () => {
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
     for (const details of Array.from(document.querySelectorAll('details:not([open])'))) {
       details.setAttribute('open', 'true');
     }
     for (const el of Array.from(document.querySelectorAll('[aria-expanded="false"]'))) {
       if (el instanceof HTMLElement) el.click();
     }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const navigationRoots = Array.from(document.querySelectorAll('nav, aside, [role="navigation"]'));
+    for (let pass = 0; pass < 4; pass += 1) {
+      const expandable = navigationRoots.flatMap((root) => Array.from(root.querySelectorAll('[aria-expanded="false"]')));
+      if (expandable.length === 0) break;
+      for (const el of expandable) {
+        if (el instanceof HTMLElement && !el.closest('a[href]')) {
+          el.click();
+          await wait(25);
+        }
+      }
+    }
+    await wait(200);
   });
 }
 
@@ -68,13 +90,64 @@ async function scrollPage(page: Page): Promise<void> {
   });
 }
 
-async function waitForMaterialContent(page: Page): Promise<void> {
-  await page.waitForSelector('main, [role="main"]', { timeout: 15_000 });
-  await page.waitForFunction(() => {
+async function navigateToStableMaterialPage(page: Page, requestedUrl: string, baseUrl: string): Promise<string> {
+  const loadUrl = normalizeMaterialCrawlUrl(requestedUrl, baseUrl) ?? requestedUrl;
+  await page.goto(loadUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+  await page.waitForSelector(MATERIAL_CONTENT_SELECTOR, { timeout: 15_000 });
+  await waitForMaterialContent(page, loadUrl);
+  await waitForStableMaterialSnapshot(page);
+  return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
+}
+
+async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
+  const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
+  await page.waitForFunction(({ componentSlug }) => {
+    const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
-    const text = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-    return text.length > 80 && Boolean(root.querySelector('h1, h2'));
-  }, undefined, { timeout: 15_000 });
+    const title = normalize(root.querySelector('h1')?.textContent ?? '');
+    const text = normalize(root.textContent ?? '');
+    const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    if (text.length < 80 || !title) return false;
+    if (!componentSlug) return true;
+
+    const componentName = normalize(componentSlug.replace(/-/g, ' '));
+    const componentWords = componentName.split(' ').filter((word) => word.length > 1);
+    const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
+    const contentMatches = title !== 'components' && componentWords.every((word) => text.includes(word));
+    return pathMatches && contentMatches;
+  }, { componentSlug: expectedComponentSlug }, { timeout: 20_000 });
+}
+
+async function waitForStableMaterialSnapshot(page: Page): Promise<void> {
+  let previous: StableSnapshot | null = null;
+  let stableReads = 0;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const current = await materialSnapshot(page);
+    if (previous && current.url === previous.url && current.title === previous.title && current.text === previous.text) {
+      stableReads += 1;
+      if (stableReads >= 2) return;
+    } else {
+      stableReads = 0;
+    }
+    previous = current;
+    await delay(250);
+  }
+  throw new Error('Material page content did not stabilize before extraction.');
+}
+
+async function materialSnapshot(page: Page): Promise<StableSnapshot> {
+  return page.evaluate(() => {
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    return {
+      url: window.location.href,
+      title: root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      text: root.textContent?.replace(/\s+/g, ' ').trim().slice(0, 5000) ?? ''
+    };
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
@@ -115,11 +188,25 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
   return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
 }
 
+export function normalizeMaterialCrawlUrl(raw: string, baseUrl: string): string | null {
+  const normalized = normalizeMaterialUrl(raw, baseUrl);
+  if (!normalized) return null;
+  const url = new URL(normalized);
+  const componentMatch = url.pathname.match(COMPONENT_PATH_WITHOUT_OVERVIEW);
+  const slug = componentMatch?.[1];
+  if (slug && !COMPONENTS_WITHOUT_OVERVIEW.has(slug)) {
+    url.pathname = `/components/${slug}/overview`;
+    return url.toString().replace(/\/$/, '');
+  }
+  return normalized;
+}
+
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialUrl(href, baseUrl)).filter((value): value is string => Boolean(value))));
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value))));
 }
 
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
+  await autoExpand(page);
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
   return discoverMaterialLinksFromHrefs(links, baseUrl);
 }
@@ -189,16 +276,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
 
   try {
     while (queue.length > 0 && pages.length < maxPages) {
-      const url = queue.shift();
+      const queuedUrl = queue.shift();
+      const url = queuedUrl ? normalizeMaterialCrawlUrl(queuedUrl, baseUrl) : null;
       if (!url || seen.has(url)) continue;
       seen.add(url);
       const page = await context.newPage();
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await waitForMaterialContent(page);
-        await scrollPage(page);
+        const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl);
         await autoExpand(page);
-        const materialPage = await extract(page, url);
+        await scrollPage(page);
+        await waitForStableMaterialSnapshot(page);
+        const materialPage = await extract(page, finalUrl);
         const suspiciousPage = validateCrawledPage(materialPage);
         if (suspiciousPage) {
           failedUrls.push(url);
@@ -268,6 +356,12 @@ function duplicateTitleGroups(pages: MaterialPage[]): DuplicateTitleGroup[] {
   return Array.from(groups.values())
     .filter((group) => group.length > 1)
     .map((group) => ({ title: group[0]?.title ?? '', count: group.length, paths: group.map((page) => page.path).sort() }));
+}
+
+function componentSlugFromUrl(url: string): string | null {
+  const pathname = new URL(url).pathname.replace(/^\/+|\/+$/g, '');
+  const segments = pathname.split('/').filter(Boolean);
+  return segments[0] === 'components' && segments.length >= 2 ? segments[1] ?? null : null;
 }
 
 function countBy(values: string[]): Record<string, number> {
