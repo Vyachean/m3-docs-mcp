@@ -7,9 +7,11 @@ import type { MaterialIndex } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
-  const pagesByUrl: Record<string, { html: string; links: string[] }> = {
+  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[] }> = {
     'https://m3.material.io': {
-      html: '<main><h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p></main>',
+      html: '<h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p>',
+      title: 'Material 3',
+      headings: ['Material 3'],
       links: [
         'https://m3.material.io/components/dialogs/overview?tab=usage#actions',
         'https://example.com/external',
@@ -17,7 +19,9 @@ const playwrightMock = vi.hoisted(() => {
       ]
     },
     'https://m3.material.io/components/dialogs/overview': {
-      html: '<main><h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p></main>',
+      html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
+      title: 'Dialogs',
+      headings: ['Dialogs', 'Usage'],
       links: []
     }
   };
@@ -27,7 +31,10 @@ const playwrightMock = vi.hoisted(() => {
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
-      if (source.includes('clone.innerHTML')) return pagesByUrl[currentUrl]?.html ?? '<main></main>';
+      if (source.includes('clone.innerHTML')) {
+        const current = pagesByUrl[currentUrl];
+        return current ? { html: current.html, title: current.title, headings: current.headings } : { html: '', title: '', headings: [] };
+      }
       return undefined;
     })
   };
@@ -81,6 +88,10 @@ describe('crawlMaterialDocs', () => {
       failedUrls: []
     });
     expect(index.pages.map((page) => page.path).sort()).toEqual(['components/dialogs/overview.md', 'index.md']);
+    expect(index.pages.find((page) => page.path === 'components/dialogs/overview.md')).toMatchObject({
+      title: 'Dialogs',
+      headings: ['Dialogs', 'Usage']
+    });
 
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
