@@ -26,8 +26,8 @@ const playwrightMock = vi.hoisted(() => {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
-      if (source.includes("querySelectorAll('a[href]')")) return pagesByUrl[currentUrl]?.links ?? [];
-      if (source.includes("document.querySelector('main')")) return pagesByUrl[currentUrl]?.html ?? '<main></main>';
+      if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
+      if (source.includes('clone.innerHTML')) return pagesByUrl[currentUrl]?.html ?? '<main></main>';
       return undefined;
     })
   };
