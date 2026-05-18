@@ -101,8 +101,9 @@ describe('validateCrawledPage', () => {
 
 describe('createCrawlQualityReport', () => {
   it('reports duplicate content, duplicate titles, short pages, and section counts', () => {
-    const first = extractMaterialPageFromHtml('<main><h1>Buttons</h1><p>Buttons prompt most actions in a UI with enough repeated documentation text to avoid short-page classification.</p></main>', 'https://m3.material.io/components/buttons', '2026-05-18T00:00:00.000Z');
-    const duplicate = { ...first, id: 'duplicate', url: 'https://m3.material.io/components/icon-buttons', path: 'components/icon-buttons.md', section: 'components' };
+    const body = 'Buttons prompt most actions in a UI. Buttons are available in several variants and should communicate the action they perform. Use buttons for actions that affect the current screen, flow, or selected content. Button labels should be concise, specific, and easy to scan.';
+    const first = extractMaterialPageFromHtml(`<main><h1>Buttons</h1><p>${body}</p></main>`, 'https://m3.material.io/components/buttons', '2026-05-18T00:00:00.000Z');
+    const duplicate = { ...first, id: 'duplicate', url: 'https://m3.material.io/components/icon-buttons', path: 'components/icon-buttons.md' };
     const short = extractMaterialPageFromHtml('<main><h1>Short</h1><p>Brief.</p></main>', 'https://m3.material.io/get-started', '2026-05-18T00:00:00.000Z');
 
     const report = createCrawlQualityReport([first, duplicate, short]);
@@ -110,6 +111,6 @@ describe('createCrawlQualityReport', () => {
     expect(report.duplicateContent).toEqual([{ hash: expect.any(String), title: 'Buttons', paths: ['components/buttons.md', 'components/icon-buttons.md'], urls: ['https://m3.material.io/components/buttons', 'https://m3.material.io/components/icon-buttons'] }]);
     expect(report.duplicateTitles).toEqual([{ title: 'Buttons', count: 2, paths: ['components/buttons.md', 'components/icon-buttons.md'] }]);
     expect(report.shortPages).toContainEqual({ url: 'https://m3.material.io/get-started', path: 'get-started.md', title: 'Short', textLength: expect.any(Number) });
-    expect(report.pagesBySection).toEqual({ components: 1, 'components/buttons': 1, root: 1 });
+    expect(report.pagesBySection).toEqual({ components: 2, root: 1 });
   });
 });
