@@ -113,11 +113,15 @@ npx -y m3-docs-mcp serve --startup-concurrency 2
 npx -y m3-docs-mcp serve --no-auto-update
 ```
 
-For a quick smoke test, lower `--min-pages` together with `--max-pages`. The default minimum is 10 pages, so interrupting the command or crawling fewer than 10 accepted pages intentionally leaves the existing cache unchanged:
+`update` prints a start message after the CLI process has started. With `npx github:...`, npm may still spend time fetching and building the package before that message can appear.
+
+For a quick crawler smoke test, use a temporary cache directory and lower `--min-pages` together with `--max-pages`. This validates startup and crawling without trying to replace a larger existing cache:
 
 ```bash
-npx -y m3-docs-mcp update --max-pages 3 --min-pages 1
+M3_DOCS_CACHE_DIR="$(mktemp -d)" npx -y m3-docs-mcp update --max-pages 3 --min-pages 1
 ```
+
+The default minimum is 10 pages, so interrupting the command or crawling fewer than 10 accepted pages intentionally leaves the existing cache unchanged.
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
 
