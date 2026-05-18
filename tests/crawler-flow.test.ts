@@ -7,7 +7,7 @@ import type { MaterialIndex } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
-  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[]; finalUrl?: string }> = {
+  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[]; finalUrl?: string; routeAfterExpansion?: string }> = {
     'https://m3.material.io': {
       html: '<h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p>',
       title: 'Material 3',
@@ -52,6 +52,11 @@ const playwrightMock = vi.hoisted(() => {
     close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
+      if (source.includes('details:not([open])')) {
+        const current = pagesByUrl[currentUrl];
+        if (current?.routeAfterExpansion) currentUrl = current.routeAfterExpansion;
+        return undefined;
+      }
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
       if (source.includes('window.location.href')) {
         const current = pagesByUrl[currentUrl];
@@ -69,7 +74,10 @@ const playwrightMock = vi.hoisted(() => {
     })
   };
   const browser = {
-    newContext: vi.fn(async () => ({ newPage: vi.fn(async () => page) })),
+    newContext: vi.fn(async () => ({
+      newPage: vi.fn(async () => page),
+      close: vi.fn(async () => undefined)
+    })),
     close: vi.fn(async () => undefined)
   };
 
@@ -112,6 +120,7 @@ function existingIndex(pageCount: number): MaterialIndex {
 describe('crawlMaterialDocs', () => {
   beforeEach(async () => {
     cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-docs-crawler-flow-test-'));
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, text: async () => '' })));
     playwrightMock.chromium.launch.mockClear();
     playwrightMock.browser.close.mockClear();
     playwrightMock.page.goto.mockClear();
@@ -137,6 +146,7 @@ describe('crawlMaterialDocs', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllGlobals();
     await rm(cacheDir, { recursive: true, force: true });
   });
 
@@ -177,6 +187,49 @@ describe('crawlMaterialDocs', () => {
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
+  });
+
+  it('uses sitemap URLs as discovery seeds before crawling unrelated links', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => 'https://m3.material.io/foundations/layout/canonical-layouts 2026-02-16 https://m3.material.io/blog/ignored'
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [];
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout/canonical-layouts'] = {
+      html: '<h1>Canonical layouts</h1><p>Canonical layouts help applications adapt across screen sizes with enough text for crawler validation.</p>',
+      title: 'Canonical layouts',
+      headings: ['Canonical layouts'],
+      links: [],
+      finalUrl: 'https://m3.material.io/foundations/layout/canonical-layouts'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 2 });
+
+    expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
+  });
+
+  it('fails a page instead of writing content when expansion changes the route', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Buttons</h1><p>Buttons prompt most actions in a UI with enough body text for crawler validation.</p>',
+      title: 'Buttons',
+      headings: ['Buttons'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview',
+      routeAfterExpansion: 'https://m3.material.io/components'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/components'] = {
+      html: '<h1>Components</h1><p>Components are interactive building blocks.</p>',
+      title: 'Components',
+      headings: ['Components'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components'
+    };
+
+    await expect(crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 })).rejects.toThrow('below the required minimum');
+
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
   });
 
   it('rejects component routes that render the parent Components page', async () => {
