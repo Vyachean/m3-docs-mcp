@@ -1,14 +1,13 @@
 import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
 import { writeIndex, writePage, getDefaultCacheDir } from './cache.js';
+import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, MaterialIndex, MaterialPage } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
-const SKIP_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|xml|json|txt)$/i;
 
 async function launchChromium(headless: boolean): Promise<Browser> {
   try {
@@ -21,37 +20,9 @@ async function launchChromium(headless: boolean): Promise<Browser> {
 
     console.error('Playwright Chromium browser is missing. Installing it now.');
     const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    await execFileAsync(npx, ['playwright', 'install', 'chromium'], { stdio: 'inherit' });
+    await execFileAsync(npx, ['playwright', 'install', 'chromium']);
     return chromium.launch({ headless });
   }
-}
-
-function normalizeUrl(raw: string, baseUrl: string): string | null {
-  try {
-    const url = new URL(raw, baseUrl);
-    const base = new URL(baseUrl);
-    if (url.origin !== base.origin) return null;
-    url.hash = '';
-    url.search = '';
-    if (SKIP_EXTENSIONS.test(url.pathname)) return null;
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return null;
-  }
-}
-
-function pagePath(url: string): string {
-  const pathname = new URL(url).pathname.replace(/^\/+|\/+$/g, '');
-  return `${pathname || 'index'}.md`;
-}
-
-function sectionFromPath(filePath: string): string {
-  const parts = filePath.replace(/\.md$/, '').split('/');
-  return parts.length > 1 ? parts.slice(0, -1).join('/') : 'root';
-}
-
-function makeId(url: string): string {
-  return crypto.createHash('sha256').update(url).digest('hex').slice(0, 16);
 }
 
 async function autoExpand(page: Page): Promise<void> {
@@ -102,15 +73,15 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
 
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   const capturedAt = new Date().toISOString();
-  const relPath = pagePath(url);
+  const relPath = materialPagePath(url);
   const body = turndown.turndown(data.html).replace(/\n{3,}/g, '\n\n').trim();
-  const markdown = `---\ntitle: ${JSON.stringify(data.title)}\nsourceUrl: ${url}\nsection: ${sectionFromPath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
+  const markdown = `---\ntitle: ${JSON.stringify(data.title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
   return {
-    id: makeId(url),
+    id: materialPageId(url),
     title: data.title,
     url,
     path: relPath,
-    section: sectionFromPath(relPath),
+    section: sectionFromPagePath(relPath),
     headings: data.headings,
     text: data.text,
     markdown,
@@ -120,7 +91,7 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
 
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
-  return Array.from(new Set(links.map((href) => normalizeUrl(href, baseUrl)).filter((v): v is string => Boolean(v))));
+  return Array.from(new Set(links.map((href) => normalizeMaterialUrl(href, baseUrl)).filter((v): v is string => Boolean(v))));
 }
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
