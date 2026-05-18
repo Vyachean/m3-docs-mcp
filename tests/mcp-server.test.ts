@@ -3,12 +3,15 @@ import type { CacheStatus, MaterialIndex, SearchResult } from '../src/types.js';
 
 const mocks = vi.hoisted(() => {
   const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>>();
+  const toolDefinitions: Array<{ name: string; description: string; schema: Record<string, unknown> }> = [];
+  const serverConfigs: Array<{ name: string; version: string }> = [];
   const connect = vi.fn(async (_transport: unknown) => undefined);
   const createdStores: MockStore[] = [];
   const nextStores: MockStore[] = [];
 
   type MockStore = {
-    getStatus: ReturnType<typeof vi.fn<() => Promise<CacheStatus>>>;
+    cacheDir?: string;
+    getStatus: ReturnType<typeof vi.fn<(maxAgeHours?: number) => Promise<CacheStatus>>>;
     refresh: ReturnType<typeof vi.fn<(maxPages?: number) => Promise<MaterialIndex>>>;
     searchDocs: ReturnType<typeof vi.fn<(query: string, limit: number) => Promise<SearchResult[]>>>;
     getPage: ReturnType<typeof vi.fn>;
@@ -56,12 +59,17 @@ const mocks = vi.hoisted(() => {
     listComponents: vi.fn(async () => [])
   });
 
-  return { toolHandlers, connect, createdStores, nextStores, makeIndex, makeStatus, makeStore };
+  return { toolHandlers, toolDefinitions, serverConfigs, connect, createdStores, nextStores, makeIndex, makeStatus, makeStore };
 });
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: class {
-    tool(name: string, _description: string, _schema: unknown, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>) {
+    constructor(config: { name: string; version: string }) {
+      mocks.serverConfigs.push(config);
+    }
+
+    tool(name: string, description: string, schema: Record<string, unknown>, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>) {
+      mocks.toolDefinitions.push({ name, description, schema });
       mocks.toolHandlers.set(name, handler);
     }
 
@@ -83,8 +91,9 @@ vi.mock('../src/store.js', () => ({
   MaterialDocsStore: class {
     constructor(cacheDir: string) {
       const store = mocks.nextStores.shift() ?? mocks.makeStore();
+      store.cacheDir = cacheDir;
       mocks.createdStores.push(store);
-      Object.assign(this, store, { cacheDir });
+      Object.assign(this, store);
     }
   }
 }));
@@ -101,12 +110,82 @@ async function callTool(name: string, args: Record<string, unknown>) {
   return parseToolResult(await handler!(args));
 }
 
+function schemaFor(toolName: string) {
+  const definition = mocks.toolDefinitions.find((tool) => tool.name === toolName);
+  expect(definition).toBeDefined();
+  return definition!.schema;
+}
+
 describe('serveMcp', () => {
   beforeEach(() => {
     mocks.toolHandlers.clear();
+    mocks.toolDefinitions.length = 0;
+    mocks.serverConfigs.length = 0;
     mocks.connect.mockClear();
     mocks.createdStores.length = 0;
     mocks.nextStores.length = 0;
+    delete process.env.M3_DOCS_AUTO_UPDATE;
+    delete process.env.M3_DOCS_MAX_AGE_HOURS;
+    delete process.env.M3_DOCS_STARTUP_MAX_PAGES;
+  });
+
+  it('registers the server metadata, expected tools, and default cache directory', async () => {
+    const store = mocks.makeStore();
+    mocks.nextStores.push(store);
+
+    await serveMcp({ autoUpdate: false });
+
+    expect(mocks.serverConfigs).toEqual([{ name: 'm3-docs-mcp', version: '0.1.0' }]);
+    expect(store.cacheDir).toBe('/default-cache');
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
+    expect(mocks.toolDefinitions.map((tool) => tool.name)).toEqual([
+      'search_material_docs',
+      'get_material_page',
+      'get_component_docs',
+      'list_material_components',
+      'material_docs_cache_status',
+      'refresh_material_docs'
+    ]);
+    expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
+  });
+
+  it('uses environment options for startup refresh and disables it through M3_DOCS_AUTO_UPDATE', async () => {
+    process.env.M3_DOCS_AUTO_UPDATE = 'false';
+    process.env.M3_DOCS_MAX_AGE_HOURS = '12';
+    process.env.M3_DOCS_STARTUP_MAX_PAGES = '33';
+    const store = mocks.makeStore(mocks.makeStatus({ isFresh: false }));
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache' });
+    const status = await callTool('material_docs_cache_status', {});
+
+    expect(store.refresh).not.toHaveBeenCalled();
+    expect(store.getStatus).toHaveBeenCalledWith(12);
+    expect(status).toMatchObject({ autoUpdate: false, refresh: { running: false, error: null } });
+  });
+
+  it('trims tool string inputs and validates tool bounds', async () => {
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const searchSchema = schemaFor('search_material_docs');
+    expect(searchSchema.query.safeParse(' dialogs ').data).toBe('dialogs');
+    expect(searchSchema.query.safeParse('   ').success).toBe(false);
+    expect(searchSchema.limit.safeParse(0).success).toBe(false);
+    expect(searchSchema.limit.safeParse(26).success).toBe(false);
+    expect(searchSchema.limit.safeParse(10).success).toBe(true);
+
+    const pageSchema = schemaFor('get_material_page');
+    expect(pageSchema.pathOrUrl.safeParse(' /components/dialogs/overview.md ').data).toBe('/components/dialogs/overview.md');
+    expect(pageSchema.pathOrUrl.safeParse('').success).toBe(false);
+
+    const componentSchema = schemaFor('get_component_docs');
+    expect(componentSchema.componentName.safeParse(' Dialogs ').data).toBe('Dialogs');
+    expect(componentSchema.componentName.safeParse('  ').success).toBe(false);
+
+    const refreshSchema = schemaFor('refresh_material_docs');
+    expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
+    expect(refreshSchema.maxPages.safeParse(1000).success).toBe(true);
+    expect(refreshSchema.maxPages.safeParse(1001).success).toBe(false);
   });
 
   it('starts a missing-cache refresh in the background and does not block search tools', async () => {
@@ -125,6 +204,7 @@ describe('serveMcp', () => {
       results: [],
       refresh: { running: true, completedAt: null, error: null }
     });
+    expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).not.toHaveBeenCalled();
 
     resolveRefresh(mocks.makeIndex());
@@ -155,6 +235,7 @@ describe('serveMcp', () => {
       results: [searchResult],
       refresh: { running: true, completedAt: null, error: null }
     });
+    expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
   });
 
