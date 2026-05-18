@@ -29,6 +29,13 @@ The server does not run a long documentation crawl during normal read/search too
 npx -y m3-docs-mcp update
 ```
 
+If Playwright Chromium has not been installed yet, install it explicitly and rerun the cache update:
+
+```bash
+npx -y m3-docs-mcp install-browser
+npx -y m3-docs-mcp update
+```
+
 If the cache is missing, read/search tools return an error that asks the user to run `m3-docs-mcp update`. If the cache exists but is stale, tools still answer from the existing cache and include cache status metadata.
 
 ## Use directly from GitHub before npm publishing
@@ -48,6 +55,7 @@ If the cache is missing, read/search tools return an error that asks the user to
 
 ```bash
 npx -y m3-docs-mcp status
+npx -y m3-docs-mcp install-browser
 npx -y m3-docs-mcp update
 npx -y m3-docs-mcp update --max-pages 500
 npx -y m3-docs-mcp update --min-pages 25
@@ -77,7 +85,7 @@ Override:
 M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 ```
 
-Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation. A failed or suspicious crawl should not replace the previous cache.
+Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
 ## MCP tools
 
@@ -96,7 +104,7 @@ Arguments:
 
 ### `get_material_page`
 
-Returns one cached page by source URL or local cache path.
+Returns one cached page by source URL or local cache path. URL query strings, fragments, trailing slashes, leading slashes, and optional `.md` suffixes are normalized before lookup.
 
 Arguments:
 
@@ -144,6 +152,7 @@ Arguments:
 - Google implementation repositories are not treated as authoritative design guidelines.
 - Cached docs are stored locally for the user running the MCP server.
 - The npm package should not include a full public mirror of Material documentation.
+- Normal read/search tools must not trigger an implicit crawl.
 
 ## Current limitations
 
