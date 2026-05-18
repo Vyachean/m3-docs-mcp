@@ -10,6 +10,41 @@ export type MaterialPage = {
   capturedAt: string;
 };
 
+export type SuspiciousCrawlPage = {
+  url: string;
+  path: string;
+  title: string;
+  reason: string;
+};
+
+export type DuplicateContentGroup = {
+  hash: string;
+  title: string;
+  paths: string[];
+  urls: string[];
+};
+
+export type ShortCrawlPage = {
+  url: string;
+  path: string;
+  title: string;
+  textLength: number;
+};
+
+export type DuplicateTitleGroup = {
+  title: string;
+  count: number;
+  paths: string[];
+};
+
+export type CrawlQualityReport = {
+  suspiciousPages: SuspiciousCrawlPage[];
+  duplicateContent: DuplicateContentGroup[];
+  shortPages: ShortCrawlPage[];
+  duplicateTitles: DuplicateTitleGroup[];
+  pagesBySection: Record<string, number>;
+};
+
 export type MaterialIndex = {
   source: string;
   capturedAt: string;
@@ -17,6 +52,7 @@ export type MaterialIndex = {
   attemptedPageCount: number;
   failedPageCount: number;
   failedUrls: string[];
+  qualityReport?: CrawlQualityReport;
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
