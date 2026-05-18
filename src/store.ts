@@ -6,6 +6,7 @@ import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
 import type { CacheStatus, MaterialIndex, SearchResult } from './types.js';
 
 const MATERIAL_BASE_URL = 'https://m3.material.io';
+const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
 
 type SearchDoc = {
   id: string;
@@ -159,8 +160,10 @@ function normalizeSearchText(value: string): string {
 
 function normalizeMaterialPageLookupKeys(pathOrUrl: string): string[] {
   const input = pathOrUrl.trim();
-  const normalizedUrl = normalizeMaterialUrl(input, MATERIAL_BASE_URL);
-  const pathLike = normalizedUrl ? materialPagePath(normalizedUrl) : input.replace(/[?#].*$/, '').replace(/^\/+|\/+$/g, '');
+  const inputWithoutQuery = input.replace(/[?#].*$/, '').replace(/^\/+|\/+$/g, '');
+  const isCachePathInput = !ABSOLUTE_URL.test(input) && inputWithoutQuery.endsWith('.md');
+  const normalizedUrl = isCachePathInput ? null : normalizeMaterialUrl(input, MATERIAL_BASE_URL);
+  const pathLike = normalizedUrl ? materialPagePath(normalizedUrl) : inputWithoutQuery;
   const key = pathLike.replace(/\.md$/, '').replace(/^\/+|\/+$/g, '');
   const aliases = new Set([key]);
   const componentOverview = key.match(/^(components\/[^/]+)\/overview$/);
