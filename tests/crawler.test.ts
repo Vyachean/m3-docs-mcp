@@ -40,6 +40,41 @@ describe('extractMaterialPageFromHtml', () => {
     expect(page.section).toBe('root');
   });
 
+  it('derives fallback metadata from sanitized HTML', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <script><h1>Script title</h1><h2>Script heading</h2></script>
+        <style><h1>Style title</h1><h2>Style heading</h2></style>
+        <h1>Safe title</h1>
+        <h2>Safe heading</h2>
+        <p>Safe content.</p>
+      </main>
+    `, 'https://m3.material.io/foundations/safe-metadata', '2026-05-18T00:00:00.000Z');
+
+    expect(page.title).toBe('Safe title');
+    expect(page.headings).toEqual(['Safe title', 'Safe heading']);
+    expect(page.markdown).toContain('title: "Safe title"');
+    expect(page.markdown).not.toContain('Script title');
+    expect(page.markdown).not.toContain('Style title');
+  });
+
+  it('preserves legitimate JavaScript snippets while removing script tag contents', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Implementation</h1>
+        <p>Use the snippet below when wiring navigation.</p>
+        <pre><code>window.location = nextUrl;
+window.someConfig = { enabled: true };</code></pre>
+        <script>window.noise = true;</script>
+      </main>
+    `, 'https://m3.material.io/develop/implementation', '2026-05-18T00:00:00.000Z');
+
+    expect(page.markdown).toContain('window.location = nextUrl;');
+    expect(page.markdown).toContain('window.someConfig = { enabled: true };');
+    expect(page.text).toContain('window.location = nextUrl;');
+    expect(page.markdown).not.toContain('window.noise');
+  });
+
   it('removes repeated material UI chrome and preserves do/dont guidance text', () => {
     const page = extractMaterialPageFromHtml(`
       <main>
