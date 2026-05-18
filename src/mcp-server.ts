@@ -7,6 +7,7 @@ import { MaterialDocsStore } from './store.js';
 import type { CacheStatus } from './types.js';
 
 const MAX_CRAWL_CONCURRENCY = 8;
+const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -17,6 +18,9 @@ type StartupRefreshState = {
   completedAt: string | null;
   running: boolean;
   error: string | null;
+  elapsedMs: number | null;
+  maxPages: number;
+  concurrency: number;
 };
 
 type CacheAvailability = {
@@ -26,7 +30,7 @@ type CacheAvailability = {
 
 export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number; startupConcurrency?: number } = {}): Promise<void> {
   const cacheDir = options.cacheDir ?? getDefaultCacheDir();
-  const maxAgeHours = parsePositiveNumberOption('M3_DOCS_MAX_AGE_HOURS', options.maxAgeHours ?? process.env.M3_DOCS_MAX_AGE_HOURS, 24);
+  const maxAgeHours = parsePositiveNumberOption('M3_DOCS_MAX_AGE_HOURS', options.maxAgeHours ?? process.env.M3_DOCS_MAX_AGE_HOURS, DEFAULT_CACHE_MAX_AGE_HOURS);
   const autoUpdate = options.autoUpdate ?? process.env.M3_DOCS_AUTO_UPDATE !== 'false';
   const startupMaxPages = parsePositiveIntegerOption('M3_DOCS_STARTUP_MAX_PAGES', options.startupMaxPages ?? process.env.M3_DOCS_STARTUP_MAX_PAGES, 250);
   const startupConcurrency = parseBoundedPositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1, MAX_CRAWL_CONCURRENCY);
@@ -89,11 +93,13 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
 
 function createStartupRefreshController(store: MaterialDocsStore, maxPages: number, concurrency: number) {
   let refreshPromise: Promise<void> | null = null;
-  const state: StartupRefreshState = {
+  const state: Omit<StartupRefreshState, 'elapsedMs'> = {
     startedAt: null,
     completedAt: null,
     running: false,
-    error: null
+    error: null,
+    maxPages,
+    concurrency
   };
 
   async function refreshIfNeeded(maxAgeHours: number): Promise<void> {
@@ -123,9 +129,14 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
     return refreshPromise;
   }
 
+  function snapshot(): StartupRefreshState {
+    const elapsedMs = state.startedAt && state.running ? Date.now() - Date.parse(state.startedAt) : null;
+    return { ...state, elapsedMs };
+  }
+
   return {
     refreshIfNeeded,
-    state: () => ({ ...state })
+    state: snapshot
   };
 }
 
