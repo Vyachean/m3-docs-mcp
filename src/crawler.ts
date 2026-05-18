@@ -8,7 +8,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
-import type { CrawlOptions, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -494,6 +494,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   const maxPages = options.maxPages ?? 250;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
   const signal = options.signal;
+  const startedAt = new Date().toISOString();
+  const currentUrls = new Map<number, string>();
+  let lastSavedUrl: string | null = null;
+  let lastFailedUrl: string | null = null;
   throwIfAborted(signal);
 
   const browser = await launchChromium(options.headless ?? true);
@@ -509,17 +513,44 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   let activeWorkers = 0;
   let aborted = false;
 
+  const emitProgress = (running: boolean, error: string | null = null): void => {
+    const completedAt = running ? null : new Date().toISOString();
+    const progress: CrawlProgress = {
+      startedAt,
+      updatedAt: new Date().toISOString(),
+      completedAt,
+      running,
+      maxPages,
+      concurrency,
+      attemptedPageCount: seen.size,
+      savedPageCount: pages.length,
+      failedPageCount: failedUrls.length,
+      queuedPageCount: queue.length,
+      activeWorkerCount: activeWorkers,
+      currentUrls: Array.from(currentUrls.values()).sort(),
+      lastSavedUrl,
+      lastFailedUrl,
+      error
+    };
+    options.onProgress?.(progress);
+  };
+
   const onAbort = () => {
     aborted = true;
+    emitProgress(false, 'Material 3 crawl was interrupted.');
     wakeWorkers();
     void context.close().catch(() => undefined);
   };
   signal?.addEventListener('abort', onAbort, { once: true });
   enqueue(baseUrl);
   for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
+  emitProgress(true);
 
   try {
-    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+    await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
+  } catch (error) {
+    emitProgress(false, error instanceof Error ? error.message : String(error));
+    throw error;
   } finally {
     signal?.removeEventListener('abort', onAbort);
     wakeWorkers();
@@ -541,9 +572,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
+  emitProgress(false);
   return index;
 
-  async function worker(): Promise<void> {
+  async function worker(workerIndex: number): Promise<void> {
     while (!aborted) {
       throwIfAborted(signal);
       if (pages.length >= maxPages) return;
@@ -558,6 +590,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
 
       let page: Page | null = null;
       activeWorkers += 1;
+      currentUrls.set(workerIndex, url);
+      emitProgress(true);
       try {
         page = await context.newPage();
         throwIfAborted(signal);
@@ -565,9 +599,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       } catch (error) {
         if (signal?.aborted) throw error;
         failedUrls.push(url);
+        lastFailedUrl = url;
+        emitProgress(true);
         console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
       } finally {
         activeWorkers -= 1;
+        currentUrls.delete(workerIndex);
+        emitProgress(true);
         await page?.close().catch(() => undefined);
         wakeWorkers();
       }
@@ -581,6 +619,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       queued.delete(queuedUrl);
       if (seen.has(queuedUrl)) continue;
       seen.add(queuedUrl);
+      emitProgress(true);
       return queuedUrl;
     }
     return null;
@@ -589,6 +628,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   async function crawlPage(page: Page, url: string): Promise<void> {
     const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
     if (finalUrl !== url) seen.add(finalUrl);
+    currentUrls.set(currentUrls.get(0) === url ? 0 : Array.from(currentUrls.entries()).find(([, current]) => current === url)?.[0] ?? 0, finalUrl);
+    emitProgress(true);
     await expandMainContent(page);
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'content expansion');
     await scrollPage(page);
@@ -600,15 +641,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     if (suspiciousResult) {
       suspiciousPages.push(suspiciousResult);
       failedUrls.push(url);
+      lastFailedUrl = url;
+      emitProgress(true);
       console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
     } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
       pages.push(materialPage);
+      lastSavedUrl = finalUrl;
       writtenPaths.add(materialPage.path);
       await writePage(materialPage, cacheDir);
+      emitProgress(true);
     }
 
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
     for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+    emitProgress(true);
   }
 
   function enqueue(raw: string): void {
@@ -618,6 +664,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     queue.push(link);
     queue.sort(compareMaterialCrawlPriority);
     queued.add(link);
+    emitProgress(true);
     wakeWorkers();
   }
 
