@@ -31,6 +31,12 @@ If a package manager skips lifecycle scripts or the browser cache is removed, ru
 npx -y m3-docs-mcp install-browser
 ```
 
+On Linux, Chromium may also need system packages. Use this variant when Playwright reports missing host dependencies:
+
+```bash
+npx -y m3-docs-mcp install-browser --with-deps
+```
+
 On startup, the server checks the local cache. If the cache is missing or stale, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
 
 Manual refresh is still available:
@@ -61,7 +67,9 @@ npx -y m3-docs-mcp status
 npx -y m3-docs-mcp update
 npx -y m3-docs-mcp update --max-pages 500
 npx -y m3-docs-mcp update --min-pages 25
+npx -y m3-docs-mcp update --force
 npx -y m3-docs-mcp install-browser
+npx -y m3-docs-mcp install-browser --with-deps
 npx -y m3-docs-mcp serve
 npx -y m3-docs-mcp serve --max-age-hours 12
 npx -y m3-docs-mcp serve --startup-max-pages 500
@@ -69,6 +77,8 @@ npx -y m3-docs-mcp serve --no-auto-update
 ```
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
+
+`update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, or more than 20% failed attempted pages after at least 10 attempts. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 
@@ -90,7 +100,7 @@ Override:
 M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 ```
 
-Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
+Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
 ## MCP tools
 
