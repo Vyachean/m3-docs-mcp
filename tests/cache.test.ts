@@ -65,7 +65,7 @@ describe('cache helpers', () => {
 
   it('creates cache directories', async () => {
     await ensureCacheDirs(cacheDir);
-    await expect(stat(pagesDir(cacheDir))).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    expect((await stat(pagesDir(cacheDir))).isDirectory()).toBe(true);
     expect(await cacheAgeMs(cacheDir)).toBeNull();
   });
 
@@ -145,7 +145,7 @@ describe('cache helpers', () => {
     const stagingDir = await createStagingCacheDir(cacheDir);
     expect(path.dirname(stagingDir)).toBe(path.dirname(cacheDir));
     expect(path.basename(stagingDir)).toMatch(/^\.m3-docs-mcp-staging-/);
-    await expect(stat(stagingDir)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    expect((await stat(stagingDir)).isDirectory()).toBe(true);
     await rm(stagingDir, { recursive: true, force: true });
   });
 
