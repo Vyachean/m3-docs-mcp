@@ -72,10 +72,11 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), autoUpdate });
   });
 
-  server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation.', {
-    maxPages: z.number().int().min(1).max(1000).optional()
-  }, async ({ maxPages }) => {
-    return jsonText(await store.refresh(maxPages));
+  server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
+    maxPages: z.number().int().min(1).max(1000).optional(),
+    force: z.boolean().default(false)
+  }, async ({ maxPages, force }) => {
+    return jsonText(await store.refresh(maxPages, force));
   });
 
   const transport = new StdioServerTransport();
