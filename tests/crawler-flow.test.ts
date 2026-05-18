@@ -28,6 +28,9 @@ const playwrightMock = vi.hoisted(() => {
 
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
+    waitForSelector: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
@@ -46,7 +49,8 @@ const playwrightMock = vi.hoisted(() => {
   return {
     chromium: { launch: vi.fn(async () => browser) },
     browser,
-    page
+    page,
+    pagesByUrl
   };
 });
 
@@ -84,7 +88,21 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.chromium.launch.mockClear();
     playwrightMock.browser.close.mockClear();
     playwrightMock.page.goto.mockClear();
+    playwrightMock.page.waitForSelector.mockClear();
+    playwrightMock.page.waitForFunction.mockClear();
+    playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [
+      'https://m3.material.io/components/dialogs/overview?tab=usage#actions',
+      'https://example.com/external',
+      'https://m3.material.io/assets/logo.svg'
+    ];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs/overview'] = {
+      html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
+      title: 'Dialogs',
+      headings: ['Dialogs', 'Usage'],
+      links: []
+    };
   });
 
   afterEach(async () => {
@@ -95,9 +113,12 @@ describe('crawlMaterialDocs', () => {
     const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 });
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledWith({ headless: true });
-    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'networkidle', timeout: 45000 });
-    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'networkidle', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://example.com/external', expect.anything());
+    expect(playwrightMock.page.waitForSelector).toHaveBeenCalled();
+    expect(playwrightMock.page.waitForFunction).toHaveBeenCalled();
+    expect(playwrightMock.page.close).toHaveBeenCalledTimes(2);
     expect(playwrightMock.browser.close).toHaveBeenCalledTimes(1);
 
     expect(index).toMatchObject({
@@ -105,7 +126,15 @@ describe('crawlMaterialDocs', () => {
       pageCount: 2,
       attemptedPageCount: 2,
       failedPageCount: 0,
-      failedUrls: []
+      failedUrls: [],
+      qualityReport: {
+        duplicateContent: [],
+        suspiciousPages: [],
+        pagesBySection: {
+          root: 1,
+          'components/dialogs': 1
+        }
+      }
     });
     expect(index.pages.map((page) => page.path).sort()).toEqual(['components/dialogs/overview.md', 'index.md']);
     expect(index.pages.find((page) => page.path === 'components/dialogs/overview.md')).toMatchObject({
@@ -116,6 +145,20 @@ describe('crawlMaterialDocs', () => {
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
+  });
+
+  it('rejects component routes that render the parent Components page', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
+      html: '<h1>Components</h1><p>Components are interactive building blocks.</p><h2>Buttons</h2><p>Buttons prompt most actions in a UI.</p>',
+      title: 'Components',
+      headings: ['Components', 'Buttons'],
+      links: []
+    };
+
+    await expect(crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 })).rejects.toThrow('below the required minimum');
+
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons.md'), 'utf8')).rejects.toThrow();
   });
 
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
