@@ -39,11 +39,11 @@ program.command('update')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
   .action(async (options) => {
-    const abortController = new AbortController();
-    const removeSignalHandlers = installAbortSignalHandlers(abortController);
     const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
     const concurrency = parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY);
+    const abortController = new AbortController();
+    const removeSignalHandlers = installAbortSignalHandlers(abortController);
     console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
