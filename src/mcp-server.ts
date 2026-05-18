@@ -2,12 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
+import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
-import type { CacheStatus } from './types.js';
-
-const MAX_CRAWL_CONCURRENCY = 8;
-const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
+import type { CacheStatus, CrawlProgress } from './types.js';
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -21,6 +19,7 @@ type StartupRefreshState = {
   elapsedMs: number | null;
   maxPages: number;
   concurrency: number;
+  progress: CrawlProgress | null;
 };
 
 type CacheAvailability = {
@@ -99,7 +98,8 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
     running: false,
     error: null,
     maxPages,
-    concurrency
+    concurrency,
+    progress: null
   };
 
   async function refreshIfNeeded(maxAgeHours: number): Promise<void> {
@@ -114,7 +114,18 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
     state.completedAt = null;
     state.running = true;
     state.error = null;
-    refreshPromise = store.refresh({ maxPages, concurrency })
+    state.progress = null;
+    refreshPromise = store.refresh({
+      maxPages,
+      concurrency,
+      onProgress: (progress) => {
+        state.progress = progress;
+        state.startedAt = progress.startedAt;
+        state.completedAt = progress.completedAt;
+        state.running = progress.running;
+        state.error = progress.error;
+      }
+    })
       .then(() => {
         state.completedAt = new Date().toISOString();
       })
@@ -130,7 +141,9 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
   }
 
   function snapshot(): StartupRefreshState {
-    const elapsedMs = state.startedAt && state.running ? Date.now() - Date.parse(state.startedAt) : null;
+    const elapsedMs = state.progress
+      ? Date.parse(state.progress.updatedAt) - Date.parse(state.progress.startedAt)
+      : state.startedAt && state.running ? Date.now() - Date.parse(state.startedAt) : null;
     return { ...state, elapsedMs };
   }
 
