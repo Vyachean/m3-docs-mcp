@@ -163,7 +163,7 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     attemptedPageCount: index.attemptedPageCount ?? index.pageCount ?? pages.length,
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
-    qualityReport: index.qualityReport,
+    ...(index.qualityReport ? { qualityReport: index.qualityReport } : {}),
     pages
   };
 }
