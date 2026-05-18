@@ -1,13 +1,15 @@
 import { execFile } from 'node:child_process';
+import { rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
-import { writeIndex, writePage, getDefaultCacheDir } from './cache.js';
+import { assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, MaterialIndex, MaterialPage } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
+const DEFAULT_MIN_PAGE_COUNT = 10;
 
 async function launchChromium(headless: boolean): Promise<Browser> {
   try {
@@ -95,8 +97,22 @@ async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
 }
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
+  const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
+
+  try {
+    const index = await crawlIntoCache(stagingCacheDir, options);
+    assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
+    await promoteStagingCache(stagingCacheDir, targetCacheDir);
+    return index;
+  } catch (error) {
+    await rm(stagingCacheDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<MaterialIndex> {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
-  const cacheDir = options.cacheDir ?? getDefaultCacheDir();
   const maxPages = options.maxPages ?? 250;
   const browser = await launchChromium(options.headless ?? true);
   const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
@@ -104,6 +120,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const queue: string[] = [baseUrl];
   const seen = new Set<string>();
   const pages: MaterialPage[] = [];
+  const failedUrls: string[] = [];
 
   try {
     while (queue.length > 0 && pages.length < maxPages) {
@@ -123,6 +140,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
           if (!seen.has(link) && queue.length + seen.size < maxPages * 4) queue.push(link);
         }
       } catch (error) {
+        failedUrls.push(url);
         console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
       }
     }
@@ -132,9 +150,12 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
 
   const capturedAt = new Date().toISOString();
   const index: MaterialIndex = {
-    source: DEFAULT_BASE_URL,
+    source: baseUrl,
     capturedAt,
     pageCount: pages.length,
+    attemptedPageCount: seen.size,
+    failedPageCount: failedUrls.length,
+    failedUrls,
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
