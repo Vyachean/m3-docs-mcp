@@ -1,11 +1,13 @@
 import crypto from 'node:crypto';
 
 const SKIP_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|xml|json|txt)$/i;
+const ABSOLUTE_OR_ROOT_RELATIVE_URL = /^[a-z][a-z\d+.-]*:|^\/|^[?#]/i;
 
 export function normalizeMaterialUrl(raw: string, baseUrl: string): string | null {
   try {
-    const url = new URL(raw, baseUrl);
     const base = new URL(baseUrl);
+    const resolutionBase = ABSOLUTE_OR_ROOT_RELATIVE_URL.test(raw) ? baseUrl : `${base.origin}/`;
+    const url = new URL(raw, resolutionBase);
     if (url.origin !== base.origin) return null;
     url.hash = '';
     url.search = '';
