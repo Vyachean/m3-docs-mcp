@@ -1,0 +1,39 @@
+name: Patch PR 10
+
+on:
+  push:
+    branches:
+      - fix/markdown-tables-token-viewer-images
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    if: github.actor == 'Vyachean'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/markdown-tables-token-viewer-images
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch TypeScript narrowing issue
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/crawler.ts')
+          text = path.read_text()
+          old = "const html = 'innerHTML' in element ? (element as Element & { innerHTML: string }).innerHTML : element.textContent ?? '';"
+          new = "const html = element.innerHTML || element.textContent || '';"
+          if old not in text:
+              raise SystemExit('target line not found')
+          path.write_text(text.replace(old, new, 1))
+          Path('.github/workflows/patch-pr-10.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/crawler.ts .github/workflows/patch-pr-10.yml
+          git commit -m "Fix crawler table cell extraction type issue"
+          git push origin HEAD:fix/markdown-tables-token-viewer-images
