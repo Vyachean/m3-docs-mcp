@@ -97,6 +97,14 @@ describe('cache helpers', () => {
     expect(age).toBeLessThan(60 * 1000);
   });
 
+  it('clamps cache age to zero when filesystem mtime is slightly ahead of Date.now', async () => {
+    await writeIndex(index, cacheDir);
+    const futureDate = new Date(Date.now() + 1000);
+    await utimes(indexPath(cacheDir), futureDate, futureDate);
+
+    await expect(cacheAgeMs(cacheDir)).resolves.toBe(0);
+  });
+
   it('writes nested markdown pages and reads them back as utf8', async () => {
     const unicodePage = { ...page, markdown: '# Dialogs\n\nПример с Unicode и эмодзи ✓\n' };
     await writePage(unicodePage, cacheDir);
