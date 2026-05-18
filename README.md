@@ -8,20 +8,9 @@ The package does **not** vendor a full copy of Material documentation. It crawls
 
 `m3.material.io` is a JavaScript application. Simple fetch/curl-based agents often cannot read the documentation reliably. This server makes the docs available through deterministic MCP tools backed by a local cache.
 
-## Install
+## Recommended setup
 
-```bash
-npm install -g m3-docs-mcp
-npx playwright install chromium
-```
-
-Or use it without global install:
-
-```bash
-npx -y m3-docs-mcp serve
-```
-
-## MCP client config
+Add the server to your MCP client config. No global install is required.
 
 ```json
 {
@@ -34,16 +23,37 @@ npx -y m3-docs-mcp serve
 }
 ```
 
+The first run may take longer because `npx` downloads the package, the server installs Playwright Chromium if it is missing, and the Material docs cache is created locally.
+
 By default the server refreshes the cache when it is older than 24 hours.
 
-## CLI
+## Use directly from GitHub before npm publishing
+
+```json
+{
+  "mcpServers": {
+    "material3": {
+      "command": "npx",
+      "args": ["-y", "github:Vyachean/m3-docs-mcp", "serve"]
+    }
+  }
+}
+```
+
+## Optional CLI usage
 
 ```bash
-m3-docs-mcp status
-m3-docs-mcp update
-m3-docs-mcp update --max-pages 500
-m3-docs-mcp serve
-m3-docs-mcp serve --max-age-hours 12
+npx -y m3-docs-mcp status
+npx -y m3-docs-mcp update
+npx -y m3-docs-mcp update --max-pages 500
+npx -y m3-docs-mcp serve
+npx -y m3-docs-mcp serve --max-age-hours 12
+```
+
+Global install is optional and mainly useful for development or repeated manual diagnostics:
+
+```bash
+npm install -g m3-docs-mcp
 ```
 
 ## Cache location
@@ -57,7 +67,7 @@ Default cache locations:
 Override:
 
 ```bash
-M3_DOCS_CACHE_DIR=/path/to/cache m3-docs-mcp serve
+M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 ```
 
 ## MCP tools
