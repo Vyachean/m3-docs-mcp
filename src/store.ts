@@ -60,8 +60,11 @@ export class MaterialDocsStore {
 
   async getPage(pathOrUrl: string): Promise<{ meta: MaterialIndex['pages'][number]; markdown: string }> {
     const index = await this.getIndex();
-    const lookupKey = normalizeMaterialPageLookupKey(pathOrUrl);
-    const page = index.pages.find((p) => normalizeMaterialPageLookupKey(p.path) === lookupKey || normalizeMaterialPageLookupKey(p.url) === lookupKey);
+    const lookupKeys = normalizeMaterialPageLookupKeys(pathOrUrl);
+    const page = index.pages.find((p) => {
+      const pageKeys = new Set([...normalizeMaterialPageLookupKeys(p.path), ...normalizeMaterialPageLookupKeys(p.url)]);
+      return lookupKeys.some((key) => pageKeys.has(key));
+    });
     if (!page) throw new Error(`Material 3 page not found: ${pathOrUrl}`);
     return { meta: page, markdown: await readPage(page.path, this.cacheDir) };
   }
@@ -154,9 +157,15 @@ function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function normalizeMaterialPageLookupKey(pathOrUrl: string): string {
+function normalizeMaterialPageLookupKeys(pathOrUrl: string): string[] {
   const input = pathOrUrl.trim();
   const normalizedUrl = normalizeMaterialUrl(input, MATERIAL_BASE_URL);
   const pathLike = normalizedUrl ? materialPagePath(normalizedUrl) : input.replace(/[?#].*$/, '').replace(/^\/+|\/+$/g, '');
-  return pathLike.replace(/\.md$/, '').replace(/^\/+|\/+$/g, '');
+  const key = pathLike.replace(/\.md$/, '').replace(/^\/+|\/+$/g, '');
+  const aliases = new Set([key]);
+  const componentOverview = key.match(/^(components\/[^/]+)\/overview$/);
+  if (componentOverview?.[1]) aliases.add(componentOverview[1]);
+  const componentLanding = key.match(/^(components\/[^/]+)$/);
+  if (componentLanding?.[1]) aliases.add(`${componentLanding[1]}/overview`);
+  return Array.from(aliases);
 }
