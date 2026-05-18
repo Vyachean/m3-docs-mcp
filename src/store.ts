@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises';
 import MiniSearch from 'minisearch';
 import { cacheStatus, getDefaultCacheDir, indexPath, readIndex, readPage } from './cache.js';
+import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
 import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
@@ -51,7 +52,7 @@ export class MaterialDocsStore {
     return this.ensureAvailable();
   }
 
-  async getStatus(maxAgeHours = 24): Promise<CacheStatus> {
+  async getStatus(maxAgeHours = DEFAULT_CACHE_MAX_AGE_HOURS): Promise<CacheStatus> {
     return cacheStatus(this.cacheDir, maxAgeHours);
   }
 
