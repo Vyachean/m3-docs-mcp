@@ -76,7 +76,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     maxPages: z.number().int().min(1).max(1000).optional(),
     force: z.boolean().default(false)
   }, async ({ maxPages, force }) => {
-    return jsonText(await store.refresh(maxPages, force));
+    return jsonText(await store.refresh(maxPages, force ?? false));
   });
 
   const transport = new StdioServerTransport();
