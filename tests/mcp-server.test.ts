@@ -209,7 +209,8 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 125 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith({ maxPages: 125, concurrency: 1 }));
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({ maxPages: 125, concurrency: 1 })));
+    expect(store.refresh.mock.calls[0]?.[0]?.onProgress).toEqual(expect.any(Function));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 5 });
 
@@ -241,7 +242,8 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 250 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith({ maxPages: 250, concurrency: 1 }));
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({ maxPages: 250, concurrency: 1 })));
+    expect(store.refresh.mock.calls[0]?.[0]?.onProgress).toEqual(expect.any(Function));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
