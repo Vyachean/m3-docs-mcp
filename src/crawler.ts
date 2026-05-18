@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
@@ -28,6 +29,30 @@ type ExtractedContent = {
   headings: string[];
 };
 
+const NOISE_ONLY_MARKDOWN_LINES = new Set([
+  'close',
+  'link',
+  'pause',
+  'search',
+  'resources',
+  'folderenabled',
+  'keyboard_arrow_down',
+  'visibilitygrid_viewexpand_all',
+  'copy linklink copied',
+  'on this page',
+  'token',
+  'type',
+  'resource',
+  'status'
+]);
+
+const TOKEN_BROWSER_NOISE_PATTERNS = [
+  /arrowdropdown/i,
+  /keyboardarrowdown/i,
+  /gridview/i,
+  /folderenabled/i
+];
+
 type StableSnapshot = {
   url: string;
   title: string;
@@ -35,8 +60,22 @@ type StableSnapshot = {
 };
 
 export async function installPlaywrightChromium(withDependencies = false): Promise<void> {
-  const playwrightCli = require.resolve('playwright/cli');
+  const playwrightCli = resolvePlaywrightCliPath();
   await execFileAsync(process.execPath, [playwrightCli, 'install', ...(withDependencies ? ['--with-deps'] : []), 'chromium']);
+}
+
+export function resolvePlaywrightCliPath(): string {
+  const playwrightPackageJson = require.resolve('playwright/package.json');
+  const playwrightPackage = require(playwrightPackageJson) as { bin?: string | Record<string, string> };
+  const relativeCliPath = typeof playwrightPackage.bin === 'string'
+    ? playwrightPackage.bin
+    : playwrightPackage.bin?.playwright;
+
+  if (!relativeCliPath) {
+    throw new Error('Could not resolve the Playwright CLI entrypoint from playwright/package.json.');
+  }
+
+  return path.join(path.dirname(playwrightPackageJson), relativeCliPath);
 }
 
 async function launchChromium(headless: boolean): Promise<Browser> {
@@ -200,10 +239,15 @@ function abortError(signal: AbortSignal): Error {
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   const relPath = materialPagePath(url);
+  const sanitizedHtml = stripUnsafeHtml(html);
   const title = metadata?.title?.trim() || titleFromHtml(html) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(html);
-  const body = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
-  const text = stripHtml(html).replace(/\s+/g, ' ').trim();
+  const rawBody = turndown.turndown(sanitizedHtml)
+    .replace(/\bwindow\.[\w$.]+\s*=\s*[^;\n]+;?/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const body = postProcessMarkdown(rawBody);
+  const text = stripMarkdown(body).replace(/\s+/g, ' ').trim();
   const markdown = `---\ntitle: ${JSON.stringify(title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
   return {
     id: materialPageId(url),
@@ -218,12 +262,40 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   };
 }
 
+function stripUnsafeHtml(html: string): string {
+  return html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+}
+
 async function extract(page: Page, url: string): Promise<MaterialPage> {
   const content = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const clone = root.cloneNode(true) as HTMLElement;
     for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
       for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
+    }
+    for (const selector of ['nav', '[role="navigation"]', '[role="tablist"]', 'button', '[role="button"]', 'input', 'select']) {
+      for (const el of Array.from(clone.querySelectorAll(selector))) {
+        const text = el.textContent?.replace(/\s+/g, ' ').trim().toLowerCase() ?? '';
+        if (!text || text === 'copy link' || text === 'close' || text === 'search') el.remove();
+      }
+    }
+    const normalize = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim();
+    const isNoiseOnlyText = (value: string) => {
+      const text = normalize(value);
+      if (!text) return false;
+      if (text === 'on this page' || text === 'copy link' || text === 'link copied') return true;
+      if (/^resources[a-z0-9+]+$/i.test(text)) return true;
+      if (/^(link|pause|search|close)$/i.test(text)) return true;
+      if (/^(check|close) do(?:n['’]t)?$/i.test(text)) return true;
+      if (/^(infooverview|stylespecs|design_servicesguidelines|head_mounted_devicexr|accessibility_newaccessibility)$/i.test(text.replace(/[^a-z_]/g, ''))) return true;
+      return false;
+    };
+    for (const el of Array.from(clone.querySelectorAll<HTMLElement>('p, div, span, li, a'))) {
+      if (el.children.length > 0) continue;
+      if (isNoiseOnlyText(el.textContent ?? '')) el.remove();
     }
     for (const el of Array.from(clone.querySelectorAll<HTMLElement>('[style*="background-image"]'))) {
       const backgroundImage = el.style.backgroundImage;
@@ -238,6 +310,89 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
     };
   });
   return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
+}
+
+function postProcessMarkdown(markdown: string): string {
+  const lines = markdown
+    .replace(/\r\n/g, '\n')
+    .replace(/[^\S\n]+$/gm, '')
+    .replace(/\u200b/g, '')
+    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+)\)!\[\1\]\(([^)]*=s0)\)/g, '![$1]($3)')
+    .split('\n');
+
+  const cleaned: string[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = cleanMarkdownLine(lines[i] ?? '');
+    if (shouldDropMarkdownLine(line)) continue;
+
+    const previous = cleaned[cleaned.length - 1] ?? '';
+    if (!line && !previous) continue;
+    cleaned.push(line);
+  }
+
+  return pruneSpecsNoiseSections(cleaned).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function cleanMarkdownLine(line: string): string {
+  const trimmed = line.trim();
+  if (/^check\s+do$/i.test(trimmed)) return 'Do';
+  if (/^close\s+don['’]?t$/i.test(trimmed)) return `Don't`;
+  return trimmed
+    .replace(/\s+([.,;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ');
+}
+
+function shouldDropMarkdownLine(line: string): boolean {
+  if (!line) return false;
+
+  const normalized = normalizeNoiseText(line);
+  if (NOISE_ONLY_MARKDOWN_LINES.has(normalized)) return true;
+  if (/^resources[a-z0-9+]+$/i.test(normalized)) return true;
+  if (/^\[(infooverview|stylespecs|design_servicesguidelines|head_mounted_devicexr|accessibility_newaccessibility)/i.test(line)) return true;
+  if (TOKEN_BROWSER_NOISE_PATTERNS.some((pattern) => pattern.test(normalized)) && normalized.length < 80) return true;
+  return false;
+}
+
+function pruneSpecsNoiseSections(lines: string[]): string[] {
+  const output: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i] ?? '';
+    output.push(line);
+    if (!/^##\s+Tokens\s+&?\s+specs$/i.test(line)) {
+      i += 1;
+      continue;
+    }
+
+    i += 1;
+    while (i < lines.length && !/^##\s+/.test(lines[i] ?? '')) {
+      const current = lines[i] ?? '';
+      const normalized = normalizeNoiseText(current);
+      const isStructuredValueLine = /^(attribute|value)$/i.test(current) || /\d+(dp|x\d+dp)\b/i.test(current) || /max-width/i.test(current);
+      const isMeaningfulNarrative = current.startsWith('Browse the component') || current.startsWith('Color values are implemented');
+      if (!current || isStructuredValueLine || isMeaningfulNarrative || /^!\[/.test(current)) output.push(current);
+      i += 1;
+    }
+  }
+
+  return output.filter((line, index, arr) => {
+    if (line) return true;
+    return (arr[index - 1] ?? '') !== '' && (arr[index + 1] ?? '') !== '';
+  });
+}
+
+function normalizeNoiseText(value: string): string {
+  return value.toLowerCase().replace(/[`*_~[\]()]|\\/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function stripMarkdown(markdown: string): string {
+  return markdown
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_`~]/g, '')
+    .replace(/\n{2,}/g, '\n');
 }
 
 export function normalizeMaterialCrawlUrl(raw: string, baseUrl: string): string | null {

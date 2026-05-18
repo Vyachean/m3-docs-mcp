@@ -137,11 +137,13 @@ describe('MaterialDocsStore', () => {
 
   it('lists discovered component slugs and ignores non-component pages', async () => {
     const rootPage = { ...buttonPage, id: 'root', path: 'index.md', section: 'root', title: 'Material 3' };
+    const componentListingPage = { ...buttonPage, id: 'all-buttons', path: 'components/all-buttons.md', section: 'components', title: 'All buttons' };
     const nestedNonComponentPage = { ...buttonPage, id: 'styles-buttons', path: 'styles/components/buttons.md', section: 'styles/components', title: 'Buttons style' };
-    await writeIndex(testIndex([dialogPage, buttonPage, rootPage, nestedNonComponentPage]), cacheDir);
+    await writeIndex(testIndex([dialogPage, buttonPage, rootPage, componentListingPage, nestedNonComponentPage]), cacheDir);
     await writePage(dialogPage, cacheDir);
     await writePage(buttonPage, cacheDir);
     await writePage(rootPage, cacheDir);
+    await writePage(componentListingPage, cacheDir);
     await writePage(nestedNonComponentPage, cacheDir);
 
     const store = new MaterialDocsStore(cacheDir);

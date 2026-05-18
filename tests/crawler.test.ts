@@ -1,5 +1,6 @@
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, extractMaterialPageFromHtml, materialCrawlCandidates, normalizeMaterialCrawlUrl, validateCrawledPage } from '../src/crawler.js';
+import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, extractMaterialPageFromHtml, materialCrawlCandidates, normalizeMaterialCrawlUrl, resolvePlaywrightCliPath, validateCrawledPage } from '../src/crawler.js';
 
 describe('extractMaterialPageFromHtml', () => {
   it('extracts metadata, readable text, and markdown from a Material documentation fixture', () => {
@@ -38,9 +39,84 @@ describe('extractMaterialPageFromHtml', () => {
     expect(page.path).toBe('foundations.md');
     expect(page.section).toBe('root');
   });
+
+  it('removes repeated material UI chrome and preserves do/dont guidance text', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>App bars</h1>
+        <p>App bars are placed at the top of the screen.</p>
+        <p>Resourcesflutterandroid+3</p>
+        <p>Close</p>
+        <p>[infoOverview](components/app-bars/overview)[styleSpecs](components/app-bars/specs)</p>
+        <p>On this page</p>
+        <p>link</p>
+        <p>Copy linkLink copied</p>
+        <h2>Usage</h2>
+        <p>Use an app bar to provide content and actions related to the current page.</p>
+        <p>check Do</p>
+        <p>Use a filled or tonal button for important actions</p>
+        <p>close Don’t</p>
+        <p>Don’t put multiple filled or tonal buttons in the app bar</p>
+      </main>
+    `, 'https://m3.material.io/components/app-bars/guidelines', '2026-05-18T00:00:00.000Z');
+
+    expect(page.markdown).toContain('# App bars');
+    expect(page.markdown).toContain('## Usage');
+    expect(page.markdown).toContain('Do');
+    expect(page.markdown).toContain(`Don't`);
+    expect(page.markdown).toContain('Use a filled or tonal button for important actions');
+    expect(page.markdown).not.toContain('Resourcesflutterandroid+3');
+    expect(page.markdown).not.toContain('Copy linkLink copied');
+    expect(page.markdown).not.toContain('On this page');
+    expect(page.markdown).not.toContain('[infoOverview]');
+    expect(page.text).toContain('Use an app bar to provide content and actions related to the current page.');
+    expect(page.text).not.toContain('Copy linkLink copied');
+  });
+
+  it('drops token-browser chrome while preserving narrative specs content and measurements', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Bottom sheets</h1>
+        <p>Bottom sheets show secondary content anchored to the bottom of the screen.</p>
+        <h2>Tokens and specs</h2>
+        <p>Browse the component elements, attributes, tokens, and their values.</p>
+        <p>Sheets - Bottom arrow_drop_down</p>
+        <p>search</p>
+        <p>visibilitygrid_viewexpand_all</p>
+        <p>Token</p>
+        <p>Default, Light arrow_drop_down</p>
+        <p>folderEnabled</p>
+        <p>keyboard_arrow_down</p>
+        <h2>Measurements</h2>
+        <p>Attribute</p>
+        <p>Value</p>
+        <p>Top margin</p>
+        <p>72dp</p>
+        <p>Width</p>
+        <p>Full width, up to max-width 640dp</p>
+      </main>
+    `, 'https://m3.material.io/components/bottom-sheets/specs', '2026-05-18T00:00:00.000Z');
+
+    expect(page.markdown).toContain('## Tokens and specs');
+    expect(page.markdown).toContain('Browse the component elements, attributes, tokens, and their values.');
+    expect(page.markdown).toContain('## Measurements');
+    expect(page.markdown).toContain('Top margin');
+    expect(page.markdown).toContain('72dp');
+    expect(page.markdown).toContain('Full width, up to max-width 640dp');
+    expect(page.markdown).not.toContain('arrow_drop_down');
+    expect(page.markdown).not.toContain('folderEnabled');
+    expect(page.markdown).not.toContain('visibilitygrid_viewexpand_all');
+    expect(page.markdown).not.toContain('\nToken\n');
+  });
 });
 
 describe('Material crawl URL handling', () => {
+  it('resolves the Playwright CLI from the package bin entry', () => {
+    const cliPath = resolvePlaywrightCliPath();
+
+    expect(cliPath).toBe(path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js'));
+  });
+
   it('normalizes crawl URLs without inventing route structure', () => {
     expect(normalizeMaterialCrawlUrl('/components/buttons?tab=usage#actions', 'https://m3.material.io')).toBe('https://m3.material.io/components/buttons');
     expect(normalizeMaterialCrawlUrl('https://m3.material.io/components/dialogs/', 'https://m3.material.io')).toBe('https://m3.material.io/components/dialogs');

@@ -20,7 +20,7 @@ type SearchDoc = {
 
 export class MaterialDocsStore {
   private index: MaterialIndex | null = null;
-  private indexMtimeMs: number | null = null;
+  private indexFingerprint: string | null = null;
   private search: MiniSearch<SearchDoc> | null = null;
   private refreshPromise: Promise<MaterialIndex> | null = null;
 
@@ -36,7 +36,7 @@ export class MaterialDocsStore {
     this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options })
       .then((index) => {
         this.index = index;
-        this.indexMtimeMs = null;
+        this.indexFingerprint = null;
         this.search = null;
         return index;
       })
@@ -85,7 +85,7 @@ export class MaterialDocsStore {
     const index = await this.getIndex();
     const components = new Set<string>();
     for (const page of index.pages) {
-      const match = page.path.match(/^components\/([^/]+)/);
+      const match = page.path.match(/^components\/([^/]+)\//);
       if (match?.[1]) components.add(match[1]);
     }
     return Array.from(components).sort();
@@ -124,24 +124,25 @@ export class MaterialDocsStore {
       mtimeMs = (await stat(indexPath(this.cacheDir))).mtimeMs;
     } catch {
       this.index = null;
-      this.indexMtimeMs = null;
+      this.indexFingerprint = null;
       this.search = null;
       throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
     }
-
-    if (this.index && this.indexMtimeMs === mtimeMs) return this.index;
 
     const index = await readIndex(this.cacheDir);
     if (!index) {
       this.index = null;
-      this.indexMtimeMs = null;
+      this.indexFingerprint = null;
       this.search = null;
       throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
     }
 
-    if (this.indexMtimeMs !== null && this.indexMtimeMs !== mtimeMs) this.search = null;
+    const fingerprint = `${mtimeMs}:${JSON.stringify(index)}`;
+    if (this.index && this.indexFingerprint === fingerprint) return this.index;
+
+    if (this.indexFingerprint !== null && this.indexFingerprint !== fingerprint) this.search = null;
     this.index = index;
-    this.indexMtimeMs = mtimeMs;
+    this.indexFingerprint = fingerprint;
     return index;
   }
 
