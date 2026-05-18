@@ -13,7 +13,9 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
+const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
+const CONTENT_PREVIEW_LENGTH = 800;
 const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
 const COMPONENTS_WITHOUT_OVERVIEW = new Set(['all-buttons']);
 const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
@@ -107,7 +109,7 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
     const title = normalize(root.querySelector('h1')?.textContent ?? '');
     const text = normalize(root.textContent ?? '');
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    if (text.length < 80 || !title) return false;
+    if (text.length < MIN_PAGE_TEXT_LENGTH || !title) return false;
     if (!componentSlug) return true;
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
@@ -216,7 +218,7 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
   const segments = path.split('/').filter(Boolean);
   const title = normalizeText(page.title);
   const firstHeading = normalizeText(page.headings[0] ?? page.title);
-  const contentPreview = normalizeText(`${page.title} ${page.headings.join(' ')} ${page.text.slice(0, 800)}`);
+  const contentPreview = normalizeText(`${page.title} ${page.headings.join(' ')} ${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`);
 
   if (segments[0] === 'components' && segments.length >= 2) {
     const componentSlug = segments[1] ?? '';
@@ -232,8 +234,11 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
   return null;
 }
 
-export function createCrawlQualityReport(pages: MaterialPage[]): CrawlQualityReport {
-  const suspiciousPages = pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page));
+export function createCrawlQualityReport(pages: MaterialPage[], rejectedSuspiciousPages: SuspiciousCrawlPage[] = []): CrawlQualityReport {
+  const suspiciousPages = [
+    ...rejectedSuspiciousPages,
+    ...pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page))
+  ];
   const shortPages: ShortCrawlPage[] = pages
     .filter((page) => page.text.length < SHORT_PAGE_TEXT_LENGTH)
     .map((page) => ({ url: page.url, path: page.path, title: page.title, textLength: page.text.length }));
@@ -273,6 +278,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   const seen = new Set<string>();
   const pages: MaterialPage[] = [];
   const failedUrls: string[] = [];
+  const suspiciousPages: SuspiciousCrawlPage[] = [];
 
   try {
     while (queue.length > 0 && pages.length < maxPages) {
@@ -287,11 +293,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
         await scrollPage(page);
         await waitForStableMaterialSnapshot(page);
         const materialPage = await extract(page, finalUrl);
-        const suspiciousPage = validateCrawledPage(materialPage);
-        if (suspiciousPage) {
+        const suspiciousResult = validateCrawledPage(materialPage);
+        if (suspiciousResult) {
+          suspiciousPages.push(suspiciousResult);
           failedUrls.push(url);
-          console.error(`Rejected crawled ${url}: ${suspiciousPage.reason}`);
-        } else if (materialPage.text.length > 80) {
+          console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
+        } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH) {
           pages.push(materialPage);
           await writePage(materialPage, cacheDir);
         }
@@ -310,7 +317,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   }
 
   const capturedAt = new Date().toISOString();
-  const qualityReport = createCrawlQualityReport(pages);
+  const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,
