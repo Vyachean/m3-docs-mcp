@@ -4,6 +4,7 @@ import { parsePositiveIntegerOption, parsePositiveNumberOption } from '../src/op
 describe('numeric option validation', () => {
   it('parses positive integer options', () => {
     expect(parsePositiveIntegerOption('--max-pages', '250')).toBe(250);
+    expect(parsePositiveIntegerOption('--max-pages', '1')).toBe(1);
     expect(parsePositiveIntegerOption('--max-pages', 25)).toBe(25);
     expect(parsePositiveIntegerOption('--max-pages', undefined, 10)).toBe(10);
   });
@@ -14,6 +15,7 @@ describe('numeric option validation', () => {
     expect(() => parsePositiveIntegerOption('--max-pages', '1.5')).toThrow('--max-pages must be a positive integer.');
     expect(() => parsePositiveIntegerOption('--max-pages', 'abc')).toThrow('--max-pages must be a finite number.');
     expect(() => parsePositiveIntegerOption('--max-pages', '')).toThrow('--max-pages must be a finite number.');
+    expect(() => parsePositiveIntegerOption('--max-pages', '   ')).toThrow('--max-pages must be a finite number.');
   });
 
   it('parses positive number options', () => {
