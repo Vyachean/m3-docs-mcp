@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
-import type { CacheStatus, MaterialIndex, SearchResult } from '../src/types.js';
+import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from '../src/types.js';
 
 type ToolSchema = Record<string, ZodTypeAny>;
 
@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => {
   type MockStore = {
     cacheDir?: string;
     getStatus: ReturnType<typeof vi.fn<(maxAgeHours?: number) => Promise<CacheStatus>>>;
-    refresh: ReturnType<typeof vi.fn<(maxPages?: number, force?: boolean) => Promise<MaterialIndex>>>;
+    refresh: ReturnType<typeof vi.fn<(options?: RefreshOptions) => Promise<MaterialIndex>>>;
     searchDocs: ReturnType<typeof vi.fn<(query: string, limit: number) => Promise<SearchResult[]>>>;
     getPage: ReturnType<typeof vi.fn>;
     getComponentDocs: ReturnType<typeof vi.fn>;
@@ -130,6 +130,7 @@ describe('serveMcp', () => {
     delete process.env.M3_DOCS_AUTO_UPDATE;
     delete process.env.M3_DOCS_MAX_AGE_HOURS;
     delete process.env.M3_DOCS_STARTUP_MAX_PAGES;
+    delete process.env.M3_DOCS_STARTUP_CONCURRENCY;
   });
 
   it('registers the server metadata, expected tools, and default cache directory', async () => {
@@ -156,6 +157,7 @@ describe('serveMcp', () => {
     process.env.M3_DOCS_AUTO_UPDATE = 'false';
     process.env.M3_DOCS_MAX_AGE_HOURS = '12';
     process.env.M3_DOCS_STARTUP_MAX_PAGES = '33';
+    process.env.M3_DOCS_STARTUP_CONCURRENCY = '3';
     const store = mocks.makeStore(mocks.makeStatus({ isFresh: false }));
     mocks.nextStores.push(store);
 
@@ -189,6 +191,9 @@ describe('serveMcp', () => {
     expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1000).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1001).success).toBe(false);
+    expect(refreshSchema.concurrency.safeParse(1).success).toBe(true);
+    expect(refreshSchema.concurrency.safeParse(8).success).toBe(true);
+    expect(refreshSchema.concurrency.safeParse(9).success).toBe(false);
     expect(refreshSchema.force.safeParse(true).success).toBe(true);
   });
 
@@ -199,7 +204,7 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 125 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(125));
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith({ maxPages: 125, concurrency: 1 }));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 5 });
 
@@ -230,8 +235,8 @@ describe('serveMcp', () => {
     store.searchDocs.mockResolvedValue([searchResult]);
     mocks.nextStores.push(store);
 
-    await serveMcp({ cacheDir: '/cache', startupMaxPages: 250 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(250));
+    await serveMcp({ cacheDir: '/cache', startupMaxPages: 250, startupConcurrency: 4 });
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith({ maxPages: 250, concurrency: 4 }));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
@@ -252,7 +257,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
-    expect(store.refresh).toHaveBeenCalledWith(77, false);
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, force: false });
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
   });
 
@@ -263,8 +268,8 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
-    await callTool('refresh_material_docs', { maxPages: 77, force: true });
+    await callTool('refresh_material_docs', { maxPages: 77, concurrency: 5, force: true });
 
-    expect(store.refresh).toHaveBeenCalledWith(77, true);
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: 5, force: true });
   });
 });
