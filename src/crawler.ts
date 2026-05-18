@@ -259,7 +259,7 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   addMaterialMarkdownRules(turndown);
 
   const relPath = materialPagePath(url);
-  const sanitizedHtml = stripUnsafeHtml(html);
+  const sanitizedHtml = preserveTokenViewerTextLines(stripUnsafeHtml(html));
   const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
   const rawBody = turndown.turndown(sanitizedHtml)
@@ -284,28 +284,29 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
 function addMaterialMarkdownRules(turndown: TurndownService): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
-    replacement: (_content, node) => tableElementToMarkdown(turndown, node as unknown as Element)
+    replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
   });
 
   turndown.addRule('materialTokenViewer', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'token-viewer',
-    replacement: (_content, node) => tokenViewerElementToMarkdown(turndown, node as unknown as Element)
+    replacement: (_content, node) => tokenViewerElementToMarkdown(turndown, node as Element)
   });
 
   turndown.addRule('materialBackgroundImage', {
-    filter: (node) => isElementNode(node) && Boolean((node as unknown as Element).getAttribute('data-background-image')),
+    filter: (node) => isElementNode(node) && Boolean(node.getAttribute('data-background-image')),
     replacement: (content, node) => {
-      const element = node as unknown as Element;
-      const imageUrl = element.getAttribute('data-background-image')?.trim();
+      if (!isElementNode(node)) return content;
+      const imageUrl = node.getAttribute('data-background-image')?.trim();
       if (!imageUrl) return content;
-      const alt = normalizeInlineText(content || element.textContent || '').slice(0, 120);
+      const alt = normalizeInlineText(content || node.textContent || '').slice(0, 120);
       return `\n\n![${escapeMarkdownAttribute(alt)}](${preferLargeImageUrl(imageUrl)})\n\n`;
     }
   });
 }
 
 function tableElementToMarkdown(turndown: TurndownService, table: Element): string {
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const rows = Array.from(table.querySelectorAll('tr'))
+    .filter((row) => row.closest('table') === table);
   const markdownRows = rows
     .map((row) => cellsFromRow(turndown, row))
     .filter((cells) => cells.some(Boolean));
@@ -314,6 +315,7 @@ function tableElementToMarkdown(turndown: TurndownService, table: Element): stri
 
 function cellsFromRow(turndown: TurndownService, row: Element): string[] {
   return Array.from(row.querySelectorAll('th, td'))
+    .filter((cell) => cell.closest('tr') === row)
     .map((cell) => elementToTableCellMarkdown(turndown, cell));
 }
 
@@ -329,7 +331,7 @@ function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element
 
   if (rows.length > 0) return tokenRowsToMarkdown(rows);
 
-  const lines = visibleTextLines(viewer.textContent ?? '').filter((line) => !isTokenViewerNoise(line));
+  const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
   if (lines.length >= 4 && lines.length % 2 === 0) {
     const pairs: string[][] = [];
     for (let i = 0; i < lines.length; i += 2) pairs.push([lines[i] ?? '', lines[i + 1] ?? '']);
@@ -352,6 +354,23 @@ function tokenViewerCellsFromRow(turndown: TurndownService, row: Element): strin
 
   const lines = visibleTextLines(row.textContent ?? '').filter((line) => !isTokenViewerNoise(line));
   return lines.length > 1 ? lines.map(escapeMarkdownTableCell) : [];
+}
+
+function tokenViewerFallbackLines(viewer: Element): string[] {
+  const childNodeLines = Array.from(viewer.childNodes).flatMap((node) => {
+    if (node.nodeType === 3) return visibleTextLines(node.textContent ?? '');
+    if (isElementNode(node)) return visibleTextLines(node.textContent ?? '');
+    return [];
+  });
+  if (childNodeLines.length > 1) return childNodeLines;
+
+  const htmlLines = visibleTextLines(viewer.innerHTML
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|span|li|tr|th|td|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' '));
+  if (htmlLines.length > childNodeLines.length) return htmlLines;
+
+  return childNodeLines.length ? childNodeLines : visibleTextLines(viewer.textContent ?? '');
 }
 
 function tokenRowsToMarkdown(rows: string[][]): string {
@@ -385,7 +404,10 @@ function padRow(row: string[], width: number): string[] {
 }
 
 function elementToTableCellMarkdown(turndown: TurndownService, element: Element): string {
-  const html = element.innerHTML || element.textContent || '';
+  const clone = element.cloneNode(true) as Element;
+  for (const nestedTable of Array.from(clone.querySelectorAll('table'))) nestedTable.remove();
+
+  const html = clone.innerHTML || clone.textContent || '';
   const markdown = turndown.turndown(html).replace(/\n{2,}/g, '<br>').replace(/\n/g, '<br>');
   return escapeMarkdownTableCell(normalizeInlineText(markdown));
 }
@@ -415,11 +437,11 @@ function isTokenViewerNoise(value: string): boolean {
   return NOISE_ONLY_MARKDOWN_LINES.has(normalized) || TOKEN_BROWSER_NOISE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-function isElementNode(node: unknown): node is Node {
-  return Boolean(node && typeof (node as Node).nodeName === 'string' && (node as Node).nodeType === 1);
+function isElementNode(node: unknown): node is Element {
+  return Boolean(node && (node as Node).nodeType === 1);
 }
 
-function nodeName(node: Node): string {
+function nodeName(node: Element): string {
   return node.nodeName.toLowerCase();
 }
 
@@ -441,6 +463,21 @@ function stripUnsafeHtml(html: string): string {
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
+}
+
+function preserveTokenViewerTextLines(html: string): string {
+  return html.replace(/<token-viewer\b([^>]*)>([\s\S]*?)<\/token-viewer>/gi, (match, attributes: string, body: string) => {
+    if (/<(?:table|thead|tbody|tfoot|tr|th|td)\b/i.test(body)) return match;
+    if (/\b(?:role|class)\s*=/i.test(body)) return match;
+
+    const lines = visibleTextLines(stripHtml(body));
+    if (lines.length <= 1) return match;
+    return `<token-viewer${attributes}>${lines.map(escapeHtmlText).join('<br>')}</token-viewer>`;
+  });
+}
+
+function escapeHtmlText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
@@ -490,8 +527,8 @@ function postProcessMarkdown(markdown: string): string {
     .replace(/\r\n/g, '\n')
     .replace(/[^\S\n]+$/gm, '')
     .replace(/\u200b/g, '')
-    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
-    .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
+    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)\s*!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
+    .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)\s*!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
     .split('\n');
 
   const cleaned: string[] = [];
