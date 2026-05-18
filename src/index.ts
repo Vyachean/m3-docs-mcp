@@ -15,8 +15,15 @@ program.command('serve')
   .description('Start the MCP server over stdio')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', '24')
+  .option('--startup-max-pages <number>', 'Maximum pages to crawl during automatic startup refresh', '250')
+  .option('--no-auto-update', 'Disable automatic cache refresh on server startup')
   .action(async (options) => {
-    await serveMcp({ cacheDir: options.cacheDir, maxAgeHours: Number(options.maxAgeHours) });
+    await serveMcp({
+      cacheDir: options.cacheDir,
+      maxAgeHours: Number(options.maxAgeHours),
+      startupMaxPages: Number(options.startupMaxPages),
+      autoUpdate: options.autoUpdate
+    });
   });
 
 program.command('update')
