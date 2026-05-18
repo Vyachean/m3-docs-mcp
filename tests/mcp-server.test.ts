@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { z } from 'zod';
 import type { CacheStatus, MaterialIndex, SearchResult } from '../src/types.js';
+
+type ToolSchema = Record<string, z.ZodTypeAny>;
 
 const mocks = vi.hoisted(() => {
   const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>>();
-  const toolDefinitions: Array<{ name: string; description: string; schema: Record<string, unknown> }> = [];
+  const toolDefinitions: Array<{ name: string; description: string; schema: ToolSchema }> = [];
   const serverConfigs: Array<{ name: string; version: string }> = [];
   const connect = vi.fn(async (_transport: unknown) => undefined);
   const createdStores: MockStore[] = [];
@@ -68,7 +71,7 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
       mocks.serverConfigs.push(config);
     }
 
-    tool(name: string, description: string, schema: Record<string, unknown>, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>) {
+    tool(name: string, description: string, schema: ToolSchema, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>) {
       mocks.toolDefinitions.push({ name, description, schema });
       mocks.toolHandlers.set(name, handler);
     }
@@ -110,7 +113,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
   return parseToolResult(await handler!(args));
 }
 
-function schemaFor(toolName: string) {
+function schemaFor(toolName: string): ToolSchema {
   const definition = mocks.toolDefinitions.find((tool) => tool.name === toolName);
   expect(definition).toBeDefined();
   return definition!.schema;
