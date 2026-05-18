@@ -67,6 +67,8 @@ program.command('update')
     } catch (error) {
       if (abortController.signal.aborted) {
         console.error('Material 3 docs cache refresh interrupted. Existing cache was left unchanged. If this was the first refresh, status will still report hasCache=false.');
+        process.exitCode = 130;
+        return;
       }
       throw error;
     } finally {
