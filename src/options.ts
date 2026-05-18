@@ -8,6 +8,17 @@ export function parsePositiveIntegerOption(name: string, value: NumericInput, de
   return parsed;
 }
 
+export function parseBoundedPositiveIntegerOption(name: string, value: NumericInput, defaultValue: number, maxValue: number): number {
+  const parsed = parsePositiveIntegerOption(name, value, defaultValue);
+  if (!Number.isInteger(maxValue) || maxValue < 1) {
+    throw new Error(`${name} maximum must be a positive integer.`);
+  }
+  if (parsed > maxValue) {
+    throw new Error(`${name} must be less than or equal to ${maxValue}.`);
+  }
+  return parsed;
+}
+
 export function parsePositiveNumberOption(name: string, value: NumericInput, defaultValue?: number): number {
   const parsed = parseFiniteNumber(name, value, defaultValue);
   if (parsed <= 0) {
