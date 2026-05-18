@@ -110,7 +110,12 @@ function parseToolResult(result: { content: Array<{ type: 'text'; text: string }
 async function callTool(name: string, args: Record<string, unknown>) {
   const handler = mocks.toolHandlers.get(name);
   expect(handler).toBeDefined();
-  return parseToolResult(await handler!(args));
+  const definition = mocks.toolDefinitions.find((tool) => tool.name === name);
+  expect(definition).toBeDefined();
+  const parsedArgs = Object.fromEntries(
+    Object.entries(definition!.schema).map(([key, schema]) => [key, schema.parse(args[key])])
+  );
+  return parseToolResult(await handler!(parsedArgs));
 }
 
 function schemaFor(toolName: string): ToolSchema {
@@ -190,6 +195,7 @@ describe('serveMcp', () => {
     expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1000).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1001).success).toBe(false);
+    expect(refreshSchema.concurrency.safeParse(undefined).data).toBe(1);
     expect(refreshSchema.concurrency.safeParse(1).success).toBe(true);
     expect(refreshSchema.concurrency.safeParse(8).success).toBe(true);
     expect(refreshSchema.concurrency.safeParse(9).success).toBe(false);
@@ -256,7 +262,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: undefined, force: false });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: 1, force: false });
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
   });
 
@@ -269,6 +275,6 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     await callTool('refresh_material_docs', { maxPages: 77, force: true });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: undefined, force: true });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: 1, force: true });
   });
 });
