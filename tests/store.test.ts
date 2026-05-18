@@ -32,10 +32,18 @@ const buttonPage: MaterialPage = {
   capturedAt: '2026-05-18T00:00:00.000Z'
 };
 
-function testIndex(pages: MaterialPage[] = [dialogPage, buttonPage]): MaterialIndex {
+const updatedDialogPage: MaterialPage = {
+  ...dialogPage,
+  title: 'Updated dialogs overview',
+  markdown: '---\ntitle: "Updated dialogs overview"\n---\n\n# Dialogs\n\nUpdated dialogs include confirmation guidance.\n',
+  text: 'Updated dialogs include confirmation guidance.',
+  capturedAt: '2026-05-19T00:00:00.000Z'
+};
+
+function testIndex(pages: MaterialPage[] = [dialogPage, buttonPage], capturedAt = '2026-05-18T00:00:00.000Z'): MaterialIndex {
   return {
     source: 'https://m3.material.io',
-    capturedAt: '2026-05-18T00:00:00.000Z',
+    capturedAt,
     pageCount: pages.length,
     attemptedPageCount: pages.length,
     failedPageCount: 0,
@@ -70,15 +78,17 @@ describe('MaterialDocsStore', () => {
     const oldDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
     await utimes(indexPath(cacheDir), oldDate, oldDate);
 
-    await expect(store.ensureFresh(24)).resolves.toMatchObject({ pageCount: 2 });
+    await expect(store.load()).resolves.toMatchObject({ pageCount: 2 });
     await expect(store.getStatus(24)).resolves.toMatchObject({ hasCache: true, isFresh: false, pageCount: 2 });
   });
 
-  it('loads a page by cache path, source URL, and extensionless path', async () => {
+  it('loads a page by cache path, source URL, extensionless path, and normalized URL variants', async () => {
     const store = await seedStore();
     await expect(store.getPage(dialogPage.path)).resolves.toMatchObject({ meta: expect.objectContaining({ title: 'Dialogs overview' }), markdown: dialogPage.markdown });
     await expect(store.getPage(dialogPage.url)).resolves.toMatchObject({ meta: expect.objectContaining({ path: dialogPage.path }) });
     await expect(store.getPage('components/dialogs/overview')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
+    await expect(store.getPage('/components/dialogs/overview.md')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
+    await expect(store.getPage(`${dialogPage.url}/?tab=usage#actions`)).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
   });
 
   it('reports unknown pages explicitly', async () => {
@@ -86,15 +96,24 @@ describe('MaterialDocsStore', () => {
     await expect(store.getPage('missing.md')).rejects.toThrow('Material 3 page not found: missing.md');
   });
 
-  it('returns all docs for a component', async () => {
+  it('returns all docs for a component regardless of spaces and case', async () => {
     const store = await seedStore();
-    await expect(store.getComponentDocs('dialogs')).resolves.toEqual([
+    await expect(store.getComponentDocs('DIALOGS')).resolves.toEqual([
+      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
+    ]);
+    await expect(store.getComponentDocs('dialog overview')).resolves.toEqual([
       { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
     ]);
   });
 
-  it('lists discovered component slugs', async () => {
-    const store = await seedStore();
+  it('lists discovered component slugs and ignores non-component pages', async () => {
+    const rootPage = { ...buttonPage, id: 'root', path: 'index.md', section: 'root', title: 'Material 3' };
+    await writeIndex(testIndex([dialogPage, buttonPage, rootPage]), cacheDir);
+    await writePage(dialogPage, cacheDir);
+    await writePage(buttonPage, cacheDir);
+    await writePage(rootPage, cacheDir);
+
+    const store = new MaterialDocsStore(cacheDir);
     await expect(store.listComponents()).resolves.toEqual(['buttons', 'dialogs']);
   });
 
@@ -102,12 +121,26 @@ describe('MaterialDocsStore', () => {
     const store = await seedStore();
     const results = await store.searchDocs('important prompts', 5);
     expect(results[0]).toMatchObject({ title: 'Dialogs overview', path: dialogPage.path, section: 'components/dialogs' });
+    expect(results[0]?.headings).toEqual(['Dialogs', 'Usage']);
     expect(results[0]?.excerpt).toContain('Dialogs provide important prompts');
+    expect(results[0]?.excerpt).not.toContain('---');
   });
 
   it('limits search results', async () => {
     const store = await seedStore();
     const results = await store.searchDocs('overview', 1);
     expect(results).toHaveLength(1);
+  });
+
+  it('invalidates the search index when cache is externally updated', async () => {
+    const store = await seedStore();
+    expect(await store.searchDocs('important prompts', 5)).toHaveLength(1);
+
+    await writeIndex(testIndex([updatedDialogPage], '2026-05-19T00:00:00.000Z'), cacheDir);
+    await writePage(updatedDialogPage, cacheDir);
+
+    const results = await store.searchDocs('confirmation guidance', 5);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ title: 'Updated dialogs overview', path: updatedDialogPage.path });
   });
 });
