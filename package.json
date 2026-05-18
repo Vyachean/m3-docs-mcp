@@ -1,0 +1,48 @@
+{
+  "name": "m3-docs-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that serves locally cached Material 3 documentation from m3.material.io",
+  "type": "module",
+  "bin": {
+    "m3-docs-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js serve",
+    "crawl": "node dist/index.js update"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "commander": "^12.1.0",
+    "minisearch": "^7.1.2",
+    "playwright": "^1.53.0",
+    "turndown": "^7.2.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/turndown": "^5.0.5",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vyachean/m3-docs-mcp.git"
+  },
+  "keywords": [
+    "mcp",
+    "material-design",
+    "material-3",
+    "playwright",
+    "documentation"
+  ]
+}
