@@ -11,6 +11,11 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 
+export async function installPlaywrightChromium(): Promise<void> {
+  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  await execFileAsync(npx, ['playwright', 'install', 'chromium']);
+}
+
 async function launchChromium(headless: boolean): Promise<Browser> {
   try {
     return await chromium.launch({ headless });
@@ -20,10 +25,7 @@ async function launchChromium(headless: boolean): Promise<Browser> {
       throw error;
     }
 
-    console.error('Playwright Chromium browser is missing. Installing it now.');
-    const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    await execFileAsync(npx, ['playwright', 'install', 'chromium']);
-    return chromium.launch({ headless });
+    throw new Error('Playwright Chromium browser is missing. Run: npx -y m3-docs-mcp install-browser', { cause: error });
   }
 }
 
@@ -56,44 +58,47 @@ async function scrollPage(page: Page): Promise<void> {
   });
 }
 
-async function extract(page: Page, url: string): Promise<MaterialPage> {
-  const data = await page.evaluate(() => {
-    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
-    const clone = root.cloneNode(true) as HTMLElement;
-    for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
-      for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
-    }
-    const title = document.querySelector('h1')?.textContent?.trim() || document.title.replace(/\s*[-|].*$/, '').trim() || 'Material 3 page';
-    const headings = Array.from(clone.querySelectorAll('h1,h2,h3,h4')).map((h) => h.textContent?.trim()).filter(Boolean) as string[];
-    return {
-      title,
-      headings,
-      html: clone.innerHTML,
-      text: clone.textContent?.replace(/\s+/g, ' ').trim() ?? ''
-    };
-  });
-
+export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString()): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
-  const capturedAt = new Date().toISOString();
   const relPath = materialPagePath(url);
-  const body = turndown.turndown(data.html).replace(/\n{3,}/g, '\n\n').trim();
-  const markdown = `---\ntitle: ${JSON.stringify(data.title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
+  const titleMatch = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  const title = stripHtml(titleMatch?.[1] ?? '').trim() || 'Material 3 page';
+  const headings = Array.from(html.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)).map((match) => stripHtml(match[1]).trim()).filter(Boolean);
+  const body = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
+  const text = stripHtml(html).replace(/\s+/g, ' ').trim();
+  const markdown = `---\ntitle: ${JSON.stringify(title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
   return {
     id: materialPageId(url),
-    title: data.title,
+    title,
     url,
     path: relPath,
     section: sectionFromPagePath(relPath),
-    headings: data.headings,
-    text: data.text,
+    headings,
+    text,
     markdown,
     capturedAt
   };
 }
 
+async function extract(page: Page, url: string): Promise<MaterialPage> {
+  const html = await page.evaluate(() => {
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    const clone = root.cloneNode(true) as HTMLElement;
+    for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
+      for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
+    }
+    return clone.innerHTML;
+  });
+  return extractMaterialPageFromHtml(html, url);
+}
+
+export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialUrl(href, baseUrl)).filter((value): value is string => Boolean(value))));
+}
+
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
-  return Array.from(new Set(links.map((href) => normalizeMaterialUrl(href, baseUrl)).filter((v): v is string => Boolean(v))));
+  return discoverMaterialLinksFromHrefs(links, baseUrl);
 }
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
@@ -160,4 +165,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   };
   await writeIndex(index, cacheDir);
   return index;
+}
+
+function stripHtml(html: string): string {
+  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
