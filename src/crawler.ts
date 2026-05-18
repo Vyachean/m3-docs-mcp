@@ -383,7 +383,6 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       if (!url) return;
 
       let page: Page | null = null;
-      activeWorkers += 1;
       try {
         page = await context.newPage();
         throwIfAborted(signal);
@@ -391,7 +390,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       } catch (error) {
         if (signal?.aborted) throw error;
         failedUrls.push(url);
-        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
+        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.stack ?? error.message : String(error));
       } finally {
         activeWorkers -= 1;
         await page?.close().catch(() => undefined);
@@ -407,6 +406,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       queued.delete(queuedUrl);
       if (seen.has(queuedUrl)) continue;
       seen.add(queuedUrl);
+      activeWorkers += 1;
       return queuedUrl;
     }
     return null;
