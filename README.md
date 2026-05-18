@@ -1,5 +1,175 @@
 # m3-docs-mcp
 
-MCP server and crawler for locally cached Material 3 documentation from m3.material.io.
+MCP server that provides agents with locally cached documentation from the official Material 3 site: <https://m3.material.io/>.
 
-The implementation is developed in pull requests. The package should not vendor a full public copy of Material documentation; it builds a user-local cache from the official site.
+The package does **not** vendor a full copy of Material documentation. It crawls the official SPA with Playwright and stores a cache on the user's machine. This keeps installation lightweight and avoids publishing a public copy of Google's documentation text and images.
+
+## Why this exists
+
+`m3.material.io` is a JavaScript application. Simple fetch/curl-based agents often cannot read the documentation reliably. This server makes the docs available through deterministic MCP tools backed by a local cache.
+
+## Recommended setup
+
+Add the server to your MCP client config. No global install is required.
+
+```json
+{
+  "mcpServers": {
+    "material3": {
+      "command": "npx",
+      "args": ["-y", "m3-docs-mcp", "serve"]
+    }
+  }
+}
+```
+
+The npm package downloads the Playwright Chromium browser during package setup. That makes the common MCP configuration self-contained, but the first install still needs network access and can take noticeably longer than a package without browser automation.
+
+If a package manager skips lifecycle scripts or the browser cache is removed, run the package-local installer manually:
+
+```bash
+npx -y m3-docs-mcp install-browser
+```
+
+On Linux, Chromium may also need system packages. Use this variant when Playwright reports missing host dependencies:
+
+```bash
+npx -y m3-docs-mcp install-browser --with-deps
+```
+
+On startup, the server checks the local cache. If the cache is missing or stale, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
+
+Manual refresh is still available:
+
+```bash
+npx -y m3-docs-mcp update
+```
+
+If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
+
+## Use directly from GitHub before npm publishing
+
+```json
+{
+  "mcpServers": {
+    "material3": {
+      "command": "npx",
+      "args": ["-y", "github:Vyachean/m3-docs-mcp", "serve"]
+    }
+  }
+}
+```
+
+## Optional CLI usage
+
+```bash
+npx -y m3-docs-mcp status
+npx -y m3-docs-mcp update
+npx -y m3-docs-mcp update --max-pages 500
+npx -y m3-docs-mcp update --min-pages 25
+npx -y m3-docs-mcp update --force
+npx -y m3-docs-mcp install-browser
+npx -y m3-docs-mcp install-browser --with-deps
+npx -y m3-docs-mcp serve
+npx -y m3-docs-mcp serve --max-age-hours 12
+npx -y m3-docs-mcp serve --startup-max-pages 500
+npx -y m3-docs-mcp serve --no-auto-update
+```
+
+`--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
+
+`update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, or more than 20% failed attempted pages after at least 10 attempts. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
+
+Global install is optional and mainly useful for development or repeated manual diagnostics:
+
+```bash
+npm install -g m3-docs-mcp
+```
+
+## Cache location
+
+Default cache locations:
+
+- Linux: `$XDG_CACHE_HOME/m3-docs-mcp` or `~/.cache/m3-docs-mcp`
+- macOS: `~/Library/Caches/m3-docs-mcp`
+- Windows: `%LOCALAPPDATA%/m3-docs-mcp`
+
+Override:
+
+```bash
+M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
+```
+
+Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
+
+## MCP tools
+
+### `search_material_docs`
+
+Searches locally cached Material 3 docs.
+
+Arguments:
+
+```json
+{
+  "query": "dialogs actions",
+  "limit": 10
+}
+```
+
+### `get_material_page`
+
+Returns one cached page by source URL or local cache path. URL query strings, fragments, trailing slashes, leading slashes, and optional `.md` suffixes are normalized before lookup.
+
+Arguments:
+
+```json
+{
+  "pathOrUrl": "components/dialogs/overview.md"
+}
+```
+
+### `get_component_docs`
+
+Returns all cached pages matching a Material component name.
+
+Arguments:
+
+```json
+{
+  "componentName": "dialogs"
+}
+```
+
+### `list_material_components`
+
+Lists component slugs discovered under `components/*`.
+
+### `material_docs_cache_status`
+
+Returns local cache status and startup background refresh status.
+
+### `refresh_material_docs`
+
+Forces a cache refresh through Playwright. This is an explicit long-running operation.
+
+Arguments:
+
+```json
+{
+  "maxPages": 250
+}
+```
+
+## Project rules
+
+- The official source is always `https://m3.material.io/`.
+- Google implementation repositories are not treated as authoritative design guidelines.
+- Cached docs are stored locally for the user running the MCP server.
+- The npm package should not include a full public mirror of Material documentation.
+- Normal read/search tools must not trigger or wait for a long crawl.
+- Startup cache warming may run a crawl in the background so first-time users do not need manual setup.
+
+## Current limitations
+
+This is an initial implementation. It extracts text/Markdown and page metadata. Image downloading, stronger route discovery, per-page diffing, and richer section normalization should be added in later PRs.
