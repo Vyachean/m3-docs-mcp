@@ -91,13 +91,13 @@ describe('validateCrawledPage', () => {
     expect(validateCrawledPage(page)).toBeNull();
   });
 
-  it('accepts non-component routes whose content matches the leaf slug', () => {
+  it('does not require non-component route titles to match their leaf slug', () => {
     const page = extractMaterialPageFromHtml(`
       <main>
-        <h1>Canonical layouts</h1>
-        <p>Canonical layouts help teams adapt applications across screen sizes.</p>
+        <h1>Material A-Z</h1>
+        <p>Material terms and definitions with enough text for crawler validation.</p>
       </main>
-    `, 'https://m3.material.io/foundations/layout/canonical-layouts', '2026-05-18T00:00:00.000Z');
+    `, 'https://m3.material.io/foundations/glossary', '2026-05-18T00:00:00.000Z');
 
     expect(validateCrawledPage(page)).toBeNull();
   });
@@ -144,20 +144,6 @@ describe('validateCrawledPage', () => {
     expect(validateCrawledPage(page)).toMatchObject({
       path: 'components/buttons/overview.md',
       reason: 'component route content does not mention expected component slug buttons'
-    });
-  });
-
-  it('rejects non-component routes that render unrelated content', () => {
-    const page = extractMaterialPageFromHtml(`
-      <main>
-        <h1>Components</h1>
-        <p>Components are interactive building blocks.</p>
-      </main>
-    `, 'https://m3.material.io/foundations/layout/canonical-layouts', '2026-05-18T00:00:00.000Z');
-
-    expect(validateCrawledPage(page)).toMatchObject({
-      path: 'foundations/layout/canonical-layouts.md',
-      reason: 'route content does not mention expected slug canonical-layouts'
     });
   });
 });
