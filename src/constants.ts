@@ -1,0 +1,2 @@
+export const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
+export const MAX_CRAWL_CONCURRENCY = 8;
