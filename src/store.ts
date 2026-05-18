@@ -119,15 +119,18 @@ export class MaterialDocsStore {
   }
 
   private async readCurrentIndex(): Promise<MaterialIndex> {
-    let mtimeMs: number;
+    let fingerprint: string;
     try {
-      mtimeMs = (await stat(indexPath(this.cacheDir))).mtimeMs;
+      const indexStats = await stat(indexPath(this.cacheDir));
+      fingerprint = `${indexStats.mtimeMs}:${indexStats.size}`;
     } catch {
       this.index = null;
       this.indexFingerprint = null;
       this.search = null;
       throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
     }
+
+    if (this.index && this.indexFingerprint === fingerprint) return this.index;
 
     const index = await readIndex(this.cacheDir);
     if (!index) {
@@ -136,9 +139,6 @@ export class MaterialDocsStore {
       this.search = null;
       throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
     }
-
-    const fingerprint = `${mtimeMs}:${JSON.stringify(index)}`;
-    if (this.index && this.indexFingerprint === fingerprint) return this.index;
 
     if (this.indexFingerprint !== null && this.indexFingerprint !== fingerprint) this.search = null;
     this.index = index;
