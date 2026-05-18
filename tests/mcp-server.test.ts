@@ -3,7 +3,7 @@ import type { CacheStatus, MaterialIndex, SearchResult } from '../src/types.js';
 
 const mocks = vi.hoisted(() => {
   const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>>();
-  const connect = vi.fn(async () => undefined);
+  const connect = vi.fn(async (_transport: unknown) => undefined);
   const createdStores: MockStore[] = [];
   const nextStores: MockStore[] = [];
 
