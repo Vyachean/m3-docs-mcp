@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { indexPath, pagesDir } from '../src/cache.js';
+import { indexPath, pagesDir, writeIndex } from '../src/cache.js';
 import type { MaterialIndex } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
@@ -58,6 +58,26 @@ const { crawlMaterialDocs } = await import('../src/crawler.js');
 
 let cacheDir: string;
 
+function existingIndex(pageCount: number): MaterialIndex {
+  return {
+    source: 'https://m3.material.io',
+    capturedAt: '2026-05-17T00:00:00.000Z',
+    pageCount,
+    attemptedPageCount: pageCount,
+    failedPageCount: 0,
+    failedUrls: [],
+    pages: Array.from({ length: pageCount }, (_, i) => ({
+      id: `existing-${i}`,
+      title: `Existing ${i}`,
+      url: `https://m3.material.io/existing-${i}`,
+      path: `existing-${i}.md`,
+      section: 'root',
+      headings: [`Existing ${i}`],
+      capturedAt: '2026-05-17T00:00:00.000Z'
+    }))
+  };
+}
+
 describe('crawlMaterialDocs', () => {
   beforeEach(async () => {
     cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-docs-crawler-flow-test-'));
@@ -101,5 +121,27 @@ describe('crawlMaterialDocs', () => {
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
     await expect(crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 2 })).rejects.toThrow('below the required minimum');
     await expect(readFile(indexPath(cacheDir), 'utf8')).rejects.toThrow();
+  });
+
+  it('keeps the old cache when a new crawl would severely reduce page count', async () => {
+    const oldIndex = existingIndex(5);
+    await writeIndex(oldIndex, cacheDir);
+
+    await expect(crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 1 })).rejects.toThrow('below 80% of the previous cache');
+
+    const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
+    expect(persistedIndex).toEqual(oldIndex);
+  });
+
+  it('allows explicitly forced replacement of a larger old cache', async () => {
+    const oldIndex = existingIndex(5);
+    await writeIndex(oldIndex, cacheDir);
+
+    const nextIndex = await crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 1, force: true });
+
+    expect(nextIndex.pageCount).toBe(1);
+    const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
+    expect(persistedIndex.pageCount).toBe(1);
+    expect(persistedIndex.pages[0]?.path).toBe('index.md');
   });
 });
