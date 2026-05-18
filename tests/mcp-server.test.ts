@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { z } from 'zod';
+import type { ZodTypeAny } from 'zod';
 import type { CacheStatus, MaterialIndex, SearchResult } from '../src/types.js';
 
-type ToolSchema = Record<string, z.ZodTypeAny>;
+type ToolSchema = Record<string, ZodTypeAny>;
 
 const mocks = vi.hoisted(() => {
   const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>>();
