@@ -7,6 +7,8 @@ import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePos
 
 const program = new Command();
 const MAX_CRAWL_CONCURRENCY = 8;
+const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
+const CLI_PROGRESS_INTERVAL_MS = 5_000;
 
 program
   .name('m3-docs-mcp')
@@ -16,7 +18,7 @@ program
 program.command('serve')
   .description('Start the MCP server over stdio')
   .option('--cache-dir <path>', 'Cache directory')
-  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', '24')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .option('--startup-max-pages <number>', 'Maximum pages to crawl during automatic startup refresh', '250')
   .option('--startup-concurrency <number>', `Maximum concurrent Playwright pages during automatic startup refresh, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--no-auto-update', 'Disable automatic cache refresh on server startup')
@@ -45,6 +47,7 @@ program.command('update')
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
     console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
+    const stopProgressReporter = startCliProgressReporter({ maxPages, minPageCount, concurrency });
     try {
       const index = await crawlMaterialDocs({
         cacheDir: options.cacheDir,
@@ -72,6 +75,7 @@ program.command('update')
       }
       throw error;
     } finally {
+      stopProgressReporter();
       removeSignalHandlers();
     }
   });
@@ -87,7 +91,7 @@ program.command('install-browser')
 program.command('status')
   .description('Print local cache status')
   .option('--cache-dir <path>', 'Cache directory')
-  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', '24')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .action(async (options) => {
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
     console.log(JSON.stringify(await cacheStatus(cacheDir, parsePositiveNumberOption('--max-age-hours', options.maxAgeHours)), null, 2));
@@ -97,6 +101,15 @@ program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exitCode = 1;
 });
+
+function startCliProgressReporter(options: { maxPages: number; minPageCount: number; concurrency: number }): () => void {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    console.error(`Material 3 docs cache refresh still running: elapsed=${elapsedSeconds}s, maxPages=${options.maxPages}, minPages=${options.minPageCount}, concurrency=${options.concurrency}.`);
+  }, CLI_PROGRESS_INTERVAL_MS);
+  return () => clearInterval(timer);
+}
 
 function installAbortSignalHandlers(abortController: AbortController): () => void {
   const abortFromInt = () => abortWithName(abortController, 'SIGINT');
