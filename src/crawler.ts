@@ -237,8 +237,8 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   const relPath = materialPagePath(url);
   const sanitizedHtml = stripUnsafeHtml(html);
-  const title = metadata?.title?.trim() || titleFromHtml(html) || 'Material 3 page';
-  const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(html);
+  const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
+  const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
   const rawBody = turndown.turndown(sanitizedHtml)
     .replace(/\n{3,}/g, '\n\n')
     .trim();
