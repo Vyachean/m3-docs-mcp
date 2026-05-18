@@ -240,7 +240,6 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   const title = metadata?.title?.trim() || titleFromHtml(html) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(html);
   const rawBody = turndown.turndown(sanitizedHtml)
-    .replace(/\bwindow\.[\w$.]+\s*=\s*[^;\n]+;?/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   const body = postProcessMarkdown(rawBody);
