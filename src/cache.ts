@@ -3,6 +3,16 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import type { CacheStatus, MaterialIndex, MaterialPage } from './types.js';
 
+const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
+const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
+const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
+
+type CachePromotionSafetyOptions = {
+  force?: boolean;
+  minRetainedPageRatio?: number;
+  maxFailedPageRatio?: number;
+};
+
 export function getDefaultCacheDir(): string {
   if (process.env.M3_DOCS_CACHE_DIR) return process.env.M3_DOCS_CACHE_DIR;
   if (process.env.XDG_CACHE_HOME) return path.join(process.env.XDG_CACHE_HOME, 'm3-docs-mcp');
@@ -114,6 +124,26 @@ export function assertValidIndex(index: MaterialIndex, minPageCount: number): vo
   }
 }
 
+export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex: MaterialIndex | null, options: CachePromotionSafetyOptions = {}): void {
+  if (options.force) return;
+
+  const maxFailedPageRatio = options.maxFailedPageRatio ?? DEFAULT_MAX_FAILED_PAGE_RATIO;
+  if (nextIndex.attemptedPageCount >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
+    const failedPageRatio = nextIndex.failedPageCount / nextIndex.attemptedPageCount;
+    if (failedPageRatio > maxFailedPageRatio) {
+      throw new Error(`Material 3 crawl failed ${nextIndex.failedPageCount} of ${nextIndex.attemptedPageCount} attempted pages (${formatPercent(failedPageRatio)}), above the allowed ${formatPercent(maxFailedPageRatio)}. Keeping the existing cache. Use --force to replace it anyway.`);
+    }
+  }
+
+  if (!previousIndex || previousIndex.pageCount <= 0) return;
+
+  const minRetainedPageRatio = options.minRetainedPageRatio ?? DEFAULT_MIN_RETAINED_PAGE_RATIO;
+  const minAcceptedPages = Math.ceil(previousIndex.pageCount * minRetainedPageRatio);
+  if (nextIndex.pageCount < minAcceptedPages) {
+    throw new Error(`Material 3 crawl produced ${nextIndex.pageCount} pages, which is below ${formatPercent(minRetainedPageRatio)} of the previous cache (${previousIndex.pageCount} pages). Keeping the existing cache. Use --force to replace it anyway.`);
+  }
+}
+
 function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
   const pages = index.pages ?? [];
   return {
@@ -129,4 +159,8 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
 
 function isMissingPathError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
