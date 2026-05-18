@@ -66,8 +66,8 @@ async function expandMainContent(page: Page): Promise<void> {
       if (!(el instanceof HTMLElement)) return false;
       if (!el.closest('main, [role="main"]')) return false;
       if (el.closest('nav, aside, header, footer, [role="navigation"]')) return false;
-      if (el.closest('a[href]')) return false;
-      if (el.matches('a, a *, [href], [role="link"], [role="tab"], [role="menuitem"]')) return false;
+      if (el.closest('a')) return false;
+      if (el.matches('[href], [role="link"], [role="tab"], [role="menuitem"]')) return false;
       const tag = el.tagName.toLowerCase();
       return tag === 'button' || el.getAttribute('role') === 'button';
     };
@@ -272,7 +272,8 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
     const response = await fetch(sitemapUrl, { signal: controller.signal });
     if (!response.ok) return [];
     const body = await response.text();
-    const urls = Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
+    const locUrls = Array.from(body.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/g)).map((match) => match[1]).filter((url): url is string => Boolean(url));
+    const urls = locUrls.length > 0 ? locUrls : Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
     return discoverMaterialLinksFromHrefs(urls, baseUrl);
   } catch {
     return [];
@@ -312,11 +313,6 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
     }
     if (!containsAllWords(contentPreview, componentName.split(' '))) {
       return suspiciousPage(page, `component route content does not mention expected component slug ${componentSlug}`);
-    }
-  } else if (segments.length >= 2) {
-    const leafSlug = segments.at(-1) === 'overview' ? segments.at(-2) : segments.at(-1);
-    if (leafSlug && !containsAllWords(contentPreview, normalizeSlug(leafSlug).split(' '))) {
-      return suspiciousPage(page, `route content does not mention expected slug ${leafSlug}`);
     }
   }
 
