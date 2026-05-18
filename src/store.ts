@@ -1,5 +1,6 @@
+import { stat } from 'node:fs/promises';
 import MiniSearch from 'minisearch';
-import { cacheStatus, getDefaultCacheDir, readIndex, readPage } from './cache.js';
+import { cacheStatus, getDefaultCacheDir, indexPath, readIndex, readPage } from './cache.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
 import type { CacheStatus, MaterialIndex, SearchResult } from './types.js';
@@ -18,7 +19,7 @@ type SearchDoc = {
 
 export class MaterialDocsStore {
   private index: MaterialIndex | null = null;
-  private indexSignature: string | null = null;
+  private indexMtimeMs: number | null = null;
   private search: MiniSearch<SearchDoc> | null = null;
   private refreshPromise: Promise<MaterialIndex> | null = null;
 
@@ -33,7 +34,8 @@ export class MaterialDocsStore {
 
     this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages })
       .then((index) => {
-        this.setIndex(index);
+        this.index = index;
+        this.indexMtimeMs = null;
         this.search = null;
         return index;
       })
@@ -110,19 +112,30 @@ export class MaterialDocsStore {
   }
 
   private async readCurrentIndex(): Promise<MaterialIndex> {
-    const index = await readIndex(this.cacheDir);
-    if (!index) throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
-    this.setIndex(index);
-    return index;
-  }
-
-  private setIndex(index: MaterialIndex): void {
-    const nextSignature = signatureForIndex(index);
-    if (this.indexSignature !== null && this.indexSignature !== nextSignature) {
+    let mtimeMs: number;
+    try {
+      mtimeMs = (await stat(indexPath(this.cacheDir))).mtimeMs;
+    } catch {
+      this.index = null;
+      this.indexMtimeMs = null;
       this.search = null;
+      throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
     }
+
+    if (this.index && this.indexMtimeMs === mtimeMs) return this.index;
+
+    const index = await readIndex(this.cacheDir);
+    if (!index) {
+      this.index = null;
+      this.indexMtimeMs = null;
+      this.search = null;
+      throw new Error('Material 3 docs cache not found. Run: m3-docs-mcp update');
+    }
+
+    if (this.indexMtimeMs !== null && this.indexMtimeMs !== mtimeMs) this.search = null;
     this.index = index;
-    this.indexSignature = nextSignature;
+    this.indexMtimeMs = mtimeMs;
+    return index;
   }
 
   private excerpt(body: string, query: string): string {
@@ -139,13 +152,4 @@ function normalizeMaterialPageLookupKey(pathOrUrl: string): string {
   const normalizedUrl = normalizeMaterialUrl(input, MATERIAL_BASE_URL);
   const pathLike = normalizedUrl ? materialPagePath(normalizedUrl) : input.replace(/[?#].*$/, '').replace(/^\/+|\/+$/g, '');
   return pathLike.replace(/\.md$/, '').replace(/^\/+|\/+$/g, '');
-}
-
-function signatureForIndex(index: MaterialIndex): string {
-  return JSON.stringify({
-    source: index.source,
-    capturedAt: index.capturedAt,
-    pageCount: index.pageCount,
-    pages: index.pages.map((page) => ({ path: page.path, url: page.url, capturedAt: page.capturedAt }))
-  });
 }
