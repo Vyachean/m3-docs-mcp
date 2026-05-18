@@ -11,15 +11,31 @@ export type MaterialPage = {
 };
 
 export type MaterialIndex = {
-  source: 'https://m3.material.io';
+  source: string;
   capturedAt: string;
   pageCount: number;
+  attemptedPageCount: number;
+  failedPageCount: number;
+  failedUrls: string[];
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
+};
+
+export type CacheStatus = {
+  cacheDir: string;
+  hasCache: boolean;
+  capturedAt: string | null;
+  pageCount: number;
+  attemptedPageCount: number;
+  failedPageCount: number;
+  failedUrls: string[];
+  ageMs: number | null;
+  isFresh: boolean;
 };
 
 export type CrawlOptions = {
   baseUrl?: string;
   maxPages?: number;
+  minPageCount?: number;
   cacheDir?: string;
   headless?: boolean;
   force?: boolean;
