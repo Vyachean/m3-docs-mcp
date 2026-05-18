@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
@@ -7,13 +8,14 @@ import { assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteSta
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, MaterialIndex, MaterialPage } from './types.js';
 
+const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 
 export async function installPlaywrightChromium(): Promise<void> {
-  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-  await execFileAsync(npx, ['playwright', 'install', 'chromium']);
+  const playwrightCli = require.resolve('playwright/cli');
+  await execFileAsync(process.execPath, [playwrightCli, 'install', 'chromium']);
 }
 
 async function launchChromium(headless: boolean): Promise<Browser> {
