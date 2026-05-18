@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { cacheStatus, getDefaultCacheDir } from './cache.js';
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
+import { parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 
 const program = new Command();
 
@@ -20,8 +21,8 @@ program.command('serve')
   .action(async (options) => {
     await serveMcp({
       cacheDir: options.cacheDir,
-      maxAgeHours: Number(options.maxAgeHours),
-      startupMaxPages: Number(options.startupMaxPages),
+      maxAgeHours: parsePositiveNumberOption('--max-age-hours', options.maxAgeHours),
+      startupMaxPages: parsePositiveIntegerOption('--startup-max-pages', options.startupMaxPages),
       autoUpdate: options.autoUpdate
     });
   });
@@ -35,8 +36,8 @@ program.command('update')
   .action(async (options) => {
     const index = await crawlMaterialDocs({
       cacheDir: options.cacheDir,
-      maxPages: Number(options.maxPages),
-      minPageCount: Number(options.minPages),
+      maxPages: parsePositiveIntegerOption('--max-pages', options.maxPages),
+      minPageCount: parsePositiveIntegerOption('--min-pages', options.minPages),
       headless: !options.headed
     });
     console.log(JSON.stringify({
@@ -62,7 +63,7 @@ program.command('status')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', '24')
   .action(async (options) => {
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
-    console.log(JSON.stringify(await cacheStatus(cacheDir, Number(options.maxAgeHours)), null, 2));
+    console.log(JSON.stringify(await cacheStatus(cacheDir, parsePositiveNumberOption('--max-age-hours', options.maxAgeHours)), null, 2));
   });
 
 program.parseAsync(process.argv).catch((error) => {
