@@ -25,13 +25,15 @@ Add the server to your MCP client config. No global install is required.
 
 The npm package prepares the Chromium browser used by Playwright during package setup, so users should not need a separate browser setup step.
 
-The server does not run a long documentation crawl during normal read/search tool calls. Create or refresh the local cache explicitly:
+On startup, the server checks the local cache. If the cache is missing or stale, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
+
+Manual refresh is still available:
 
 ```bash
 npx -y m3-docs-mcp update
 ```
 
-If the cache is missing, read/search tools return an error that asks the user to run `m3-docs-mcp update`. If the cache exists but is stale, tools still answer from the existing cache and include cache status metadata.
+If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata.
 
 ## Use directly from GitHub before npm publishing
 
@@ -55,9 +57,11 @@ npx -y m3-docs-mcp update --max-pages 500
 npx -y m3-docs-mcp update --min-pages 25
 npx -y m3-docs-mcp serve
 npx -y m3-docs-mcp serve --max-age-hours 12
+npx -y m3-docs-mcp serve --startup-max-pages 500
+npx -y m3-docs-mcp serve --no-auto-update
 ```
 
-`--max-age-hours` only marks cache status as fresh/stale. It does not trigger implicit refresh during read/search tool calls.
+`--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 
@@ -126,7 +130,7 @@ Lists component slugs discovered under `components/*`.
 
 ### `material_docs_cache_status`
 
-Returns local cache status without refreshing it.
+Returns local cache status and startup background refresh status.
 
 ### `refresh_material_docs`
 
@@ -146,7 +150,8 @@ Arguments:
 - Google implementation repositories are not treated as authoritative design guidelines.
 - Cached docs are stored locally for the user running the MCP server.
 - The npm package should not include a full public mirror of Material documentation.
-- Normal read/search tools must not trigger an implicit crawl.
+- Normal read/search tools must not trigger or wait for a long crawl.
+- Startup cache warming may run a crawl in the background so first-time users do not need manual setup.
 
 ## Current limitations
 
