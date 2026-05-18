@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
+import { parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 
 function jsonText(value: unknown) {
@@ -17,9 +18,9 @@ type StartupRefreshState = {
 
 export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number } = {}): Promise<void> {
   const cacheDir = options.cacheDir ?? getDefaultCacheDir();
-  const maxAgeHours = options.maxAgeHours ?? Number(process.env.M3_DOCS_MAX_AGE_HOURS ?? 24);
+  const maxAgeHours = parsePositiveNumberOption('M3_DOCS_MAX_AGE_HOURS', options.maxAgeHours ?? process.env.M3_DOCS_MAX_AGE_HOURS, 24);
   const autoUpdate = options.autoUpdate ?? process.env.M3_DOCS_AUTO_UPDATE !== 'false';
-  const startupMaxPages = options.startupMaxPages ?? Number(process.env.M3_DOCS_STARTUP_MAX_PAGES ?? 250);
+  const startupMaxPages = parsePositiveIntegerOption('M3_DOCS_STARTUP_MAX_PAGES', options.startupMaxPages ?? process.env.M3_DOCS_STARTUP_MAX_PAGES, 250);
   const store = new MaterialDocsStore(cacheDir);
   const startupRefresh = createStartupRefreshController(store, startupMaxPages);
   const server = new McpServer({ name: 'm3-docs-mcp', version: '0.1.0' });
