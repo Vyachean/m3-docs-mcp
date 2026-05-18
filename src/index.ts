@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { cacheStatus, getDefaultCacheDir } from './cache.js';
-import { crawlMaterialDocs } from './crawler.js';
+import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
 
 const program = new Command();
@@ -40,6 +40,13 @@ program.command('update')
       failedPageCount: index.failedPageCount,
       failedUrls: index.failedUrls
     }, null, 2));
+  });
+
+program.command('install-browser')
+  .description('Install the Playwright Chromium browser used by the crawler')
+  .action(async () => {
+    await installPlaywrightChromium();
+    console.log('Playwright Chromium browser installed.');
   });
 
 program.command('status')
