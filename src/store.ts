@@ -1,7 +1,7 @@
 import MiniSearch from 'minisearch';
-import { cacheAgeMs, getDefaultCacheDir, isCacheFresh, readIndex, readPage } from './cache.js';
+import { cacheAgeMs, cacheStatus, getDefaultCacheDir, isCacheFresh, readIndex, readPage } from './cache.js';
 import { crawlMaterialDocs } from './crawler.js';
-import type { MaterialIndex, SearchResult } from './types.js';
+import type { CacheStatus, MaterialIndex, SearchResult } from './types.js';
 
 type SearchDoc = {
   id: string;
@@ -19,13 +19,19 @@ export class MaterialDocsStore {
 
   constructor(private readonly cacheDir = getDefaultCacheDir()) {}
 
+  async ensureAvailable(): Promise<MaterialIndex> {
+    const index = await readIndex(this.cacheDir);
+    if (!index) throw new Error(`Material 3 docs cache not found. Run: m3-docs-mcp update`);
+    this.index = index;
+    return index;
+  }
+
   async ensureFresh(maxAgeHours = 24): Promise<MaterialIndex> {
     const current = await readIndex(this.cacheDir);
-    if (current && isCacheFresh(await cacheAgeMs(this.cacheDir), maxAgeHours)) {
-      this.index = current;
-      return current;
-    }
-    return this.refresh();
+    if (!current) return this.refresh();
+    this.index = current;
+    if (isCacheFresh(await cacheAgeMs(this.cacheDir), maxAgeHours)) return current;
+    return current;
   }
 
   async refresh(maxPages?: number): Promise<MaterialIndex> {
@@ -36,10 +42,11 @@ export class MaterialDocsStore {
   }
 
   async load(): Promise<MaterialIndex> {
-    const index = await readIndex(this.cacheDir);
-    if (!index) throw new Error(`Material 3 docs cache not found. Run: m3-docs-mcp update`);
-    this.index = index;
-    return index;
+    return this.ensureAvailable();
+  }
+
+  async getStatus(maxAgeHours = 24): Promise<CacheStatus> {
+    return cacheStatus(this.cacheDir, maxAgeHours);
   }
 
   async getIndex(): Promise<MaterialIndex> {
@@ -87,11 +94,10 @@ export class MaterialDocsStore {
   private async getSearchIndex(): Promise<MiniSearch<SearchDoc>> {
     if (this.search) return this.search;
     const index = await this.getIndex();
-    const docs: SearchDoc[] = [];
-    for (const page of index.pages) {
+    const docs = await Promise.all(index.pages.map(async (page): Promise<SearchDoc> => {
       const markdown = await readPage(page.path, this.cacheDir);
-      docs.push({ ...page, headings: page.headings.join('\n'), body: markdown.replace(/^---[\s\S]*?---/, '').slice(0, 30000) });
-    }
+      return { ...page, headings: page.headings.join('\n'), body: markdown.replace(/^---[\s\S]*?---/, '').slice(0, 30000) };
+    }));
     this.search = new MiniSearch<SearchDoc>({ fields: ['title', 'section', 'headings', 'body'], storeFields: ['title', 'url', 'path', 'section', 'headings', 'body'] });
     this.search.addAll(docs);
     return this.search;
