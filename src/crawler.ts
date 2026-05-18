@@ -17,7 +17,6 @@ const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
 const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
-const COMPONENTS_WITHOUT_OVERVIEW = new Set(['all-buttons']);
 const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 
 type ExtractedContent = {
@@ -93,12 +92,24 @@ async function scrollPage(page: Page): Promise<void> {
 }
 
 async function navigateToStableMaterialPage(page: Page, requestedUrl: string, baseUrl: string): Promise<string> {
-  const loadUrl = normalizeMaterialCrawlUrl(requestedUrl, baseUrl) ?? requestedUrl;
-  await page.goto(loadUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-  await page.waitForSelector(MATERIAL_CONTENT_SELECTOR, { timeout: 15_000 });
-  await waitForMaterialContent(page, loadUrl);
-  await waitForStableMaterialSnapshot(page);
-  return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
+  const candidates = materialCrawlCandidates(requestedUrl, baseUrl);
+  if (candidates.length === 0) throw new Error(`Unsupported Material URL: ${requestedUrl}`);
+
+  let lastError: unknown;
+  for (const loadUrl of candidates) {
+    try {
+      await page.goto(loadUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+      await page.waitForSelector(MATERIAL_CONTENT_SELECTOR, { timeout: 15_000 });
+      await waitForMaterialContent(page, loadUrl);
+      await waitForStableMaterialSnapshot(page);
+      return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  const details = lastError instanceof Error ? lastError.message : String(lastError);
+  throw new Error(`Material page did not render stable content for ${requestedUrl}. Tried: ${candidates.join(', ')}. Last error: ${details}`);
 }
 
 async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
@@ -115,7 +126,7 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
     const componentWords = componentName.split(' ').filter((word) => word.length > 1);
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
-    const contentMatches = title !== 'components' && componentWords.every((word) => text.includes(word));
+    const contentMatches = title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
     return pathMatches && contentMatches;
   }, { componentSlug: expectedComponentSlug }, { timeout: 20_000 });
 }
@@ -191,16 +202,22 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
 }
 
 export function normalizeMaterialCrawlUrl(raw: string, baseUrl: string): string | null {
-  const normalized = normalizeMaterialUrl(raw, baseUrl);
-  if (!normalized) return null;
+  return normalizeMaterialUrl(raw, baseUrl);
+}
+
+export function materialCrawlCandidates(raw: string, baseUrl: string): string[] {
+  const normalized = normalizeMaterialCrawlUrl(raw, baseUrl);
+  if (!normalized) return [];
+  const candidates = [normalized];
   const url = new URL(normalized);
   const componentMatch = url.pathname.match(COMPONENT_PATH_WITHOUT_OVERVIEW);
   const slug = componentMatch?.[1];
-  if (slug && !COMPONENTS_WITHOUT_OVERVIEW.has(slug)) {
+  if (slug) {
     url.pathname = `/components/${slug}/overview`;
-    return url.toString().replace(/\/$/, '');
+    const overviewUrl = url.toString().replace(/\/$/, '');
+    if (!candidates.includes(overviewUrl)) candidates.push(overviewUrl);
   }
-  return normalized;
+  return candidates;
 }
 
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
@@ -219,6 +236,10 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
   const title = normalizeText(page.title);
   const firstHeading = normalizeText(page.headings[0] ?? page.title);
   const contentPreview = normalizeText(`${page.title} ${page.headings.join(' ')} ${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`);
+
+  if (title.includes('page cannot be found') || contentPreview.includes('this page cannot be found')) {
+    return suspiciousPage(page, 'route rendered a not found page');
+  }
 
   if (segments[0] === 'components' && segments.length >= 2) {
     const componentSlug = segments[1] ?? '';
@@ -289,6 +310,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       const page = await context.newPage();
       try {
         const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl);
+        if (finalUrl !== url) seen.add(finalUrl);
         await autoExpand(page);
         await scrollPage(page);
         await waitForStableMaterialSnapshot(page);
