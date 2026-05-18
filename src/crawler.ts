@@ -374,7 +374,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       throwIfAborted(signal);
       if (pages.length >= maxPages) return;
 
-      const url = await nextUrl();
+      let url = takeUrl();
+      while (!url && activeWorkers > 0 && pages.length < maxPages && !aborted) {
+        await waitForQueuedUrl();
+        throwIfAborted(signal);
+        url = takeUrl();
+      }
       if (!url) return;
 
       let page: Page | null = null;
@@ -395,20 +400,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     }
   }
 
-  async function nextUrl(): Promise<string | null> {
-    while (!aborted) {
-      while (queue.length > 0) {
-        const queuedUrl = queue.shift();
-        if (!queuedUrl) continue;
-        queued.delete(queuedUrl);
-        if (seen.has(queuedUrl)) continue;
-        seen.add(queuedUrl);
-        return queuedUrl;
-      }
-
-      if (activeWorkers === 0 || pages.length >= maxPages) return null;
-      await waitForQueuedUrl();
-      throwIfAborted(signal);
+  function takeUrl(): string | null {
+    while (queue.length > 0) {
+      const queuedUrl = queue.shift();
+      if (!queuedUrl) continue;
+      queued.delete(queuedUrl);
+      if (seen.has(queuedUrl)) continue;
+      seen.add(queuedUrl);
+      return queuedUrl;
     }
     return null;
   }
