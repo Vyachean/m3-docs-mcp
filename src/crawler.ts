@@ -13,6 +13,12 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 
+type ExtractedContent = {
+  html: string;
+  title: string;
+  headings: string[];
+};
+
 export async function installPlaywrightChromium(): Promise<void> {
   const playwrightCli = require.resolve('playwright/cli');
   await execFileAsync(process.execPath, [playwrightCli, 'install', 'chromium']);
@@ -60,15 +66,13 @@ async function scrollPage(page: Page): Promise<void> {
   });
 }
 
-export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString()): MaterialPage {
+export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   const relPath = materialPagePath(url);
-  const cleanedHtml = stripNonContentHtml(html);
-  const titleMatch = cleanedHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  const title = stripHtml(titleMatch?.[1] ?? '').trim() || 'Material 3 page';
-  const headings = Array.from(cleanedHtml.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)).map((match) => stripHtml(match[1]).trim()).filter(Boolean);
-  const body = turndown.turndown(cleanedHtml).replace(/\n{3,}/g, '\n\n').trim();
-  const text = stripHtml(cleanedHtml).replace(/\s+/g, ' ').trim();
+  const title = metadata?.title?.trim() || titleFromHtml(html) || 'Material 3 page';
+  const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(html);
+  const body = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
+  const text = stripHtml(html).replace(/\s+/g, ' ').trim();
   const markdown = `---\ntitle: ${JSON.stringify(title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
   return {
     id: materialPageId(url),
@@ -84,15 +88,20 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
-  const html = await page.evaluate(() => {
+  const content = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const clone = root.cloneNode(true) as HTMLElement;
     for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
       for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
     }
-    return clone.innerHTML;
+    const textContent = (element: Element | null) => element?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    return {
+      html: clone.innerHTML,
+      title: textContent(clone.querySelector('h1')),
+      headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
+    };
   });
-  return extractMaterialPageFromHtml(html, url);
+  return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
 }
 
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
@@ -170,10 +179,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   return index;
 }
 
-function stripNonContentHtml(html: string): string {
-  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<noscript[\s\S]*?<\/noscript>/gi, '');
+function titleFromHtml(html: string): string {
+  const titleMatch = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  return stripHtml(titleMatch?.[1] ?? '').trim();
+}
+
+function headingsFromHtml(html: string): string[] {
+  return Array.from(html.matchAll(/<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/gi)).map((match) => stripHtml(match[1]).trim()).filter(Boolean);
 }
 
 function stripHtml(html: string): string {
-  return stripNonContentHtml(html).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+  return html.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<noscript[\s\S]*?<\/noscript>/gi, '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
