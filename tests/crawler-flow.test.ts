@@ -7,13 +7,13 @@ import type { MaterialIndex } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
-  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[] }> = {
+  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[]; finalUrl?: string }> = {
     'https://m3.material.io': {
       html: '<h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p>',
       title: 'Material 3',
       headings: ['Material 3'],
       links: [
-        'https://m3.material.io/components/dialogs/overview?tab=usage#actions',
+        'https://m3.material.io/components/dialogs?tab=usage#actions',
         'https://example.com/external',
         'https://m3.material.io/assets/logo.svg'
       ]
@@ -22,18 +22,28 @@ const playwrightMock = vi.hoisted(() => {
       html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
       title: 'Dialogs',
       headings: ['Dialogs', 'Usage'],
-      links: []
+      links: [],
+      finalUrl: 'https://m3.material.io/components/dialogs/overview'
     }
   };
 
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
+    url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
     waitForSelector: vi.fn(async () => undefined),
     waitForFunction: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
+      if (source.includes('window.location.href')) {
+        const current = pagesByUrl[currentUrl];
+        return {
+          url: current?.finalUrl ?? currentUrl,
+          title: current?.title ?? '',
+          text: current?.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ?? ''
+        };
+      }
       if (source.includes('clone.innerHTML')) {
         const current = pagesByUrl[currentUrl];
         return current ? { html: current.html, title: current.title, headings: current.headings } : { html: '', title: '', headings: [] };
@@ -88,12 +98,13 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.chromium.launch.mockClear();
     playwrightMock.browser.close.mockClear();
     playwrightMock.page.goto.mockClear();
+    playwrightMock.page.url.mockClear();
     playwrightMock.page.waitForSelector.mockClear();
     playwrightMock.page.waitForFunction.mockClear();
     playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [
-      'https://m3.material.io/components/dialogs/overview?tab=usage#actions',
+      'https://m3.material.io/components/dialogs?tab=usage#actions',
       'https://example.com/external',
       'https://m3.material.io/assets/logo.svg'
     ];
@@ -101,7 +112,8 @@ describe('crawlMaterialDocs', () => {
       html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
       title: 'Dialogs',
       headings: ['Dialogs', 'Usage'],
-      links: []
+      links: [],
+      finalUrl: 'https://m3.material.io/components/dialogs/overview'
     };
   });
 
@@ -149,16 +161,17 @@ describe('crawlMaterialDocs', () => {
 
   it('rejects component routes that render the parent Components page', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
-    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
       html: '<h1>Components</h1><p>Components are interactive building blocks.</p><h2>Buttons</h2><p>Buttons prompt most actions in a UI.</p>',
       title: 'Components',
       headings: ['Components', 'Buttons'],
-      links: []
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
     };
 
     await expect(crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 })).rejects.toThrow('below the required minimum');
 
-    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
   });
 
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
