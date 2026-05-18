@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, extractMaterialPageFromHtml, normalizeMaterialCrawlUrl, validateCrawledPage } from '../src/crawler.js';
+import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, extractMaterialPageFromHtml, materialCrawlCandidates, normalizeMaterialCrawlUrl, validateCrawledPage } from '../src/crawler.js';
 
 describe('extractMaterialPageFromHtml', () => {
   it('extracts metadata, readable text, and markdown from a Material documentation fixture', () => {
@@ -40,15 +40,25 @@ describe('extractMaterialPageFromHtml', () => {
   });
 });
 
-describe('normalizeMaterialCrawlUrl', () => {
-  it('uses direct component overview routes for component landing links', () => {
-    expect(normalizeMaterialCrawlUrl('/components/buttons?tab=usage#actions', 'https://m3.material.io')).toBe('https://m3.material.io/components/buttons/overview');
-    expect(normalizeMaterialCrawlUrl('https://m3.material.io/components/dialogs/', 'https://m3.material.io')).toBe('https://m3.material.io/components/dialogs/overview');
+describe('Material crawl URL handling', () => {
+  it('normalizes crawl URLs without inventing route structure', () => {
+    expect(normalizeMaterialCrawlUrl('/components/buttons?tab=usage#actions', 'https://m3.material.io')).toBe('https://m3.material.io/components/buttons');
+    expect(normalizeMaterialCrawlUrl('https://m3.material.io/components/dialogs/', 'https://m3.material.io')).toBe('https://m3.material.io/components/dialogs');
     expect(normalizeMaterialCrawlUrl('/components/button-groups/overview', 'https://m3.material.io')).toBe('https://m3.material.io/components/button-groups/overview');
   });
 
-  it('keeps documented component pages that intentionally have no overview suffix', () => {
-    expect(normalizeMaterialCrawlUrl('/components/all-buttons', 'https://m3.material.io')).toBe('https://m3.material.io/components/all-buttons');
+  it('adds component overview fallback candidates only for component landing links', () => {
+    expect(materialCrawlCandidates('/components/buttons?tab=usage#actions', 'https://m3.material.io')).toEqual([
+      'https://m3.material.io/components/buttons',
+      'https://m3.material.io/components/buttons/overview'
+    ]);
+    expect(materialCrawlCandidates('/components/all-buttons', 'https://m3.material.io')).toEqual([
+      'https://m3.material.io/components/all-buttons',
+      'https://m3.material.io/components/all-buttons/overview'
+    ]);
+    expect(materialCrawlCandidates('/components/button-groups/overview', 'https://m3.material.io')).toEqual([
+      'https://m3.material.io/components/button-groups/overview'
+    ]);
   });
 });
 
@@ -56,13 +66,13 @@ describe('discoverMaterialLinksFromHrefs', () => {
   it('normalizes, filters, and deduplicates crawl links', () => {
     expect(discoverMaterialLinksFromHrefs([
       'https://m3.material.io/components/dialogs?tab=usage#actions',
-      '/components/dialogs/overview/',
+      '/components/dialogs/',
       '/components/buttons',
       '/assets/logo.svg',
       'https://example.com/components/dialogs'
     ], 'https://m3.material.io')).toEqual([
-      'https://m3.material.io/components/dialogs/overview',
-      'https://m3.material.io/components/buttons/overview'
+      'https://m3.material.io/components/dialogs',
+      'https://m3.material.io/components/buttons'
     ]);
   });
 });
@@ -93,6 +103,20 @@ describe('validateCrawledPage', () => {
       path: 'components/buttons/overview.md',
       title: 'Components',
       reason: 'component route rendered the parent Components index instead of buttons'
+    });
+  });
+
+  it('rejects not found pages', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>This page cannot be found</h1>
+        <p>Try a different destination or head back to the homepage.</p>
+      </main>
+    `, 'https://m3.material.io/components/fabs', '2026-05-18T00:00:00.000Z');
+
+    expect(validateCrawledPage(page)).toMatchObject({
+      path: 'components/fabs.md',
+      reason: 'route rendered a not found page'
     });
   });
 
