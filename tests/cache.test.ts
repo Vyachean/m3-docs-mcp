@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cacheAgeMs, ensureCacheDirs, indexPath, isCacheFresh, pagesDir, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
+import { assertValidIndex, cacheAgeMs, cacheStatus, createStagingCacheDir, ensureCacheDirs, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
 let cacheDir: string;
@@ -23,6 +23,9 @@ const index: MaterialIndex = {
   source: 'https://m3.material.io',
   capturedAt: '2026-05-18T00:00:00.000Z',
   pageCount: 1,
+  attemptedPageCount: 1,
+  failedPageCount: 0,
+  failedUrls: [],
   pages: [page]
 };
 
@@ -33,6 +36,7 @@ describe('cache helpers', () => {
 
   afterEach(async () => {
     await rm(cacheDir, { recursive: true, force: true });
+    await rm(`${cacheDir}.previous`, { recursive: true, force: true });
   });
 
   it('resolves index and pages paths inside the supplied cache directory', () => {
@@ -64,5 +68,39 @@ describe('cache helpers', () => {
     expect(isCacheFresh(null, 24)).toBe(false);
     expect(isCacheFresh(60 * 60 * 1000, 2)).toBe(true);
     expect(isCacheFresh(3 * 60 * 60 * 1000, 2)).toBe(false);
+  });
+
+  it('reports cache status without mutating the cache', async () => {
+    await writeIndex(index, cacheDir);
+    const oldDate = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    await utimes(indexPath(cacheDir), oldDate, oldDate);
+
+    await expect(cacheStatus(cacheDir, 2)).resolves.toMatchObject({
+      cacheDir,
+      hasCache: true,
+      capturedAt: index.capturedAt,
+      pageCount: 1,
+      attemptedPageCount: 1,
+      failedPageCount: 0,
+      failedUrls: [],
+      isFresh: false
+    });
+  });
+
+  it('promotes a staging cache over an existing cache', async () => {
+    await writeIndex(index, cacheDir);
+    const stagingDir = await createStagingCacheDir(cacheDir);
+    const nextIndex = { ...index, capturedAt: '2026-05-19T00:00:00.000Z' };
+    await writeIndex(nextIndex, stagingDir);
+
+    await promoteStagingCache(stagingDir, cacheDir);
+
+    expect(await readIndex(cacheDir)).toEqual(nextIndex);
+    await expect(readFile(indexPath(stagingDir), 'utf8')).rejects.toThrow();
+  });
+
+  it('rejects suspicious crawl results before cache promotion', () => {
+    expect(() => assertValidIndex({ ...index, pageCount: 0, pages: [] }, 1)).toThrow('below the required minimum');
+    expect(() => assertValidIndex({ ...index, pageCount: 2 }, 1)).toThrow('inconsistent index');
   });
 });
