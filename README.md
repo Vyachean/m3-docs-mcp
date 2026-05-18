@@ -104,11 +104,19 @@ npx -y m3-docs-mcp install-browser --with-deps
 npx -y m3-docs-mcp update
 npx -y m3-docs-mcp update --max-pages 500
 npx -y m3-docs-mcp update --min-pages 25
+npx -y m3-docs-mcp update --concurrency 2
 npx -y m3-docs-mcp update --force
 npx -y m3-docs-mcp serve
 npx -y m3-docs-mcp serve --max-age-hours 12
 npx -y m3-docs-mcp serve --startup-max-pages 500
+npx -y m3-docs-mcp serve --startup-concurrency 2
 npx -y m3-docs-mcp serve --no-auto-update
+```
+
+For a quick smoke test, lower `--min-pages` together with `--max-pages`. The default minimum is 10 pages, so interrupting the command or crawling fewer than 10 accepted pages intentionally leaves the existing cache unchanged:
+
+```bash
+npx -y m3-docs-mcp update --max-pages 3 --min-pages 1
 ```
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
@@ -135,7 +143,7 @@ Override:
 M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 ```
 
-Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
+Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed, interrupted, or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
 The crawler first opens links exactly as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` as a fallback when the discovered route does not render stable matching content. Before extraction, it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
 
@@ -196,7 +204,8 @@ Arguments:
 
 ```json
 {
-  "maxPages": 250
+  "maxPages": 250,
+  "concurrency": 2
 }
 ```
 
