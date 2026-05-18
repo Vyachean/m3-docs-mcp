@@ -1,11 +1,30 @@
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
 import { writeIndex, writePage, getDefaultCacheDir } from './cache.js';
 import type { CrawlOptions, MaterialIndex, MaterialPage } from './types.js';
 
+const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const SKIP_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|xml|json|txt)$/i;
+
+async function launchChromium(headless: boolean): Promise<Browser> {
+  try {
+    return await chromium.launch({ headless });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('Executable doesn\'t exist') && !message.includes('browserType.launch')) {
+      throw error;
+    }
+
+    console.error('Playwright Chromium browser is missing. Installing it now.');
+    const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    await execFileAsync(npx, ['playwright', 'install', 'chromium'], { stdio: 'inherit' });
+    return chromium.launch({ headless });
+  }
+}
 
 function normalizeUrl(raw: string, baseUrl: string): string | null {
   try {
@@ -108,7 +127,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const cacheDir = options.cacheDir ?? getDefaultCacheDir();
   const maxPages = options.maxPages ?? 250;
-  const browser: Browser = await chromium.launch({ headless: options.headless ?? true });
+  const browser = await launchChromium(options.headless ?? true);
   const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
   const page = await context.newPage();
   const queue: string[] = [baseUrl];
