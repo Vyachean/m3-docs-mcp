@@ -2,9 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
-import { parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
+import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
-import type { CacheStatus } from './types.js';
+import type { CacheStatus, RefreshOptions } from './types.js';
+
+const MAX_CRAWL_CONCURRENCY = 8;
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -22,13 +24,14 @@ type CacheAvailability = {
   unavailable: ReturnType<typeof jsonText> | null;
 };
 
-export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number } = {}): Promise<void> {
+export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number; startupConcurrency?: number } = {}): Promise<void> {
   const cacheDir = options.cacheDir ?? getDefaultCacheDir();
   const maxAgeHours = parsePositiveNumberOption('M3_DOCS_MAX_AGE_HOURS', options.maxAgeHours ?? process.env.M3_DOCS_MAX_AGE_HOURS, 24);
   const autoUpdate = options.autoUpdate ?? process.env.M3_DOCS_AUTO_UPDATE !== 'false';
   const startupMaxPages = parsePositiveIntegerOption('M3_DOCS_STARTUP_MAX_PAGES', options.startupMaxPages ?? process.env.M3_DOCS_STARTUP_MAX_PAGES, 250);
+  const startupConcurrency = parseBoundedPositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1, MAX_CRAWL_CONCURRENCY);
   const store = new MaterialDocsStore(cacheDir);
-  const startupRefresh = createStartupRefreshController(store, startupMaxPages);
+  const startupRefresh = createStartupRefreshController(store, startupMaxPages, startupConcurrency);
   const server = new McpServer({ name: 'm3-docs-mcp', version: '0.1.0' });
 
   if (autoUpdate) {
@@ -74,16 +77,20 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
 
   server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
     maxPages: z.number().int().min(1).max(1000).optional(),
+    concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
     force: z.boolean().default(false)
-  }, async ({ maxPages, force }) => {
-    return jsonText(await store.refresh(maxPages, force ?? false));
+  }, async ({ maxPages, concurrency, force }) => {
+    const refreshOptions: RefreshOptions = { force: force ?? false };
+    if (maxPages !== undefined) refreshOptions.maxPages = maxPages;
+    if (concurrency !== undefined) refreshOptions.concurrency = concurrency;
+    return jsonText(await store.refresh(refreshOptions));
   });
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-function createStartupRefreshController(store: MaterialDocsStore, maxPages: number) {
+function createStartupRefreshController(store: MaterialDocsStore, maxPages: number, concurrency: number) {
   let refreshPromise: Promise<void> | null = null;
   const state: StartupRefreshState = {
     startedAt: null,
@@ -104,7 +111,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
     state.completedAt = null;
     state.running = true;
     state.error = null;
-    refreshPromise = store.refresh(maxPages)
+    refreshPromise = store.refresh({ maxPages, concurrency })
       .then(() => {
         state.completedAt = new Date().toISOString();
       })

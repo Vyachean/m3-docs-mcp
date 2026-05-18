@@ -3,7 +3,7 @@ import MiniSearch from 'minisearch';
 import { cacheStatus, getDefaultCacheDir, indexPath, readIndex, readPage } from './cache.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
-import type { CacheStatus, MaterialIndex, SearchResult } from './types.js';
+import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
 
 const MATERIAL_BASE_URL = 'https://m3.material.io';
 const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
@@ -30,10 +30,10 @@ export class MaterialDocsStore {
     return this.readCurrentIndex();
   }
 
-  async refresh(maxPages?: number, force = false): Promise<MaterialIndex> {
+  async refresh(options: RefreshOptions = {}): Promise<MaterialIndex> {
     if (this.refreshPromise) return this.refreshPromise;
 
-    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages, force })
+    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options })
       .then((index) => {
         this.index = index;
         this.indexMtimeMs = null;

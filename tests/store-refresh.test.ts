@@ -2,10 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MaterialIndex } from '../src/types.js';
+import type { MaterialIndex, RefreshOptions } from '../src/types.js';
 
 const crawlerMock = vi.hoisted(() => ({
-  crawlMaterialDocs: vi.fn<(options: { cacheDir?: string; maxPages?: number; force?: boolean }) => Promise<MaterialIndex>>()
+  crawlMaterialDocs: vi.fn<(options: RefreshOptions & { cacheDir?: string }) => Promise<MaterialIndex>>()
 }));
 
 vi.mock('../src/crawler.js', () => ({
@@ -50,27 +50,27 @@ describe('MaterialDocsStore refresh concurrency', () => {
     crawlerMock.crawlMaterialDocs.mockResolvedValue(index);
 
     const store = new MaterialDocsStore(cacheDir);
-    const first = store.refresh(250);
-    const second = store.refresh(500);
+    const first = store.refresh({ maxPages: 250 });
+    const second = store.refresh({ maxPages: 500 });
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(1);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250, force: false });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250 });
 
     resolveFirstRefresh(index);
     await expect(Promise.all([first, second])).resolves.toEqual([index, index]);
 
-    await expect(store.refresh(10)).resolves.toBe(index);
+    await expect(store.refresh({ maxPages: 10 })).resolves.toBe(index);
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10, force: false });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10 });
   });
 
   it('passes forced refresh requests to the crawler', async () => {
     crawlerMock.crawlMaterialDocs.mockResolvedValue(index);
     const store = new MaterialDocsStore(cacheDir);
 
-    await expect(store.refresh(25, true)).resolves.toBe(index);
+    await expect(store.refresh({ maxPages: 25, concurrency: 4, force: true })).resolves.toBe(index);
 
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 25, force: true });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 25, concurrency: 4, force: true });
   });
 
   it('clears the refresh lock after a failed refresh', async () => {
@@ -79,10 +79,10 @@ describe('MaterialDocsStore refresh concurrency', () => {
 
     const store = new MaterialDocsStore(cacheDir);
 
-    await expect(store.refresh(250)).rejects.toThrow('crawl failed');
-    await expect(store.refresh(25)).resolves.toBe(index);
+    await expect(store.refresh({ maxPages: 250 })).rejects.toThrow('crawl failed');
+    await expect(store.refresh({ maxPages: 25 })).resolves.toBe(index);
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25, force: false });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25 });
   });
 });

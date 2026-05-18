@@ -18,6 +18,8 @@ const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
 const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
 const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
+const DEFAULT_CRAWL_CONCURRENCY = 1;
+const MAX_DISCOVERED_LINK_FACTOR = 4;
 
 type ExtractedContent = {
   html: string;
@@ -91,19 +93,21 @@ async function scrollPage(page: Page): Promise<void> {
   });
 }
 
-async function navigateToStableMaterialPage(page: Page, requestedUrl: string, baseUrl: string): Promise<string> {
+async function navigateToStableMaterialPage(page: Page, requestedUrl: string, baseUrl: string, signal?: AbortSignal): Promise<string> {
   const candidates = materialCrawlCandidates(requestedUrl, baseUrl);
   if (candidates.length === 0) throw new Error(`Unsupported Material URL: ${requestedUrl}`);
 
   let lastError: unknown;
   for (const loadUrl of candidates) {
+    throwIfAborted(signal);
     try {
       await page.goto(loadUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
       await page.waitForSelector(MATERIAL_CONTENT_SELECTOR, { timeout: 15_000 });
       await waitForMaterialContent(page, loadUrl);
-      await waitForStableMaterialSnapshot(page);
+      await waitForStableMaterialSnapshot(page, signal);
       return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
     } catch (error) {
+      if (signal?.aborted) throw error;
       lastError = error;
     }
   }
@@ -114,13 +118,13 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
 
 async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
-  await page.waitForFunction(({ componentSlug }) => {
+  await page.waitForFunction(({ componentSlug, minPageTextLength }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const title = normalize(root.querySelector('h1')?.textContent ?? '');
     const text = normalize(root.textContent ?? '');
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    if (text.length < MIN_PAGE_TEXT_LENGTH || !title) return false;
+    if (text.length < minPageTextLength || !title) return false;
     if (!componentSlug) return true;
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
@@ -128,13 +132,14 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
     const contentMatches = title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
     return pathMatches && contentMatches;
-  }, { componentSlug: expectedComponentSlug }, { timeout: 20_000 });
+  }, { componentSlug: expectedComponentSlug, minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
 }
 
-async function waitForStableMaterialSnapshot(page: Page): Promise<void> {
+async function waitForStableMaterialSnapshot(page: Page, signal?: AbortSignal): Promise<void> {
   let previous: StableSnapshot | null = null;
   let stableReads = 0;
   for (let attempt = 0; attempt < 12; attempt += 1) {
+    throwIfAborted(signal);
     const current = await materialSnapshot(page);
     if (previous && current.url === previous.url && current.title === previous.title && current.text === previous.text) {
       stableReads += 1;
@@ -143,7 +148,7 @@ async function waitForStableMaterialSnapshot(page: Page): Promise<void> {
       stableReads = 0;
     }
     previous = current;
-    await delay(250);
+    await delay(250, signal);
   }
   throw new Error('Material page content did not stabilize before extraction.');
 }
@@ -159,8 +164,29 @@ async function materialSnapshot(page: Page): Promise<StableSnapshot> {
   });
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortError(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function abortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new Error(signal.reason ? String(signal.reason) : 'Material 3 crawl was interrupted.');
 }
 
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
@@ -293,50 +319,40 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<MaterialIndex> {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const maxPages = options.maxPages ?? 250;
+  const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
+  const signal = options.signal;
+  throwIfAborted(signal);
+
   const browser = await launchChromium(options.headless ?? true);
   const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
-  const queue: string[] = [baseUrl];
+  const queue: string[] = [];
+  const queued = new Set<string>();
   const seen = new Set<string>();
+  const writtenPaths = new Set<string>();
   const pages: MaterialPage[] = [];
   const failedUrls: string[] = [];
   const suspiciousPages: SuspiciousCrawlPage[] = [];
+  const waiters: Array<() => void> = [];
+  let activeWorkers = 0;
+  let aborted = false;
+
+  const onAbort = () => {
+    aborted = true;
+    wakeWorkers();
+    void context.close().catch(() => undefined);
+  };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  enqueue(baseUrl);
 
   try {
-    while (queue.length > 0 && pages.length < maxPages) {
-      const queuedUrl = queue.shift();
-      const url = queuedUrl ? normalizeMaterialCrawlUrl(queuedUrl, baseUrl) : null;
-      if (!url || seen.has(url)) continue;
-      seen.add(url);
-      const page = await context.newPage();
-      try {
-        const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl);
-        if (finalUrl !== url) seen.add(finalUrl);
-        await autoExpand(page);
-        await scrollPage(page);
-        await waitForStableMaterialSnapshot(page);
-        const materialPage = await extract(page, finalUrl);
-        const suspiciousResult = validateCrawledPage(materialPage);
-        if (suspiciousResult) {
-          suspiciousPages.push(suspiciousResult);
-          failedUrls.push(url);
-          console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
-        } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH) {
-          pages.push(materialPage);
-          await writePage(materialPage, cacheDir);
-        }
-        for (const link of await discoverLinks(page, baseUrl)) {
-          if (!seen.has(link) && queue.length + seen.size < maxPages * 4) queue.push(link);
-        }
-      } catch (error) {
-        failedUrls.push(url);
-        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
-      } finally {
-        await page.close();
-      }
-    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
   } finally {
+    signal?.removeEventListener('abort', onAbort);
+    wakeWorkers();
     await browser.close();
   }
+
+  throwIfAborted(signal);
 
   const capturedAt = new Date().toISOString();
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
@@ -352,6 +368,89 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   };
   await writeIndex(index, cacheDir);
   return index;
+
+  async function worker(): Promise<void> {
+    while (!aborted) {
+      throwIfAborted(signal);
+      if (pages.length >= maxPages) return;
+
+      let url = takeUrl();
+      while (!url && activeWorkers > 0 && pages.length < maxPages && !aborted) {
+        await waitForQueuedUrl();
+        throwIfAborted(signal);
+        url = takeUrl();
+      }
+      if (!url) return;
+
+      let page: Page | null = null;
+      try {
+        page = await context.newPage();
+        throwIfAborted(signal);
+        await crawlPage(page, url);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        failedUrls.push(url);
+        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.stack ?? error.message : String(error));
+      } finally {
+        activeWorkers -= 1;
+        await page?.close().catch(() => undefined);
+        wakeWorkers();
+      }
+    }
+  }
+
+  function takeUrl(): string | null {
+    while (queue.length > 0) {
+      const queuedUrl = queue.shift();
+      if (!queuedUrl) continue;
+      queued.delete(queuedUrl);
+      if (seen.has(queuedUrl)) continue;
+      seen.add(queuedUrl);
+      activeWorkers += 1;
+      return queuedUrl;
+    }
+    return null;
+  }
+
+  async function crawlPage(page: Page, url: string): Promise<void> {
+    const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
+    if (finalUrl !== url) seen.add(finalUrl);
+    await autoExpand(page);
+    await scrollPage(page);
+    await waitForStableMaterialSnapshot(page, signal);
+    const materialPage = await extract(page, finalUrl);
+    const suspiciousResult = validateCrawledPage(materialPage);
+    if (suspiciousResult) {
+      suspiciousPages.push(suspiciousResult);
+      failedUrls.push(url);
+      console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
+    } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+      pages.push(materialPage);
+      writtenPaths.add(materialPage.path);
+      await writePage(materialPage, cacheDir);
+    }
+
+    for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+  }
+
+  function enqueue(raw: string): void {
+    const link = normalizeMaterialCrawlUrl(raw, baseUrl);
+    if (!link || seen.has(link) || queued.has(link)) return;
+    if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
+    queue.push(link);
+    queued.add(link);
+    wakeWorkers();
+  }
+
+  function waitForQueuedUrl(): Promise<void> {
+    return new Promise((resolve) => {
+      waiters.push(resolve);
+    });
+  }
+
+  function wakeWorkers(): void {
+    for (const resolve of waiters.splice(0)) resolve();
+  }
 }
 
 function duplicateContentGroups(pages: MaterialPage[]): DuplicateContentGroup[] {

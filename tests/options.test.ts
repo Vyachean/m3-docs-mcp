@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePositiveIntegerOption, parsePositiveNumberOption } from '../src/options.js';
+import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from '../src/options.js';
 
 describe('numeric option validation', () => {
   it('parses positive integer options', () => {
@@ -16,6 +16,17 @@ describe('numeric option validation', () => {
     expect(() => parsePositiveIntegerOption('--max-pages', 'abc')).toThrow('--max-pages must be a finite number.');
     expect(() => parsePositiveIntegerOption('--max-pages', '')).toThrow('--max-pages must be a finite number.');
     expect(() => parsePositiveIntegerOption('--max-pages', '   ')).toThrow('--max-pages must be a finite number.');
+  });
+
+  it('parses bounded positive integer options', () => {
+    expect(parseBoundedPositiveIntegerOption('--concurrency', '1', 1, 8)).toBe(1);
+    expect(parseBoundedPositiveIntegerOption('--concurrency', '8', 1, 8)).toBe(8);
+    expect(parseBoundedPositiveIntegerOption('--concurrency', undefined, 2, 8)).toBe(2);
+  });
+
+  it('rejects bounded positive integer options above the maximum', () => {
+    expect(() => parseBoundedPositiveIntegerOption('--concurrency', '9', 1, 8)).toThrow('--concurrency must be less than or equal to 8.');
+    expect(() => parseBoundedPositiveIntegerOption('--concurrency', '0', 1, 8)).toThrow('--concurrency must be a positive integer.');
   });
 
   it('parses positive number options', () => {
