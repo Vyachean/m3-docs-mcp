@@ -40,10 +40,7 @@ const NOISE_ONLY_MARKDOWN_LINES = new Set([
   'visibilitygrid_viewexpand_all',
   'copy linklink copied',
   'on this page',
-  'token',
-  'type',
-  'resource',
-  'status'
+  'token'
 ]);
 
 const TOKEN_BROWSER_NOISE_PATTERNS = [
@@ -289,7 +286,6 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
       if (text === 'on this page' || text === 'copy link' || text === 'link copied') return true;
       if (/^resources[a-z0-9+]+$/i.test(text)) return true;
       if (/^(link|pause|search|close)$/i.test(text)) return true;
-      if (/^(check|close) do(?:n['’]t)?$/i.test(text)) return true;
       if (/^(infooverview|stylespecs|design_servicesguidelines|head_mounted_devicexr|accessibility_newaccessibility)$/i.test(text.replace(/[^a-z_]/g, ''))) return true;
       return false;
     };
@@ -321,25 +317,32 @@ function postProcessMarkdown(markdown: string): string {
     .split('\n');
 
   const cleaned: string[] = [];
+  let inFencedCodeBlock = false;
   for (let i = 0; i < lines.length; i += 1) {
-    const line = cleanMarkdownLine(lines[i] ?? '');
-    if (shouldDropMarkdownLine(line)) continue;
+    const rawLine = lines[i] ?? '';
+    const isFence = /^\s*```/.test(rawLine);
+    const line = inFencedCodeBlock ? rawLine.replace(/[^\S\n]+$/g, '') : cleanMarkdownLine(rawLine);
+    if (!inFencedCodeBlock && shouldDropMarkdownLine(line)) continue;
 
     const previous = cleaned[cleaned.length - 1] ?? '';
     if (!line && !previous) continue;
     cleaned.push(line);
+
+    if (isFence) inFencedCodeBlock = !inFencedCodeBlock;
   }
 
-  return pruneSpecsNoiseSections(cleaned).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return collapseBlankLines(cleaned).join('\n').trim();
 }
 
 function cleanMarkdownLine(line: string): string {
-  const trimmed = line.trim();
-  if (/^check\s+do$/i.test(trimmed)) return 'Do';
-  if (/^close\s+don['’]?t$/i.test(trimmed)) return `Don't`;
-  return trimmed
+  const trailingTrimmed = line.replace(/[^\S\n]+$/g, '');
+  const leadingWhitespace = trailingTrimmed.match(/^\s*/)?.[0] ?? '';
+  const content = trailingTrimmed.slice(leadingWhitespace.length).trim();
+  if (/^check\s+do$/i.test(content)) return `${leadingWhitespace}Do`;
+  if (/^close\s+don['’]?t$/i.test(content)) return `${leadingWhitespace}Don't`;
+  return `${leadingWhitespace}${content
     .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\s{2,}/g, ' ');
+    .replace(/\s{2,}/g, ' ')}`;
 }
 
 function shouldDropMarkdownLine(line: string): boolean {
@@ -353,30 +356,8 @@ function shouldDropMarkdownLine(line: string): boolean {
   return false;
 }
 
-function pruneSpecsNoiseSections(lines: string[]): string[] {
-  const output: string[] = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i] ?? '';
-    output.push(line);
-    if (!/^##\s+Tokens\s+&?\s+specs$/i.test(line)) {
-      i += 1;
-      continue;
-    }
-
-    i += 1;
-    while (i < lines.length && !/^##\s+/.test(lines[i] ?? '')) {
-      const current = lines[i] ?? '';
-      const normalized = normalizeNoiseText(current);
-      const isStructuredValueLine = /^(attribute|value)$/i.test(current) || /\d+(dp|x\d+dp)\b/i.test(current) || /max-width/i.test(current);
-      const isMeaningfulNarrative = current.startsWith('Browse the component') || current.startsWith('Color values are implemented');
-      if (!current || isStructuredValueLine || isMeaningfulNarrative || /^!\[/.test(current)) output.push(current);
-      i += 1;
-    }
-  }
-
-  return output.filter((line, index, arr) => {
+function collapseBlankLines(lines: string[]): string[] {
+  return lines.filter((line, index, arr) => {
     if (line) return true;
     return (arr[index - 1] ?? '') !== '' && (arr[index + 1] ?? '') !== '';
   });
