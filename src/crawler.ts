@@ -20,6 +20,7 @@ const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
 const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
+const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
 
 type ExtractedContent = {
   html: string;
@@ -51,25 +52,32 @@ async function launchChromium(headless: boolean): Promise<Browser> {
   }
 }
 
-async function autoExpand(page: Page): Promise<void> {
+async function expandMainContent(page: Page): Promise<void> {
   await page.evaluate(async () => {
     const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    for (const details of Array.from(document.querySelectorAll('details:not([open])'))) {
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]');
+    if (!root) return;
+
+    for (const details of Array.from(root.querySelectorAll('details:not([open])'))) {
       details.setAttribute('open', 'true');
     }
-    for (const el of Array.from(document.querySelectorAll('[aria-expanded="false"]'))) {
-      if (el instanceof HTMLElement) el.click();
-    }
 
-    const navigationRoots = Array.from(document.querySelectorAll('nav, aside, [role="navigation"]'));
+    const isSafeContentExpander = (el: Element): el is HTMLElement => {
+      if (!(el instanceof HTMLElement)) return false;
+      if (!el.closest('main, [role="main"]')) return false;
+      if (el.closest('nav, aside, header, footer, [role="navigation"]')) return false;
+      if (el.closest('a[href]')) return false;
+      if (el.matches('a, a *, [href], [role="link"], [role="tab"], [role="menuitem"]')) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === 'button' || el.getAttribute('role') === 'button';
+    };
+
     for (let pass = 0; pass < 4; pass += 1) {
-      const expandable = navigationRoots.flatMap((root) => Array.from(root.querySelectorAll('[aria-expanded="false"]')));
+      const expandable = Array.from(root.querySelectorAll('[aria-expanded="false"]')).filter(isSafeContentExpander);
       if (expandable.length === 0) break;
       for (const el of expandable) {
-        if (el instanceof HTMLElement && !el.closest('a[href]')) {
-          el.click();
-          await wait(25);
-        }
+        el.click();
+        await wait(25);
       }
     }
     await wait(200);
@@ -217,6 +225,11 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
     for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
       for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
     }
+    for (const el of Array.from(clone.querySelectorAll<HTMLElement>('[style*="background-image"]'))) {
+      const backgroundImage = el.style.backgroundImage;
+      const match = backgroundImage.match(/url\(["']?([^"')]+)["']?\)/i);
+      if (match?.[1]) el.setAttribute('data-background-image', match[1]);
+    }
     const textContent = (element: Element | null) => element?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
     return {
       html: clone.innerHTML,
@@ -247,13 +260,37 @@ export function materialCrawlCandidates(raw: string, baseUrl: string): string[] 
 }
 
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value))));
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlPriority);
+}
+
+async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
+  if (typeof fetch !== 'function') return [];
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SITEMAP_FETCH_TIMEOUT_MS);
+  try {
+    const sitemapUrl = new URL('/sitemap.xml', baseUrl).toString();
+    const response = await fetch(sitemapUrl, { signal: controller.signal });
+    if (!response.ok) return [];
+    const body = await response.text();
+    const urls = Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
+    return discoverMaterialLinksFromHrefs(urls, baseUrl);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
-  await autoExpand(page);
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
   return discoverMaterialLinksFromHrefs(links, baseUrl);
+}
+
+async function assertMaterialRouteUnchanged(page: Page, expectedUrl: string, baseUrl: string, phase: string): Promise<void> {
+  const currentUrl = normalizeMaterialUrl(page.url(), baseUrl);
+  if (currentUrl !== expectedUrl) {
+    throw new Error(`Material page route changed during ${phase}: expected ${expectedUrl}, got ${currentUrl ?? page.url()}`);
+  }
 }
 
 export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | null {
@@ -275,6 +312,11 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
     }
     if (!containsAllWords(contentPreview, componentName.split(' '))) {
       return suspiciousPage(page, `component route content does not mention expected component slug ${componentSlug}`);
+    }
+  } else if (segments.length >= 2) {
+    const leafSlug = segments.at(-1) === 'overview' ? segments.at(-2) : segments.at(-1);
+    if (leafSlug && !containsAllWords(contentPreview, normalizeSlug(leafSlug).split(' '))) {
+      return suspiciousPage(page, `route content does not mention expected slug ${leafSlug}`);
     }
   }
 
@@ -343,6 +385,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   };
   signal?.addEventListener('abort', onAbort, { once: true });
   enqueue(baseUrl);
+  for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
 
   try {
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
@@ -415,9 +458,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   async function crawlPage(page: Page, url: string): Promise<void> {
     const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
     if (finalUrl !== url) seen.add(finalUrl);
-    await autoExpand(page);
+    await expandMainContent(page);
+    await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'content expansion');
     await scrollPage(page);
+    await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'lazy-load scrolling');
     await waitForStableMaterialSnapshot(page, signal);
+    await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'stabilization');
     const materialPage = await extract(page, finalUrl);
     const suspiciousResult = validateCrawledPage(materialPage);
     if (suspiciousResult) {
@@ -430,6 +476,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       await writePage(materialPage, cacheDir);
     }
 
+    await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
     for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
   }
 
@@ -438,6 +485,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     if (!link || seen.has(link) || queued.has(link)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
+    queue.sort(compareMaterialCrawlPriority);
     queued.add(link);
     wakeWorkers();
   }
@@ -451,6 +499,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   function wakeWorkers(): void {
     for (const resolve of waiters.splice(0)) resolve();
   }
+}
+
+function compareMaterialCrawlPriority(a: string, b: string): number {
+  return materialCrawlPriority(a) - materialCrawlPriority(b) || a.localeCompare(b);
+}
+
+function materialCrawlPriority(url: string): number {
+  const path = new URL(url).pathname;
+  if (path === '/') return 0;
+  if (path.startsWith('/get-started')) return 1;
+  if (path.startsWith('/components')) return 2;
+  if (path.startsWith('/foundations')) return 3;
+  if (path.startsWith('/styles')) return 4;
+  if (path.startsWith('/develop')) return 5;
+  if (path.startsWith('/blog')) return 6;
+  return 7;
 }
 
 function duplicateContentGroups(pages: MaterialPage[]): DuplicateContentGroup[] {
