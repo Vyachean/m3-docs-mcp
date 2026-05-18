@@ -87,13 +87,16 @@ program.parseAsync(process.argv).catch((error) => {
 });
 
 function installAbortSignalHandlers(abortController: AbortController): () => void {
-  const onSignal = (signalName: NodeJS.Signals) => {
-    if (!abortController.signal.aborted) abortController.abort(new Error(`Interrupted by ${signalName}.`));
-  };
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
+  const abortFromInt = () => abortWithName(abortController, 'SIGINT');
+  const abortFromTerm = () => abortWithName(abortController, 'SIGTERM');
+  process.once('SIGINT', abortFromInt);
+  process.once('SIGTERM', abortFromTerm);
   return () => {
-    process.off('SIGINT', onSignal);
-    process.off('SIGTERM', onSignal);
+    process.off('SIGINT', abortFromInt);
+    process.off('SIGTERM', abortFromTerm);
   };
+}
+
+function abortWithName(abortController: AbortController, signalName: string): void {
+  if (!abortController.signal.aborted) abortController.abort(new Error(`Interrupted by ${signalName}.`));
 }
