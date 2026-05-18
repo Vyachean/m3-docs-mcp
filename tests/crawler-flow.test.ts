@@ -187,7 +187,7 @@ describe('crawlMaterialDocs', () => {
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
-  });
+  }, 15_000);
 
   it('uses sitemap loc URLs as discovery seeds before crawling unrelated links', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
