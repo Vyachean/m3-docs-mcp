@@ -23,7 +23,13 @@ Add the server to your MCP client config. No global install is required.
 }
 ```
 
-The npm package prepares the Chromium browser used by Playwright during package setup, so users should not need a separate browser setup step.
+The npm package downloads the Playwright Chromium browser during package setup. That makes the common MCP configuration self-contained, but the first install still needs network access and can take noticeably longer than a package without browser automation.
+
+If a package manager skips lifecycle scripts or the browser cache is removed, run the package-local installer manually:
+
+```bash
+npx -y m3-docs-mcp install-browser
+```
 
 On startup, the server checks the local cache. If the cache is missing or stale, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
 
@@ -33,7 +39,7 @@ Manual refresh is still available:
 npx -y m3-docs-mcp update
 ```
 
-If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata.
+If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
 
 ## Use directly from GitHub before npm publishing
 
@@ -55,6 +61,7 @@ npx -y m3-docs-mcp status
 npx -y m3-docs-mcp update
 npx -y m3-docs-mcp update --max-pages 500
 npx -y m3-docs-mcp update --min-pages 25
+npx -y m3-docs-mcp install-browser
 npx -y m3-docs-mcp serve
 npx -y m3-docs-mcp serve --max-age-hours 12
 npx -y m3-docs-mcp serve --startup-max-pages 500
