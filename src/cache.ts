@@ -50,7 +50,7 @@ export async function readPage(pagePath: string, cacheDir = getDefaultCacheDir()
 export async function cacheAgeMs(cacheDir = getDefaultCacheDir()): Promise<number | null> {
   try {
     const s = await stat(indexPath(cacheDir));
-    return Date.now() - s.mtimeMs;
+    return Math.max(0, Date.now() - s.mtimeMs);
   } catch {
     return null;
   }
