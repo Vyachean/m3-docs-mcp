@@ -9,7 +9,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.ts'],
-      exclude: ['src/index.ts', 'src/mcp-server.ts']
+      exclude: ['src/index.ts', 'src/types.ts']
     }
   }
 });
