@@ -1,0 +1,61 @@
+name: Patch PR 10
+
+on:
+  push:
+    branches:
+      - fix/markdown-tables-token-viewer-images
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    if: github.actor == 'Vyachean'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/markdown-tables-token-viewer-images
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch review findings
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/crawler.ts')
+          text = path.read_text()
+          replacements = [
+              ("""  const rows = Array.from(table.querySelectorAll('tr'));
+  const markdownRows = rows
+    .map((row) => cellsFromRow(turndown, row))
+    .filter((cells) => cells.some(Boolean));""", """  const rows = Array.from(table.querySelectorAll('tr'))
+    .filter((row) => row.closest('table') === table);
+  const markdownRows = rows
+    .map((row) => cellsFromRow(turndown, row))
+    .filter((cells) => cells.some(Boolean));"""),
+              ("""  return Array.from(row.querySelectorAll('th, td'))
+    .map((cell) => elementToTableCellMarkdown(turndown, cell));""", """  return Array.from(row.querySelectorAll('th, td'))
+    .filter((cell) => cell.closest('tr') === row)
+    .map((cell) => elementToTableCellMarkdown(turndown, cell));"""),
+              ("""function isElementNode(node: unknown): node is Node {
+  return Boolean(node && typeof (node as Node).nodeName === 'string' && (node as Node).nodeType === 1);
+}""", """function isElementNode(node: unknown): node is Element {
+  return Boolean(node && (node as Node).nodeType === 1);
+}"""),
+              ("""    .replace(/!\\[([^\\]]*)\\]\\(([^)]*=w\\d+[^)]*)\\)!\\[\\1\\]\\(([^)]*=s0[^)]*)\\)/g, '![$1]($2)')
+    .replace(/!\\[([^\\]]*)\\]\\(([^)]*=s0[^)]*)\\)!\\[\\1\\]\\(([^)]*=w\\d+[^)]*)\\)/g, '![$1]($3)')""", """    .replace(/!\\[([^\\]]*)\\]\\(([^)]*=w\\d+[^)]*)\\)\\s*!\\[\\1\\]\\(([^)]*=s0[^)]*)\\)/g, '![$1]($2)')
+    .replace(/!\\[([^\\]]*)\\]\\(([^)]*=s0[^)]*)\\)\\s*!\\[\\1\\]\\(([^)]*=w\\d+[^)]*)\\)/g, '![$1]($3)')""")
+          ]
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit(f'target not found: {old[:80]!r}')
+              text = text.replace(old, new, 1)
+          path.write_text(text)
+          Path('.github/workflows/patch-pr-10.yml').unlink()
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/crawler.ts .github/workflows/patch-pr-10.yml
+          git commit -m "Address markdown extraction review findings"
+          git push origin HEAD:fix/markdown-tables-token-viewer-images
