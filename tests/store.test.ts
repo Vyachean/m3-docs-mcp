@@ -1,8 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { writeIndex, writePage } from '../src/cache.js';
+import { indexPath, writeIndex, writePage } from '../src/cache.js';
 import { MaterialDocsStore } from '../src/store.js';
 import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
@@ -32,14 +32,20 @@ const buttonPage: MaterialPage = {
   capturedAt: '2026-05-18T00:00:00.000Z'
 };
 
-async function seedStore(): Promise<MaterialDocsStore> {
-  const index: MaterialIndex = {
+function testIndex(pages: MaterialPage[] = [dialogPage, buttonPage]): MaterialIndex {
+  return {
     source: 'https://m3.material.io',
     capturedAt: '2026-05-18T00:00:00.000Z',
-    pageCount: 2,
-    pages: [dialogPage, buttonPage].map(({ text: _text, markdown: _markdown, ...meta }) => meta)
+    pageCount: pages.length,
+    attemptedPageCount: pages.length,
+    failedPageCount: 0,
+    failedUrls: [],
+    pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
-  await writeIndex(index, cacheDir);
+}
+
+async function seedStore(): Promise<MaterialDocsStore> {
+  await writeIndex(testIndex(), cacheDir);
   await writePage(dialogPage, cacheDir);
   await writePage(buttonPage, cacheDir);
   return new MaterialDocsStore(cacheDir);
@@ -57,6 +63,15 @@ describe('MaterialDocsStore', () => {
   it('throws a useful error when cache is missing', async () => {
     const store = new MaterialDocsStore(cacheDir);
     await expect(store.load()).rejects.toThrow('Material 3 docs cache not found');
+  });
+
+  it('serves stale cache without refreshing implicitly', async () => {
+    const store = await seedStore();
+    const oldDate = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    await utimes(indexPath(cacheDir), oldDate, oldDate);
+
+    await expect(store.ensureFresh(24)).resolves.toMatchObject({ pageCount: 2 });
+    await expect(store.getStatus(24)).resolves.toMatchObject({ hasCache: true, isFresh: false, pageCount: 2 });
   });
 
   it('loads a page by cache path, source URL, and extensionless path', async () => {
