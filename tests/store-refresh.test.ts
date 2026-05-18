@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MaterialIndex } from '../src/types.js';
 
 const crawlerMock = vi.hoisted(() => ({
-  crawlMaterialDocs: vi.fn<(options: { cacheDir?: string; maxPages?: number }) => Promise<MaterialIndex>>()
+  crawlMaterialDocs: vi.fn<(options: { cacheDir?: string; maxPages?: number; force?: boolean }) => Promise<MaterialIndex>>()
 }));
 
 vi.mock('../src/crawler.js', () => ({
@@ -54,14 +54,23 @@ describe('MaterialDocsStore refresh concurrency', () => {
     const second = store.refresh(500);
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(1);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250, force: false });
 
     resolveFirstRefresh(index);
     await expect(Promise.all([first, second])).resolves.toEqual([index, index]);
 
     await expect(store.refresh(10)).resolves.toBe(index);
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10, force: false });
+  });
+
+  it('passes forced refresh requests to the crawler', async () => {
+    crawlerMock.crawlMaterialDocs.mockResolvedValue(index);
+    const store = new MaterialDocsStore(cacheDir);
+
+    await expect(store.refresh(25, true)).resolves.toBe(index);
+
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 25, force: true });
   });
 
   it('clears the refresh lock after a failed refresh', async () => {
@@ -74,6 +83,6 @@ describe('MaterialDocsStore refresh concurrency', () => {
     await expect(store.refresh(25)).resolves.toBe(index);
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25, force: false });
   });
 });
