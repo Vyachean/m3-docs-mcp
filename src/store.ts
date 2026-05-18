@@ -20,6 +20,7 @@ export class MaterialDocsStore {
   private index: MaterialIndex | null = null;
   private indexSignature: string | null = null;
   private search: MiniSearch<SearchDoc> | null = null;
+  private refreshPromise: Promise<MaterialIndex> | null = null;
 
   constructor(private readonly cacheDir = getDefaultCacheDir()) {}
 
@@ -28,10 +29,19 @@ export class MaterialDocsStore {
   }
 
   async refresh(maxPages?: number): Promise<MaterialIndex> {
-    const index = await crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages });
-    this.setIndex(index);
-    this.search = null;
-    return index;
+    if (this.refreshPromise) return this.refreshPromise;
+
+    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, maxPages })
+      .then((index) => {
+        this.setIndex(index);
+        this.search = null;
+        return index;
+      })
+      .finally(() => {
+        this.refreshPromise = null;
+      });
+
+    return this.refreshPromise;
   }
 
   async load(): Promise<MaterialIndex> {
