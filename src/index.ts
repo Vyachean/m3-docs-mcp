@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { readdir, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { Command } from 'commander';
 import { cacheStatus, getDefaultCacheDir } from './cache.js';
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
@@ -8,7 +10,7 @@ import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePos
 const program = new Command();
 const MAX_CRAWL_CONCURRENCY = 8;
 const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
-const CLI_PROGRESS_INTERVAL_MS = 5_000;
+const CLI_PROGRESS_INTERVAL_MS = 1_000;
 
 program
   .name('m3-docs-mcp')
@@ -44,13 +46,14 @@ program.command('update')
     const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
     const concurrency = parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY);
+    const cacheDir = options.cacheDir ?? getDefaultCacheDir();
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
     console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
-    const stopProgressReporter = startCliProgressReporter({ maxPages, minPageCount, concurrency });
+    const stopProgressReporter = startCliProgressReporter({ cacheDir, maxPages, minPageCount, concurrency });
     try {
       const index = await crawlMaterialDocs({
-        cacheDir: options.cacheDir,
+        cacheDir,
         maxPages,
         minPageCount,
         concurrency,
@@ -60,7 +63,7 @@ program.command('update')
       });
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
       console.log(JSON.stringify({
-        cacheDir: options.cacheDir ?? getDefaultCacheDir(),
+        cacheDir,
         capturedAt: index.capturedAt,
         pageCount: index.pageCount,
         attemptedPageCount: index.attemptedPageCount,
@@ -102,13 +105,85 @@ program.parseAsync(process.argv).catch((error) => {
   process.exitCode = 1;
 });
 
-function startCliProgressReporter(options: { maxPages: number; minPageCount: number; concurrency: number }): () => void {
+function startCliProgressReporter(options: { cacheDir: string; maxPages: number; minPageCount: number; concurrency: number }): () => void {
   const startedAt = Date.now();
-  const timer = setInterval(() => {
-    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-    console.error(`Material 3 docs cache refresh still running: elapsed=${elapsedSeconds}s, maxPages=${options.maxPages}, minPages=${options.minPageCount}, concurrency=${options.concurrency}.`);
-  }, CLI_PROGRESS_INTERVAL_MS);
-  return () => clearInterval(timer);
+  let previousLength = 0;
+  let stopped = false;
+  let tickRunning = false;
+
+  const render = async () => {
+    if (stopped || tickRunning) return;
+    tickRunning = true;
+    try {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      const savedPages = await countStagedMarkdownPages(options.cacheDir);
+      const line = `Material 3 docs cache refresh: elapsed=${elapsedSeconds}s saved=${savedPages}/${options.maxPages} min=${options.minPageCount} concurrency=${options.concurrency}`;
+      if (process.stderr.isTTY) {
+        const padding = previousLength > line.length ? ' '.repeat(previousLength - line.length) : '';
+        process.stderr.write(`\r${line}${padding}`);
+        previousLength = line.length;
+      } else {
+        console.error(line);
+      }
+    } finally {
+      tickRunning = false;
+    }
+  };
+
+  void render();
+  const timer = setInterval(() => void render(), CLI_PROGRESS_INTERVAL_MS);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    if (process.stderr.isTTY && previousLength > 0) process.stderr.write('\n');
+  };
+}
+
+async function countStagedMarkdownPages(cacheDir: string): Promise<number> {
+  const stagingDir = await newestStagingCacheDir(cacheDir);
+  if (!stagingDir) return 0;
+  return countMarkdownFiles(path.join(stagingDir, 'pages'));
+}
+
+async function newestStagingCacheDir(cacheDir: string): Promise<string | null> {
+  const parentDir = path.dirname(cacheDir);
+  let entries: string[];
+  try {
+    entries = await readdir(parentDir);
+  } catch {
+    return null;
+  }
+
+  let newest: { dir: string; mtimeMs: number } | null = null;
+  for (const entry of entries) {
+    if (!entry.startsWith('.m3-docs-mcp-staging-')) continue;
+    const dir = path.join(parentDir, entry);
+    try {
+      const stats = await stat(dir);
+      if (!stats.isDirectory()) continue;
+      if (!newest || stats.mtimeMs > newest.mtimeMs) newest = { dir, mtimeMs: stats.mtimeMs };
+    } catch {
+      // Ignore staging directories deleted between readdir and stat.
+    }
+  }
+  return newest?.dir ?? null;
+}
+
+async function countMarkdownFiles(dir: string): Promise<number> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  let count = 0;
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) count += await countMarkdownFiles(fullPath);
+    else if (entry.isFile() && entry.name.endsWith('.md')) count += 1;
+  }
+  return count;
 }
 
 function installAbortSignalHandlers(abortController: AbortController): () => void {
