@@ -39,18 +39,23 @@ program.command('update')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
   .action(async (options) => {
+    const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
+    const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
+    const concurrency = parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY);
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
+    console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir: options.cacheDir,
-        maxPages: parsePositiveIntegerOption('--max-pages', options.maxPages),
-        minPageCount: parsePositiveIntegerOption('--min-pages', options.minPages),
-        concurrency: parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY),
+        maxPages,
+        minPageCount,
+        concurrency,
         headless: !options.headed,
         force: options.force,
         signal: abortController.signal
       });
+      console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
       console.log(JSON.stringify({
         cacheDir: options.cacheDir ?? getDefaultCacheDir(),
         capturedAt: index.capturedAt,
@@ -59,6 +64,13 @@ program.command('update')
         failedPageCount: index.failedPageCount,
         failedUrls: index.failedUrls
       }, null, 2));
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        console.error('Material 3 docs cache refresh interrupted. Existing cache was left unchanged. If this was the first refresh, status will still report hasCache=false.');
+        process.exitCode = 130;
+        return;
+      }
+      throw error;
     } finally {
       removeSignalHandlers();
     }
