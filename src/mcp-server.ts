@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
-import type { CacheStatus } from './types.js';
+import type { CacheStatus, RefreshOptions } from './types.js';
 
 const MAX_CRAWL_CONCURRENCY = 8;
 
@@ -80,7 +80,10 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
     force: z.boolean().default(false)
   }, async ({ maxPages, concurrency, force }) => {
-    return jsonText(await store.refresh({ maxPages, concurrency, force: force ?? false }));
+    const refreshOptions: RefreshOptions = { force: force ?? false };
+    if (maxPages !== undefined) refreshOptions.maxPages = maxPages;
+    if (concurrency !== undefined) refreshOptions.concurrency = concurrency;
+    return jsonText(await store.refresh(refreshOptions));
   });
 
   const transport = new StdioServerTransport();
