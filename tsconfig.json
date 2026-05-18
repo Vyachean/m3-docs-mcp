@@ -9,9 +9,10 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "declaration": true,
-    "sourceMap": true
+    "sourceMap": true,
+    "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "stryker.config.json"]
 }
