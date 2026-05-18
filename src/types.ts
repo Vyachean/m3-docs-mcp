@@ -68,19 +68,6 @@ export type CacheStatus = {
   isFresh: boolean;
 };
 
-export type CrawlProgressEvent = {
-  type: 'start' | 'page-start' | 'page-saved' | 'page-rejected' | 'page-failed' | 'complete';
-  url?: string;
-  path?: string;
-  title?: string;
-  reason?: string;
-  pageCount: number;
-  attemptedPageCount: number;
-  failedPageCount: number;
-  maxPages: number;
-  concurrency: number;
-};
-
 export type CrawlOptions = {
   baseUrl?: string;
   maxPages?: number;
@@ -90,7 +77,6 @@ export type CrawlOptions = {
   force?: boolean;
   concurrency?: number;
   signal?: AbortSignal;
-  onProgress?: (event: CrawlProgressEvent) => void;
 };
 
 export type RefreshOptions = {
@@ -98,7 +84,6 @@ export type RefreshOptions = {
   force?: boolean;
   concurrency?: number;
   signal?: AbortSignal;
-  onProgress?: (event: CrawlProgressEvent) => void;
 };
 
 export type SearchResult = {
