@@ -4,7 +4,7 @@ import { rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
-import { assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, writeIndex, writePage } from './cache.js';
+import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, MaterialIndex, MaterialPage } from './types.js';
 
@@ -19,9 +19,9 @@ type ExtractedContent = {
   headings: string[];
 };
 
-export async function installPlaywrightChromium(): Promise<void> {
+export async function installPlaywrightChromium(withDependencies = false): Promise<void> {
   const playwrightCli = require.resolve('playwright/cli');
-  await execFileAsync(process.execPath, [playwrightCli, 'install', 'chromium']);
+  await execFileAsync(process.execPath, [playwrightCli, 'install', ...(withDependencies ? ['--with-deps'] : []), 'chromium']);
 }
 
 async function launchChromium(headless: boolean): Promise<Browser> {
@@ -30,10 +30,10 @@ async function launchChromium(headless: boolean): Promise<Browser> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('Executable doesn\'t exist') && !message.includes('browserType.launch')) {
-      throw error;
+      throw new Error(`Playwright Chromium failed to start. Run: npx -y m3-docs-mcp install-browser --with-deps. Original error: ${message}`, { cause: error });
     }
 
-    throw new Error('Playwright Chromium browser is missing. Run: npx -y m3-docs-mcp install-browser', { cause: error });
+    throw new Error('Playwright Chromium browser is missing. Run: npx -y m3-docs-mcp install-browser. On Linux, use: npx -y m3-docs-mcp install-browser --with-deps', { cause: error });
   }
 }
 
@@ -115,11 +115,13 @@ async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const previousIndex = await readIndex(targetCacheDir);
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
 
   try {
     const index = await crawlIntoCache(stagingCacheDir, options);
     assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
+    assertSafeCachePromotion(index, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
     return index;
   } catch (error) {
