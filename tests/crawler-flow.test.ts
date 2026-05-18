@@ -189,7 +189,27 @@ describe('crawlMaterialDocs', () => {
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
   });
 
-  it('uses sitemap URLs as discovery seeds before crawling unrelated links', async () => {
+  it('uses sitemap loc URLs as discovery seeds before crawling unrelated links', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => '<urlset><url><loc>https://m3.material.io/foundations/layout/canonical-layouts</loc></url><url><loc>https://m3.material.io/blog/ignored</loc></url></urlset>'
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [];
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout/canonical-layouts'] = {
+      html: '<h1>Canonical layouts</h1><p>Canonical layouts help applications adapt across screen sizes with enough text for crawler validation.</p>',
+      title: 'Canonical layouts',
+      headings: ['Canonical layouts'],
+      links: [],
+      finalUrl: 'https://m3.material.io/foundations/layout/canonical-layouts'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 2 });
+
+    expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
+  });
+
+  it('falls back to URL extraction when sitemap loc entries are unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       text: async () => 'https://m3.material.io/foundations/layout/canonical-layouts 2026-02-16 https://m3.material.io/blog/ignored'
