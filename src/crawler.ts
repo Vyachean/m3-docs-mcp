@@ -114,13 +114,13 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
 
 async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
-  await page.waitForFunction(({ componentSlug }) => {
+  await page.waitForFunction(({ componentSlug, minPageTextLength }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const title = normalize(root.querySelector('h1')?.textContent ?? '');
     const text = normalize(root.textContent ?? '');
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    if (text.length < MIN_PAGE_TEXT_LENGTH || !title) return false;
+    if (text.length < minPageTextLength || !title) return false;
     if (!componentSlug) return true;
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
@@ -128,7 +128,7 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
     const contentMatches = title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
     return pathMatches && contentMatches;
-  }, { componentSlug: expectedComponentSlug }, { timeout: 20_000 });
+  }, { componentSlug: expectedComponentSlug, minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
 }
 
 async function waitForStableMaterialSnapshot(page: Page): Promise<void> {
