@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type { CacheStatus, MaterialIndex, MaterialPage } from './types.js';
 
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
@@ -71,7 +72,7 @@ export function isCacheFresh(ageMs: number | null, maxAgeHours: number): boolean
   return ageMs < maxAgeHours * 60 * 60 * 1000;
 }
 
-export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours = 24): Promise<CacheStatus> {
+export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours = DEFAULT_CACHE_MAX_AGE_HOURS): Promise<CacheStatus> {
   const index = await readIndex(cacheDir);
   const ageMs = await cacheAgeMs(cacheDir);
   return {
