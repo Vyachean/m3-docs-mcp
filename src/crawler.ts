@@ -385,7 +385,7 @@ function padRow(row: string[], width: number): string[] {
 }
 
 function elementToTableCellMarkdown(turndown: TurndownService, element: Element): string {
-  const html = 'innerHTML' in element ? (element as Element & { innerHTML: string }).innerHTML : element.textContent ?? '';
+  const html = element.innerHTML || element.textContent || '';
   const markdown = turndown.turndown(html).replace(/\n{2,}/g, '<br>').replace(/\n/g, '<br>');
   return escapeMarkdownTableCell(normalizeInlineText(markdown));
 }
