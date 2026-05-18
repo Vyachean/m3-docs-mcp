@@ -95,6 +95,12 @@ function parseToolResult(result: { content: Array<{ type: 'text'; text: string }
   return JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
 }
 
+async function callTool(name: string, args: Record<string, unknown>) {
+  const handler = mocks.toolHandlers.get(name);
+  expect(handler).toBeDefined();
+  return parseToolResult(await handler!(args));
+}
+
 describe('serveMcp', () => {
   beforeEach(() => {
     mocks.toolHandlers.clear();
@@ -112,7 +118,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 125 });
     await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(125));
 
-    const result = parseToolResult(await mocks.toolHandlers.get('search_material_docs')?.({ query: 'dialogs', limit: 5 })!);
+    const result = await callTool('search_material_docs', { query: 'dialogs', limit: 5 });
 
     expect(result).toMatchObject({
       message: 'Material 3 docs cache is being built. Retry this tool after the background refresh completes.',
@@ -143,7 +149,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 250 });
     await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(250));
 
-    const result = parseToolResult(await mocks.toolHandlers.get('search_material_docs')?.({ query: 'dialogs', limit: 10 })!);
+    const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
     expect(result).toMatchObject({
       results: [searchResult],
@@ -159,7 +165,7 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
-    const result = parseToolResult(await mocks.toolHandlers.get('refresh_material_docs')?.({ maxPages: 77 })!);
+    const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
     expect(store.refresh).toHaveBeenCalledWith(77);
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
