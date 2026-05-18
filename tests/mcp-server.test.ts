@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => {
   type MockStore = {
     cacheDir?: string;
     getStatus: ReturnType<typeof vi.fn<(maxAgeHours?: number) => Promise<CacheStatus>>>;
-    refresh: ReturnType<typeof vi.fn<(maxPages?: number) => Promise<MaterialIndex>>>;
+    refresh: ReturnType<typeof vi.fn<(maxPages?: number, force?: boolean) => Promise<MaterialIndex>>>;
     searchDocs: ReturnType<typeof vi.fn<(query: string, limit: number) => Promise<SearchResult[]>>>;
     getPage: ReturnType<typeof vi.fn>;
     getComponentDocs: ReturnType<typeof vi.fn>;
@@ -189,6 +189,7 @@ describe('serveMcp', () => {
     expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1000).success).toBe(true);
     expect(refreshSchema.maxPages.safeParse(1001).success).toBe(false);
+    expect(refreshSchema.force.safeParse(true).success).toBe(true);
   });
 
   it('starts a missing-cache refresh in the background and does not block search tools', async () => {
@@ -251,7 +252,19 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
-    expect(store.refresh).toHaveBeenCalledWith(77);
+    expect(store.refresh).toHaveBeenCalledWith(77, false);
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
+  });
+
+  it('passes explicit forced refresh requests to the store', async () => {
+    const index = mocks.makeIndex();
+    const store = mocks.makeStore();
+    store.refresh.mockResolvedValue(index);
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+    await callTool('refresh_material_docs', { maxPages: 77, force: true });
+
+    expect(store.refresh).toHaveBeenCalledWith(77, true);
   });
 });
