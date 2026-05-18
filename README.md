@@ -113,7 +113,7 @@ npx -y m3-docs-mcp serve --no-auto-update
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
 
-`update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, or more than 20% failed attempted pages after at least 10 attempts. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
+`update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 
@@ -137,6 +137,10 @@ M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
 
 Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
+The crawler first opens links exactly as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` as a fallback when the discovered route does not render stable matching content. Before extraction, it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
+
+Each refreshed index includes a `qualityReport` with duplicate page bodies, suspicious route/content mismatches, short pages, duplicate titles, and page counts by section. This helps diagnose SPA route failures such as `/components/buttons` rendering the parent `Components` listing instead of the Buttons documentation.
+
 ## MCP tools
 
 ### `search_material_docs`
@@ -154,7 +158,7 @@ Arguments:
 
 ### `get_material_page`
 
-Returns one cached page by source URL or local cache path. URL query strings, fragments, trailing slashes, leading slashes, and optional `.md` suffixes are normalized before lookup.
+Returns one cached page by source URL or local cache path. URL query strings, fragments, trailing slashes, leading slashes, optional `.md` suffixes, and component overview aliases are normalized before lookup.
 
 Arguments:
 

@@ -230,6 +230,36 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20), { force: true })).not.toThrow();
   });
 
+  it('rejects duplicate crawled content unless forced', () => {
+    const duplicatedIndex = materialIndex(2, {
+      qualityReport: {
+        duplicateContent: [{ hash: 'same-body', title: 'Components', paths: ['components/buttons.md', 'components/dialogs.md'], urls: ['https://m3.material.io/components/buttons', 'https://m3.material.io/components/dialogs'] }],
+        suspiciousPages: [],
+        shortPages: [],
+        duplicateTitles: [],
+        pagesBySection: { components: 2 }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(duplicatedIndex, null)).toThrow('duplicate page content');
+    expect(() => assertSafeCachePromotion(duplicatedIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('rejects suspicious crawled content unless forced', () => {
+    const suspiciousIndex = materialIndex(1, {
+      qualityReport: {
+        duplicateContent: [],
+        suspiciousPages: [{ url: 'https://m3.material.io/components/buttons', path: 'components/buttons.md', title: 'Components', reason: 'component route rendered the parent Components index instead of buttons' }],
+        shortPages: [],
+        duplicateTitles: [],
+        pagesBySection: { components: 1 }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(suspiciousIndex, null)).toThrow('suspicious page content');
+    expect(() => assertSafeCachePromotion(suspiciousIndex, null, { force: true })).not.toThrow();
+  });
+
   it('does not reject small crawls by failure ratio alone', () => {
     const smallIndex = materialIndex(3, {
       attemptedPageCount: 4,

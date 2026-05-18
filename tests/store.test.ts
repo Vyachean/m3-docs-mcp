@@ -92,6 +92,13 @@ describe('MaterialDocsStore', () => {
     await expect(store.getPage('components/dialogs/overview.md?tab=usage#actions')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
   });
 
+  it('loads component overview pages through landing aliases', async () => {
+    const store = await seedStore();
+    await expect(store.getPage('components/buttons')).resolves.toMatchObject({ meta: expect.objectContaining({ path: buttonPage.path }) });
+    await expect(store.getPage('/components/buttons.md')).resolves.toMatchObject({ meta: expect.objectContaining({ path: buttonPage.path }) });
+    await expect(store.getPage('https://m3.material.io/components/buttons')).resolves.toMatchObject({ meta: expect.objectContaining({ path: buttonPage.path }) });
+  });
+
   it('reports unknown pages explicitly', async () => {
     const store = await seedStore();
     await expect(store.getPage('missing.md')).rejects.toThrow('Material 3 page not found: missing.md');

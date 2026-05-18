@@ -7,13 +7,13 @@ import type { MaterialIndex } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
-  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[] }> = {
+  const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[]; finalUrl?: string }> = {
     'https://m3.material.io': {
       html: '<h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p>',
       title: 'Material 3',
       headings: ['Material 3'],
       links: [
-        'https://m3.material.io/components/dialogs/overview?tab=usage#actions',
+        'https://m3.material.io/components/dialogs?tab=usage#actions',
         'https://example.com/external',
         'https://m3.material.io/assets/logo.svg'
       ]
@@ -22,15 +22,45 @@ const playwrightMock = vi.hoisted(() => {
       html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
       title: 'Dialogs',
       headings: ['Dialogs', 'Usage'],
-      links: []
+      links: [],
+      finalUrl: 'https://m3.material.io/components/dialogs/overview'
     }
+  };
+
+  const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const contentMatchesComponent = (componentSlug: string | null | undefined): boolean => {
+    const current = pagesByUrl[currentUrl];
+    if (!current) return false;
+    if (!componentSlug) return htmlText(current.html).length > 80 && Boolean(current.title);
+
+    const pathname = new URL(current.finalUrl ?? currentUrl).pathname.replace(/^\/+|\/+$/g, '');
+    const title = normalize(current.title);
+    const text = normalize(`${current.title} ${htmlText(current.html)}`);
+    const componentWords = normalize(componentSlug.replace(/-/g, ' ')).split(' ').filter((word) => word.length > 1);
+    const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
+    return pathMatches && title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
   };
 
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
+    url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
+    waitForSelector: vi.fn(async () => undefined),
+    waitForFunction: vi.fn(async (_fn: unknown, arg?: { componentSlug?: string | null }) => {
+      if (!contentMatchesComponent(arg?.componentSlug)) throw new Error(`condition did not match for ${currentUrl}`);
+    }),
+    close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: () => unknown) => {
       const source = fn.toString();
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
+      if (source.includes('window.location.href')) {
+        const current = pagesByUrl[currentUrl];
+        return {
+          url: current?.finalUrl ?? currentUrl,
+          title: current?.title ?? '',
+          text: current ? htmlText(current.html) : ''
+        };
+      }
       if (source.includes('clone.innerHTML')) {
         const current = pagesByUrl[currentUrl];
         return current ? { html: current.html, title: current.title, headings: current.headings } : { html: '', title: '', headings: [] };
@@ -46,7 +76,8 @@ const playwrightMock = vi.hoisted(() => {
   return {
     chromium: { launch: vi.fn(async () => browser) },
     browser,
-    page
+    page,
+    pagesByUrl
   };
 });
 
@@ -84,7 +115,25 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.chromium.launch.mockClear();
     playwrightMock.browser.close.mockClear();
     playwrightMock.page.goto.mockClear();
+    playwrightMock.page.url.mockClear();
+    playwrightMock.page.waitForSelector.mockClear();
+    playwrightMock.page.waitForFunction.mockClear();
+    playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
+    delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
+    delete playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [
+      'https://m3.material.io/components/dialogs?tab=usage#actions',
+      'https://example.com/external',
+      'https://m3.material.io/assets/logo.svg'
+    ];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs/overview'] = {
+      html: '<h1>Dialogs</h1><p>Dialogs provide important prompts and decisions with enough body text for crawler validation.</p><h2>Usage</h2><p>Use dialogs for focused tasks.</p>',
+      title: 'Dialogs',
+      headings: ['Dialogs', 'Usage'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/dialogs/overview'
+    };
   });
 
   afterEach(async () => {
@@ -95,17 +144,29 @@ describe('crawlMaterialDocs', () => {
     const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 });
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledWith({ headless: true });
-    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'networkidle', timeout: 45000 });
-    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'networkidle', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://example.com/external', expect.anything());
+    expect(playwrightMock.page.waitForSelector).toHaveBeenCalled();
+    expect(playwrightMock.page.waitForFunction).toHaveBeenCalled();
+    expect(playwrightMock.page.close).toHaveBeenCalledTimes(2);
     expect(playwrightMock.browser.close).toHaveBeenCalledTimes(1);
 
     expect(index).toMatchObject({
       source: 'https://m3.material.io',
       pageCount: 2,
-      attemptedPageCount: 2,
+      attemptedPageCount: 3,
       failedPageCount: 0,
-      failedUrls: []
+      failedUrls: [],
+      qualityReport: {
+        duplicateContent: [],
+        suspiciousPages: [],
+        pagesBySection: {
+          root: 1,
+          'components/dialogs': 1
+        }
+      }
     });
     expect(index.pages.map((page) => page.path).sort()).toEqual(['components/dialogs/overview.md', 'index.md']);
     expect(index.pages.find((page) => page.path === 'components/dialogs/overview.md')).toMatchObject({
@@ -116,6 +177,21 @@ describe('crawlMaterialDocs', () => {
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
+  });
+
+  it('rejects component routes that render the parent Components page', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Components</h1><p>Components are interactive building blocks.</p><h2>Buttons</h2><p>Buttons prompt most actions in a UI.</p>',
+      title: 'Components',
+      headings: ['Components', 'Buttons'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
+    };
+
+    await expect(crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 })).rejects.toThrow('below the required minimum');
+
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
   });
 
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
