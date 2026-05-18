@@ -88,7 +88,8 @@ describe('MaterialDocsStore', () => {
     await expect(store.getPage(dialogPage.url)).resolves.toMatchObject({ meta: expect.objectContaining({ path: dialogPage.path }) });
     await expect(store.getPage('components/dialogs/overview')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
     await expect(store.getPage('/components/dialogs/overview.md')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
-    await expect(store.getPage(`${dialogPage.url}/?tab=usage#actions`)).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
+    await expect(store.getPage(`  ${dialogPage.url}/?tab=usage#actions  `)).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
+    await expect(store.getPage('components/dialogs/overview.md?tab=usage#actions')).resolves.toMatchObject({ meta: expect.objectContaining({ url: dialogPage.url }) });
   });
 
   it('reports unknown pages explicitly', async () => {
@@ -101,17 +102,40 @@ describe('MaterialDocsStore', () => {
     await expect(store.getComponentDocs('DIALOGS')).resolves.toEqual([
       { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
     ]);
-    await expect(store.getComponentDocs('Dialogs overview')).resolves.toEqual([
+    await expect(store.getComponentDocs(' Dialogs   overview ')).resolves.toEqual([
       { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
+    ]);
+    await expect(store.getComponentDocs('   ')).resolves.toEqual([]);
+  });
+
+  it('matches component docs by section or path without relying on title', async () => {
+    const iconButtonPage: MaterialPage = {
+      ...buttonPage,
+      id: 'icon-button-overview',
+      title: 'Overview',
+      url: 'https://m3.material.io/components/icon-buttons/overview',
+      path: 'components/icon-buttons/overview.md',
+      section: 'components/icon-buttons',
+      headings: ['Icon buttons'],
+      markdown: '# Icon buttons\n\nIcon buttons help people take icon-only actions.\n'
+    };
+    await writeIndex(testIndex([iconButtonPage]), cacheDir);
+    await writePage(iconButtonPage, cacheDir);
+
+    const store = new MaterialDocsStore(cacheDir);
+    await expect(store.getComponentDocs('Icon  Buttons')).resolves.toEqual([
+      { path: iconButtonPage.path, title: iconButtonPage.title, url: iconButtonPage.url, markdown: iconButtonPage.markdown }
     ]);
   });
 
   it('lists discovered component slugs and ignores non-component pages', async () => {
     const rootPage = { ...buttonPage, id: 'root', path: 'index.md', section: 'root', title: 'Material 3' };
-    await writeIndex(testIndex([dialogPage, buttonPage, rootPage]), cacheDir);
+    const nestedNonComponentPage = { ...buttonPage, id: 'styles-buttons', path: 'styles/components/buttons.md', section: 'styles/components', title: 'Buttons style' };
+    await writeIndex(testIndex([dialogPage, buttonPage, rootPage, nestedNonComponentPage]), cacheDir);
     await writePage(dialogPage, cacheDir);
     await writePage(buttonPage, cacheDir);
     await writePage(rootPage, cacheDir);
+    await writePage(nestedNonComponentPage, cacheDir);
 
     const store = new MaterialDocsStore(cacheDir);
     await expect(store.listComponents()).resolves.toEqual(['buttons', 'dialogs']);
@@ -124,12 +148,14 @@ describe('MaterialDocsStore', () => {
     expect(results[0]?.headings).toEqual(['Dialogs', 'Usage']);
     expect(results[0]?.excerpt).toContain('Dialogs provide important prompts');
     expect(results[0]?.excerpt).not.toContain('---');
+    expect(results[0]?.excerpt).toBe(results[0]?.excerpt.trim());
   });
 
-  it('limits search results', async () => {
+  it('uses prefix search and limits search results', async () => {
     const store = await seedStore();
-    const results = await store.searchDocs('overview', 1);
+    const results = await store.searchDocs('prom', 1);
     expect(results).toHaveLength(1);
+    expect(results[0]?.title).toBe('Dialogs overview');
   });
 
   it('invalidates the search index when cache is externally updated', async () => {
