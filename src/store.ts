@@ -71,9 +71,9 @@ export class MaterialDocsStore {
     if (!normalizedName) return [];
 
     const query = normalizedName.toLowerCase().replace(/\s+/g, '-');
-    const titleQuery = normalizedName.toLowerCase();
+    const titleQuery = normalizeSearchText(normalizedName);
     const index = await this.getIndex();
-    const matched = index.pages.filter((p) => p.section.toLowerCase().includes(`components/${query}`) || p.path.toLowerCase().includes(`/components/${query}`) || p.title.toLowerCase().includes(titleQuery));
+    const matched = index.pages.filter((p) => p.section.toLowerCase().includes(`components/${query}`) || p.path.toLowerCase().includes(`/components/${query}`) || normalizeSearchText(p.title).includes(titleQuery));
     return Promise.all(matched.map(async (p) => ({ path: p.path, title: p.title, url: p.url, markdown: await readPage(p.path, this.cacheDir) })));
   }
 
@@ -148,6 +148,10 @@ export class MaterialDocsStore {
     const start = Math.max(0, index - 180);
     return body.slice(start, start + 500).replace(/\s+/g, ' ').trim();
   }
+}
+
+function normalizeSearchText(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
 function normalizeMaterialPageLookupKey(pathOrUrl: string): string {
