@@ -261,7 +261,7 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   addMaterialMarkdownRules(turndown);
 
   const relPath = materialPagePath(url);
-  const sanitizedHtml = preserveTokenViewerTextLines(stripUnsafeHtml(html));
+  const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
   const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
   const rawBody = turndown.turndown(sanitizedHtml)
@@ -458,12 +458,34 @@ function hasAncestorMatching(node: Element, boundary: Element, selector: string)
 
 function preferLargeImageUrl(url: string): string {
   return url
-    .replace(/=w(\d+)(?=($|[)&]))/g, (match, width: string) => Number(width) < MIN_EMBEDDED_IMAGE_WIDTH ? `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}` : match)
-    .replace(/=s0(?=($|[)&]))/g, `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}`);
+    .replace(/=w(\d+)(?!\d)/g, (match, width: string) => Number(width) < MIN_EMBEDDED_IMAGE_WIDTH ? `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}` : match)
+    .replace(/=s0(?!\d)/g, `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}`);
 }
 
 function normalizeMarkdownImageUrls(markdown: string): string {
   return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, imageUrl: string) => `![${alt}](${preferLargeImageUrl(imageUrl)})`);
+}
+
+function preserveBackgroundImageAttributes(html: string): string {
+  return html.replace(/<([a-z][\w:-]*)([^>]*)>/gi, (match, tagName: string, attributes: string) => {
+    if (/\sdata-background-image\s*=/i.test(attributes)) return match;
+    const style = attributes.match(/\sstyle=(['"])([\s\S]*?)\1/i)?.[2];
+    if (!style) return match;
+
+    const imageUrl = backgroundImageUrlFromStyle(style);
+    if (!imageUrl) return match;
+
+    return `<${tagName}${attributes} data-background-image="${escapeHtmlAttribute(imageUrl)}">`;
+  });
+}
+
+function backgroundImageUrlFromStyle(style: string): string | null {
+  const match = style.match(/background-image\s*:\s*url\(\s*(['"]?)(.*?)\1\s*\)/i);
+  return match?.[2]?.trim() || null;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function stripUnsafeHtml(html: string): string {
