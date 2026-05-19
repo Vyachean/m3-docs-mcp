@@ -1,19 +1,14 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { cacheStatus, getDefaultCacheDir } from './cache.js';
+import { printJson, readCachedResult, type ReadCommandOptions } from './cli-read.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
-import { MaterialDocsStore } from './store.js';
 import type { CrawlProgress } from './types.js';
 
 const program = new Command();
-
-type ReadCommandOptions = {
-  cacheDir?: string;
-  maxAgeHours: string;
-};
 
 type SearchCommandOptions = ReadCommandOptions & {
   limit: string;
@@ -101,7 +96,7 @@ program.command('search')
   .action(async (queryParts: string[], options: SearchCommandOptions) => {
     const limit = parseBoundedPositiveIntegerOption('--limit', options.limit, 1, 25);
     const query = queryParts.join(' ').trim();
-    await printCachedResult(options, 'results', [], (store) => store.searchDocs(query, limit));
+    await printCachedCommandResult(options, 'results', [], (store) => store.searchDocs(query, limit));
   });
 
 program.command('page')
@@ -110,7 +105,7 @@ program.command('page')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .action(async (pathOrUrl: string, options: ReadCommandOptions) => {
-    await printCachedResult(options, 'page', null, (store) => store.getPage(pathOrUrl));
+    await printCachedCommandResult(options, 'page', null, (store) => store.getPage(pathOrUrl));
   });
 
 program.command('component')
@@ -120,7 +115,7 @@ program.command('component')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .action(async (componentNameParts: string[], options: ReadCommandOptions) => {
     const componentName = componentNameParts.join(' ').trim();
-    await printCachedResult(options, 'pages', [], (store) => store.getComponentDocs(componentName));
+    await printCachedCommandResult(options, 'pages', [], (store) => store.getComponentDocs(componentName));
   });
 
 program.command('components')
@@ -128,7 +123,7 @@ program.command('components')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .action(async (options: ReadCommandOptions) => {
-    await printCachedResult(options, 'components', [], (store) => store.listComponents());
+    await printCachedCommandResult(options, 'components', [], (store) => store.listComponents());
   });
 
 program.command('install-browser')
@@ -153,35 +148,15 @@ program.parseAsync(process.argv).catch((error) => {
   process.exitCode = 1;
 });
 
-async function printCachedResult(
+async function printCachedCommandResult(
   options: ReadCommandOptions,
   resultKey: string,
   unavailableFallback: unknown,
-  read: (store: MaterialDocsStore) => Promise<unknown>
+  read: Parameters<typeof readCachedResult>[3]
 ): Promise<void> {
-  const cacheDir = options.cacheDir ?? getDefaultCacheDir();
-  const maxAgeHours = parsePositiveNumberOption('--max-age-hours', options.maxAgeHours);
-  const store = new MaterialDocsStore(cacheDir);
-  const status = await store.getStatus(maxAgeHours);
-
-  if (!status.hasCache) {
-    printJson({
-      status,
-      message: 'Material 3 docs cache is not available. Run: m3-docs-mcp update',
-      [resultKey]: unavailableFallback
-    });
-    process.exitCode = 2;
-    return;
-  }
-
-  printJson({
-    status,
-    [resultKey]: await read(store)
-  });
-}
-
-function printJson(value: unknown): void {
-  console.log(JSON.stringify(value, null, 2));
+  const result = await readCachedResult(options, resultKey, unavailableFallback, read);
+  printJson(result.value);
+  if (result.exitCode !== undefined) process.exitCode = result.exitCode;
 }
 
 function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
