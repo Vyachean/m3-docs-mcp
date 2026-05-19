@@ -76,4 +76,19 @@ describe('Material markdown extraction regressions', () => {
     expect(page.markdown).toContain('![Example](https://example.com/image=w1200)');
     expect(page.markdown).not.toContain('image=s0');
   });
+
+  it('upscales tiny Material image width parameters before embedding markdown images', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Images</h1>
+        <p><img alt="Tiny" src="https://example.com/image=w40"></p>
+        <div style="background-image: url('https://example.com/background=w80')">Background</div>
+      </main>
+    `, 'https://m3.material.io/components/images', '2026-05-18T00:00:00.000Z');
+
+    expect(page.markdown).toContain('![Tiny](https://example.com/image=w1600)');
+    expect(page.markdown).toContain('![Background](https://example.com/background=w1600)');
+    expect(page.markdown).not.toContain('=w40');
+    expect(page.markdown).not.toContain('=w80');
+  });
 });
