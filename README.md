@@ -2,87 +2,23 @@
 
 MCP server that provides agents with locally cached documentation from the official Material 3 site: <https://m3.material.io/>.
 
-The package does **not** vendor a full copy of Material documentation. It crawls the official SPA with Playwright and stores a cache on the user's machine. This keeps installation lightweight and avoids publishing a public copy of Google's documentation text and images.
+This repository is intended to be used directly from GitHub through `npx`. The package is not planned to be published to npm, so examples intentionally use `github:Vyachean/m3-docs-mcp`. Do not use `npx -y m3-docs-mcp ...` unless you have made a local or global install yourself.
+
+The package does **not** vendor a full copy of Material documentation. It crawls the official SPA with Playwright and stores a cache on the user's machine. This keeps the Git package lightweight and avoids publishing a public copy of Google's documentation text and images.
 
 ## Why this exists
 
 `m3.material.io` is a JavaScript application. Simple fetch/curl-based agents often cannot read the documentation reliably. This server makes the docs available through deterministic MCP tools backed by a local cache.
 
+## Requirements
+
+- Node.js 20 or newer.
+- Playwright Chromium for cache refreshes.
+- On Linux, Playwright may also need host system packages.
+
 ## Recommended setup
 
 Add the server to your MCP client config. No global install is required.
-
-```json
-{
-  "mcpServers": {
-    "material3": {
-      "command": "npx",
-      "args": ["-y", "m3-docs-mcp", "serve"]
-    }
-  }
-}
-```
-
-The MCP server starts without downloading a browser during npm install. Browser installation is only needed when refreshing the local documentation cache. This keeps normal MCP startup fast enough for clients with short stdio initialization timeouts.
-
-Install the package-local browser before the first cache refresh:
-
-```bash
-npx -y m3-docs-mcp install-browser
-```
-
-On Linux, Chromium may also need system packages. Use this variant when Playwright reports missing host dependencies:
-
-```bash
-npx -y m3-docs-mcp install-browser --with-deps
-```
-
-Then build or refresh the documentation cache:
-
-```bash
-npx -y m3-docs-mcp update
-```
-
-On startup, the server checks the local cache. If the cache is missing or stale, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client tool timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
-
-If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
-
-## Codex setup
-
-Codex uses TOML MCP configuration. It also applies a short startup timeout unless configured otherwise, so give this server enough time for `npx` cold starts and tool listing.
-
-Add this to `~/.codex/config.toml` or the project-level `.codex/config.toml`:
-
-```toml
-[mcp_servers.material3]
-command = "npx"
-args = ["-y", "m3-docs-mcp", "serve"]
-startup_timeout_sec = 120
-tool_timeout_sec = 300
-enabled = true
-```
-
-For a first-time setup, run the browser/cache prewarm outside Codex:
-
-```bash
-npx -y m3-docs-mcp install-browser
-npx -y m3-docs-mcp update
-```
-
-If you intentionally want to test the GitHub version before npm publishing, use the GitHub package reference but keep the same timeouts:
-
-```toml
-[mcp_servers.material3]
-command = "npx"
-args = ["-y", "github:Vyachean/m3-docs-mcp", "serve"]
-startup_timeout_sec = 120
-tool_timeout_sec = 300
-enabled = true
-```
-
-The GitHub variant is slower on cold start because npm may build the TypeScript package from source before the MCP server starts. Prefer the published npm package for normal Codex usage.
-
-## Use directly from GitHub before npm publishing
 
 ```json
 {
@@ -95,22 +31,76 @@ The GitHub variant is slower on cold start because npm may build the TypeScript 
 }
 ```
 
+The MCP server starts without downloading a browser during package installation. Browser installation is only needed when refreshing the local documentation cache. This keeps normal MCP startup fast enough for clients with short stdio initialization timeouts.
+
+Install the Playwright-managed Chromium browser required by this Git package version before the first cache refresh:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp install-browser
+```
+
+On Linux, use this variant when Playwright reports missing host dependencies:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps
+```
+
+Then build or refresh the documentation cache:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp update
+```
+
+On startup, the server checks the local cache. If the cache is missing or stale and Playwright Chromium is installed, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client tool timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
+
+If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
+
+If Playwright Chromium is missing, background refresh cannot build the cache. Run `install-browser` first, then run `update` or restart the MCP server.
+
+## Codex setup
+
+Codex uses TOML MCP configuration. It also applies a short startup timeout unless configured otherwise, so give this server enough time for `npx` GitHub cold starts and tool listing.
+
+Add this to `~/.codex/config.toml` or the project-level `.codex/config.toml`:
+
+```toml
+[mcp_servers.material3]
+command = "npx"
+args = ["-y", "github:Vyachean/m3-docs-mcp", "serve"]
+startup_timeout_sec = 120
+tool_timeout_sec = 300
+enabled = true
+```
+
+For a first-time setup, run the browser/cache prewarm outside Codex:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp install-browser
+npx -y github:Vyachean/m3-docs-mcp update
+```
+
+The GitHub package reference is slower on cold start because npm may fetch the repository and build the TypeScript package from source before the MCP server starts. Keep the configured timeouts unless the package is installed locally.
+
 ## Optional CLI usage
 
 ```bash
-npx -y m3-docs-mcp status
-npx -y m3-docs-mcp install-browser
-npx -y m3-docs-mcp install-browser --with-deps
-npx -y m3-docs-mcp update
-npx -y m3-docs-mcp update --max-pages 500
-npx -y m3-docs-mcp update --min-pages 25
-npx -y m3-docs-mcp update --concurrency 2
-npx -y m3-docs-mcp update --force
-npx -y m3-docs-mcp serve
-npx -y m3-docs-mcp serve --max-age-hours 12
-npx -y m3-docs-mcp serve --startup-max-pages 500
-npx -y m3-docs-mcp serve --startup-concurrency 2
-npx -y m3-docs-mcp serve --no-auto-update
+npx -y github:Vyachean/m3-docs-mcp status
+npx -y github:Vyachean/m3-docs-mcp status --cache-dir /path/to/cache
+npx -y github:Vyachean/m3-docs-mcp install-browser
+npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps
+npx -y github:Vyachean/m3-docs-mcp update
+npx -y github:Vyachean/m3-docs-mcp update --cache-dir /path/to/cache
+npx -y github:Vyachean/m3-docs-mcp update --max-pages 500
+npx -y github:Vyachean/m3-docs-mcp update --min-pages 25
+npx -y github:Vyachean/m3-docs-mcp update --concurrency 2
+npx -y github:Vyachean/m3-docs-mcp update --force
+npx -y github:Vyachean/m3-docs-mcp update --headed
+npx -y github:Vyachean/m3-docs-mcp serve
+npx -y github:Vyachean/m3-docs-mcp serve --cache-dir /path/to/cache
+npx -y github:Vyachean/m3-docs-mcp serve --max-age-hours 12
+npx -y github:Vyachean/m3-docs-mcp serve --startup-max-pages 500
+npx -y github:Vyachean/m3-docs-mcp serve --startup-concurrency 2
+npx -y github:Vyachean/m3-docs-mcp serve --no-auto-update
 ```
 
 `update` prints a start message after the CLI process has started. With `npx github:...`, npm may still spend time fetching and building the package before that message can appear.
@@ -118,20 +108,30 @@ npx -y m3-docs-mcp serve --no-auto-update
 For a quick crawler smoke test, use a temporary cache directory and lower `--min-pages` together with `--max-pages`. This validates startup and crawling without trying to replace a larger existing cache:
 
 ```bash
-M3_DOCS_CACHE_DIR="$(mktemp -d)" npx -y m3-docs-mcp update --max-pages 3 --min-pages 1
+M3_DOCS_CACHE_DIR="$(mktemp -d)" npx -y github:Vyachean/m3-docs-mcp update --max-pages 3 --min-pages 1
 ```
 
 The default minimum is 10 pages, so interrupting the command or crawling fewer than 10 accepted pages intentionally leaves the existing cache unchanged.
 
-`--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. It does not make read/search tool calls block on a refresh.
+`--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. The default is 168 hours, or 7 days. It does not make read/search tool calls block on a refresh.
 
 `update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 
 ```bash
-npm install -g m3-docs-mcp
+npm install -g github:Vyachean/m3-docs-mcp
 ```
+
+After a global install, the binary can be used as `m3-docs-mcp`, but the supported distribution source is still this Git repository.
+
+## Environment variables
+
+- `M3_DOCS_CACHE_DIR`: override the local cache directory.
+- `M3_DOCS_MAX_AGE_HOURS`: override the cache freshness threshold used by `serve`.
+- `M3_DOCS_AUTO_UPDATE=false`: disable startup background refresh.
+- `M3_DOCS_STARTUP_MAX_PAGES`: override the automatic startup crawl page limit.
+- `M3_DOCS_STARTUP_CONCURRENCY`: override automatic startup crawl concurrency.
 
 ## Cache location
 
@@ -144,7 +144,7 @@ Default cache locations:
 Override:
 
 ```bash
-M3_DOCS_CACHE_DIR=/path/to/cache npx -y m3-docs-mcp serve
+M3_DOCS_CACHE_DIR=/path/to/cache npx -y github:Vyachean/m3-docs-mcp serve
 ```
 
 Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed, interrupted, or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
@@ -167,6 +167,8 @@ Arguments:
   "limit": 10
 }
 ```
+
+`limit` defaults to 10 and is capped at 25.
 
 ### `get_material_page`
 
@@ -202,27 +204,30 @@ Returns local cache status and startup background refresh status.
 
 ### `refresh_material_docs`
 
-Forces a cache refresh through Playwright. This is an explicit long-running operation.
+Forces a cache refresh through Playwright. This is an explicit long-running operation. Set `force` only when intentionally replacing an existing cache despite safety checks.
 
 Arguments:
 
 ```json
 {
   "maxPages": 250,
-  "concurrency": 2
+  "concurrency": 2,
+  "force": false
 }
 ```
+
+`maxPages` is capped at 1000. `concurrency` defaults to 1 and is capped by the crawler maximum.
 
 ## Project rules
 
 - The official source is always `https://m3.material.io/`.
 - Google implementation repositories are not treated as authoritative design guidelines.
 - Cached docs are stored locally for the user running the MCP server.
-- The npm package should not include a full public mirror of Material documentation.
+- The Git package should not include a full public mirror of Material documentation.
 - Normal read/search tools must not trigger or wait for a long crawl.
-- Startup cache warming may run a crawl in the background so first-time users do not need manual setup.
-- npm install must not download Playwright browsers, because MCP clients such as Codex can time out before the stdio handshake completes.
+- Startup cache warming may run a crawl in the background when Playwright Chromium is installed.
+- Package installation must not download Playwright browsers, because MCP clients such as Codex can time out before the stdio handshake completes.
 
 ## Current limitations
 
-This is an initial implementation. It extracts text/Markdown and page metadata. Image downloading, stronger route discovery, per-page diffing, and richer section normalization should be added in later PRs.
+This implementation extracts text/Markdown and page metadata. Image references are embedded as remote Markdown image URLs, but image assets are not downloaded or stored locally. Route discovery, per-page diffing, and richer section normalization can still be improved in later PRs.

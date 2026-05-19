@@ -22,6 +22,8 @@ const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
+const MIN_EMBEDDED_IMAGE_WIDTH = 800;
+const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
 
 const NOISE_ONLY_MARKDOWN_LINES = new Set([
   'close',
@@ -102,10 +104,10 @@ async function launchChromium(headless: boolean): Promise<Browser> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes('Executable doesn\'t exist') && !message.includes('browserType.launch')) {
-      throw new Error(`Playwright Chromium failed to start. Run: npx -y m3-docs-mcp install-browser --with-deps. Original error: ${message}`, { cause: error });
+      throw new Error(`Playwright Chromium failed to start. Run: npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps. Original error: ${message}`, { cause: error });
     }
 
-    throw new Error('Playwright Chromium browser is missing. Run: npx -y m3-docs-mcp install-browser. On Linux, use: npx -y m3-docs-mcp install-browser --with-deps', { cause: error });
+    throw new Error('Playwright Chromium browser is missing. Run: npx -y github:Vyachean/m3-docs-mcp install-browser. On Linux, use: npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps', { cause: error });
   }
 }
 
@@ -259,7 +261,7 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   addMaterialMarkdownRules(turndown);
 
   const relPath = materialPagePath(url);
-  const sanitizedHtml = preserveTokenViewerTextLines(stripUnsafeHtml(html));
+  const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
   const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
   const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
   const rawBody = turndown.turndown(sanitizedHtml)
@@ -455,7 +457,35 @@ function hasAncestorMatching(node: Element, boundary: Element, selector: string)
 }
 
 function preferLargeImageUrl(url: string): string {
-  return url.replace(/=s0(?=($|[)&]))/g, '=w1600');
+  return url
+    .replace(/=w(\d+)(?!\d)/g, (match, width: string) => Number(width) < MIN_EMBEDDED_IMAGE_WIDTH ? `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}` : match)
+    .replace(/=s0(?!\d)/g, `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}`);
+}
+
+function normalizeMarkdownImageUrls(markdown: string): string {
+  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, imageUrl: string) => `![${alt}](${preferLargeImageUrl(imageUrl)})`);
+}
+
+function preserveBackgroundImageAttributes(html: string): string {
+  return html.replace(/<([a-z][\w:-]*)([^>]*)>/gi, (match, tagName: string, attributes: string) => {
+    if (/\sdata-background-image\s*=/i.test(attributes)) return match;
+    const style = attributes.match(/\sstyle=(['"])([\s\S]*?)\1/i)?.[2];
+    if (!style) return match;
+
+    const imageUrl = backgroundImageUrlFromStyle(style);
+    if (!imageUrl) return match;
+
+    return `<${tagName}${attributes} data-background-image="${escapeHtmlAttribute(imageUrl)}">`;
+  });
+}
+
+function backgroundImageUrlFromStyle(style: string): string | null {
+  const match = style.match(/background-image\s*:\s*url\(\s*(['"]?)(.*?)\1\s*\)/i);
+  return match?.[2]?.trim() || null;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function stripUnsafeHtml(html: string): string {
@@ -555,9 +585,10 @@ function cleanMarkdownLine(line: string): string {
   const content = trailingTrimmed.slice(leadingWhitespace.length).trim();
   if (/^check\s+do$/i.test(content)) return `${leadingWhitespace}Do`;
   if (/^close\s+don['’]?t$/i.test(content)) return `${leadingWhitespace}Don't`;
-  return `${leadingWhitespace}${content
+  const cleanedContent = content
     .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\s{2,}/g, ' ')}`;
+    .replace(/\s{2,}/g, ' ');
+  return `${leadingWhitespace}${normalizeMarkdownImageUrls(cleanedContent)}`;
 }
 
 function shouldDropMarkdownLine(line: string): boolean {
