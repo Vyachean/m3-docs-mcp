@@ -81,11 +81,30 @@ npx -y github:Vyachean/m3-docs-mcp update
 
 The GitHub package reference is slower on cold start because npm may fetch the repository and build the TypeScript package from source before the MCP server starts. Keep the configured timeouts unless the package is installed locally.
 
+## Agent skill fallback
+
+Some agents may not see configured MCP tools consistently. The repository includes a universal skill at `.agents/skills/material3/SKILL.md` that instructs agents to verify Material 3 guidance before UI or UX changes and to use CLI fallback commands when MCP tools are unavailable.
+
+The skill expects the same local cache as the MCP server. If an agent cannot access MCP, it can still use:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp search "dialog actions"
+npx -y github:Vyachean/m3-docs-mcp page components/dialogs/overview.md
+npx -y github:Vyachean/m3-docs-mcp component dialogs
+npx -y github:Vyachean/m3-docs-mcp components
+```
+
 ## Optional CLI usage
 
 ```bash
 npx -y github:Vyachean/m3-docs-mcp status
 npx -y github:Vyachean/m3-docs-mcp status --cache-dir /path/to/cache
+npx -y github:Vyachean/m3-docs-mcp search "dialog actions"
+npx -y github:Vyachean/m3-docs-mcp search "list item trailing action" --limit 5
+npx -y github:Vyachean/m3-docs-mcp page components/dialogs/overview.md
+npx -y github:Vyachean/m3-docs-mcp page https://m3.material.io/components/dialogs/overview
+npx -y github:Vyachean/m3-docs-mcp component dialogs
+npx -y github:Vyachean/m3-docs-mcp components
 npx -y github:Vyachean/m3-docs-mcp install-browser
 npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps
 npx -y github:Vyachean/m3-docs-mcp update
@@ -102,6 +121,8 @@ npx -y github:Vyachean/m3-docs-mcp serve --startup-max-pages 500
 npx -y github:Vyachean/m3-docs-mcp serve --startup-concurrency 2
 npx -y github:Vyachean/m3-docs-mcp serve --no-auto-update
 ```
+
+`search`, `page`, `component`, and `components` read the same local cache as the MCP server and return JSON with cache status. They do not start a crawl or wait for a refresh. If the cache is missing, they exit with code 2 and print a JSON message telling the caller to run `m3-docs-mcp update`.
 
 `update` prints a start message after the CLI process has started. With `npx github:...`, npm may still spend time fetching and building the package before that message can appear.
 
