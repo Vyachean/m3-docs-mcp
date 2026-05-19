@@ -5,9 +5,19 @@ import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
+import { MaterialDocsStore } from './store.js';
 import type { CrawlProgress } from './types.js';
 
 const program = new Command();
+
+type ReadCommandOptions = {
+  cacheDir?: string;
+  maxAgeHours: string;
+};
+
+type SearchCommandOptions = ReadCommandOptions & {
+  limit: string;
+};
 
 program
   .name('m3-docs-mcp')
@@ -82,6 +92,45 @@ program.command('update')
     }
   });
 
+program.command('search')
+  .description('Search the local Material 3 documentation cache from the CLI')
+  .argument('<query...>', 'Search query')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .option('--limit <number>', 'Maximum search results, up to 25', '10')
+  .action(async (queryParts: string[], options: SearchCommandOptions) => {
+    const limit = parseBoundedPositiveIntegerOption('--limit', options.limit, 1, 25);
+    const query = queryParts.join(' ').trim();
+    await printCachedResult(options, 'results', [], (store) => store.searchDocs(query, limit));
+  });
+
+program.command('page')
+  .description('Print one cached Material 3 documentation page by cache path or source URL')
+  .argument('<path-or-url>', 'Cache path, Material page path, or source URL')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (pathOrUrl: string, options: ReadCommandOptions) => {
+    await printCachedResult(options, 'page', null, (store) => store.getPage(pathOrUrl));
+  });
+
+program.command('component')
+  .description('Print cached Material 3 documentation pages matching a component name')
+  .argument('<component-name...>', 'Component name or slug')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (componentNameParts: string[], options: ReadCommandOptions) => {
+    const componentName = componentNameParts.join(' ').trim();
+    await printCachedResult(options, 'pages', [], (store) => store.getComponentDocs(componentName));
+  });
+
+program.command('components')
+  .description('List component slugs discovered in the local Material 3 documentation cache')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (options: ReadCommandOptions) => {
+    await printCachedResult(options, 'components', [], (store) => store.listComponents());
+  });
+
 program.command('install-browser')
   .description('Install the Playwright Chromium browser used by the crawler')
   .option('--with-deps', 'Also install Playwright system dependencies on supported Linux distributions')
@@ -103,6 +152,37 @@ program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exitCode = 1;
 });
+
+async function printCachedResult(
+  options: ReadCommandOptions,
+  resultKey: string,
+  unavailableFallback: unknown,
+  read: (store: MaterialDocsStore) => Promise<unknown>
+): Promise<void> {
+  const cacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const maxAgeHours = parsePositiveNumberOption('--max-age-hours', options.maxAgeHours);
+  const store = new MaterialDocsStore(cacheDir);
+  const status = await store.getStatus(maxAgeHours);
+
+  if (!status.hasCache) {
+    printJson({
+      status,
+      message: 'Material 3 docs cache is not available. Run: m3-docs-mcp update',
+      [resultKey]: unavailableFallback
+    });
+    process.exitCode = 2;
+    return;
+  }
+
+  printJson({
+    status,
+    [resultKey]: await read(store)
+  });
+}
+
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(value, null, 2));
+}
 
 function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
   let previousLength = 0;
