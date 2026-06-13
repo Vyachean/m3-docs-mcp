@@ -29,7 +29,11 @@ const playwrightMock = vi.hoisted(() => {
 
   const htmlText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
-  const readMaterialContentState = (componentSlug: string | null | undefined) => {
+  const readMaterialContentState = (
+    componentSlug: string | null | undefined,
+    notFoundTitlePatterns: Array<{ source: string; flags: string }> = [],
+    notFoundBodyPatterns: Array<{ source: string; flags: string }> = []
+  ) => {
     const current = pagesByUrl[currentUrl];
     if (!current) return null;
 
@@ -38,13 +42,10 @@ const playwrightMock = vi.hoisted(() => {
     const title = normalize(rawTitle);
     const text = normalize(`${current.title} ${rawText}`);
     const pathname = new URL(current.finalUrl ?? currentUrl).pathname.replace(/^\/+|\/+$/g, '');
-    const renderedNotFound = title.includes('page cannot be found')
-      || title.includes('page not found')
-      || title === '404'
-      || text.includes('this page cannot be found')
-      || text.includes('requested page was not found')
-      || text.includes('could not find that page')
-      || text.includes('could not find this page');
+    const matchesAnyPattern = (value: string, patterns: Array<{ source: string; flags: string }>) =>
+      patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
 
     if (!componentSlug) {
       return {
@@ -75,18 +76,26 @@ const playwrightMock = vi.hoisted(() => {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
     url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
     waitForSelector: vi.fn(async () => undefined),
-    waitForFunction: vi.fn(async (_fn: unknown, arg?: { minPageTextLength?: number }) => {
+    waitForFunction: vi.fn(async (_fn: unknown, arg?: {
+      minPageTextLength?: number;
+      notFoundTitlePatterns?: Array<{ source: string; flags: string }>;
+      notFoundBodyPatterns?: Array<{ source: string; flags: string }>;
+    }) => {
       const current = pagesByUrl[currentUrl];
       const minPageTextLength = arg?.minPageTextLength ?? 0;
       if (!current) throw new Error(`condition did not match for ${currentUrl}`);
-      const state = readMaterialContentState(null);
+      const state = readMaterialContentState(null, arg?.notFoundTitlePatterns, arg?.notFoundBodyPatterns);
       if (!state) throw new Error(`condition did not match for ${currentUrl}`);
       if (!state.renderedNotFound && (htmlText(current.html).length < minPageTextLength || !current.title)) {
         throw new Error(`condition did not match for ${currentUrl}`);
       }
     }),
     close: vi.fn(async () => undefined),
-    evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: { componentSlug?: string | null }) => {
+    evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: {
+      componentSlug?: string | null;
+      notFoundTitlePatterns?: Array<{ source: string; flags: string }>;
+      notFoundBodyPatterns?: Array<{ source: string; flags: string }>;
+    }) => {
       const source = fn.toString();
       if (source.includes('details:not([open])')) {
         const current = pagesByUrl[currentUrl];
@@ -94,7 +103,9 @@ const playwrightMock = vi.hoisted(() => {
         return undefined;
       }
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
-      if (source.includes('expectedComponentSlug') || source.includes('contentMatches')) return readMaterialContentState(arg?.componentSlug);
+      if (source.includes('expectedComponentSlug') || source.includes('contentMatches')) {
+        return readMaterialContentState(arg?.componentSlug, arg?.notFoundTitlePatterns, arg?.notFoundBodyPatterns);
+      }
       if (source.includes('window.location.href')) {
         const current = pagesByUrl[currentUrl];
         return {
@@ -334,6 +345,33 @@ describe('crawlMaterialDocs', () => {
     expect(index.failedUrls).toEqual([]);
     expect(index.qualityReport?.rejectedRoutes).toEqual([]);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).resolves.toContain('# Buttons');
+  });
+
+  it('falls back when a candidate hits a canonical body-pattern not found variant', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/cards'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/cards'] = {
+      html: '<h1>Missing docs</h1><p>Try a different destination or head back to the homepage for Material guidance.</p>',
+      title: 'Missing docs',
+      headings: ['Missing docs'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/cards'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/components/cards/overview'] = {
+      html: '<h1>Cards</h1><p>Cards group related content and actions with enough body text for crawler validation and cache promotion safeguards.</p>',
+      title: 'Cards',
+      headings: ['Cards'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/cards/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 });
+
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(index.pages.map((page) => page.path).sort()).toEqual(['components/cards/overview.md', 'index.md']);
+    expect(index.failedUrls).toEqual([]);
+    expect(index.qualityReport?.rejectedRoutes).toEqual([]);
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/cards/overview.md'), 'utf8')).resolves.toContain('# Cards');
   });
 
   it('rejects routes when all candidates render not found and does not write candidate files', async () => {

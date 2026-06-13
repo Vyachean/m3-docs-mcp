@@ -104,6 +104,11 @@ type MaterialContentState = {
   contentMatches: boolean;
 };
 
+type SerializedPattern = {
+  source: string;
+  flags: string;
+};
+
 class CandidateRejectedError extends Error {
   readonly state: MaterialContentState;
   readonly classification: RejectedCrawlRoute['classification'];
@@ -256,39 +261,37 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
 
 async function readMaterialContentState(page: Page, requestedUrl: string): Promise<MaterialContentState> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
-  await page.waitForFunction(({ minPageTextLength }) => {
+  const notFoundTitlePatterns = serializePatterns(NOT_FOUND_TITLE_PATTERNS);
+  const notFoundBodyPatterns = serializePatterns(NOT_FOUND_BODY_PATTERNS);
+  await page.waitForFunction(({ minPageTextLength, notFoundTitlePatterns, notFoundBodyPatterns }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const matchesAnyPattern = (value: string, patterns: SerializedPattern[]) => patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
     const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
     const title = normalize(rawTitle);
     const text = normalize(rawText);
-    const renderedNotFound = title.includes('page cannot be found')
-      || title.includes('page not found')
-      || title === '404'
-      || text.includes('this page cannot be found')
-      || text.includes('requested page was not found')
-      || text.includes('could not find that page')
-      || text.includes('could not find this page');
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
 
     return renderedNotFound || (rawText.length >= minPageTextLength && Boolean(rawTitle));
-  }, { minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
+  }, {
+    minPageTextLength: MIN_PAGE_TEXT_LENGTH,
+    notFoundTitlePatterns,
+    notFoundBodyPatterns
+  }, { timeout: 20_000 });
 
-  return page.evaluate(({ componentSlug }) => {
+  return page.evaluate(({ componentSlug, notFoundTitlePatterns, notFoundBodyPatterns }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const matchesAnyPattern = (value: string, patterns: SerializedPattern[]) => patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
     const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
     const title = normalize(rawTitle);
     const text = normalize(rawText);
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    const renderedNotFound = title.includes('page cannot be found')
-      || title.includes('page not found')
-      || title === '404'
-      || text.includes('this page cannot be found')
-      || text.includes('requested page was not found')
-      || text.includes('could not find that page')
-      || text.includes('could not find this page');
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
     if (!componentSlug) {
       return {
         title: rawTitle,
@@ -314,7 +317,11 @@ async function readMaterialContentState(page: Page, requestedUrl: string): Promi
       pathMatches,
       contentMatches
     };
-  }, { componentSlug: expectedComponentSlug });
+  }, {
+    componentSlug: expectedComponentSlug,
+    notFoundTitlePatterns,
+    notFoundBodyPatterns
+  });
 }
 
 async function waitForStableMaterialSnapshot(page: Page, signal?: AbortSignal): Promise<void> {
@@ -1138,6 +1145,10 @@ function isNotFoundPage(page: Pick<MaterialPage, 'title' | 'headings' | 'text'>)
 
 function matchesAnyPattern(value: string, patterns: RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(value));
+}
+
+function serializePatterns(patterns: RegExp[]): SerializedPattern[] {
+  return patterns.map((pattern) => ({ source: pattern.source, flags: pattern.flags }));
 }
 
 function normalizeSlug(value: string): string {
