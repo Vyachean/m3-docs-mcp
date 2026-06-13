@@ -94,6 +94,38 @@ type StableSnapshot = {
   text: string;
 };
 
+type MaterialContentState = {
+  title: string;
+  text: string;
+  pathname: string;
+  renderedNotFound: boolean;
+  expectedComponentSlug: string | null;
+  pathMatches: boolean;
+  contentMatches: boolean;
+};
+
+class CandidateRejectedError extends Error {
+  readonly state: MaterialContentState;
+  readonly classification: RejectedCrawlRoute['classification'];
+
+  constructor(message: string, state: MaterialContentState, classification: RejectedCrawlRoute['classification']) {
+    super(message);
+    this.name = 'CandidateRejectedError';
+    this.state = state;
+    this.classification = classification;
+  }
+}
+
+class RequestedRouteRejectedError extends Error {
+  readonly rejectedRoute: RejectedCrawlRoute;
+
+  constructor(rejectedRoute: RejectedCrawlRoute, details: string) {
+    super(details);
+    this.name = 'RequestedRouteRejectedError';
+    this.rejectedRoute = rejectedRoute;
+  }
+}
+
 export async function installPlaywrightChromium(withDependencies = false): Promise<void> {
   const playwrightCli = resolvePlaywrightCliPath();
   await execFileAsync(process.execPath, [playwrightCli, 'install', ...(withDependencies ? ['--with-deps'] : []), 'chromium']);
@@ -180,6 +212,7 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
   if (candidates.length === 0) throw new Error(`Unsupported Material URL: ${requestedUrl}`);
 
   let lastError: unknown;
+  let lastRejectedCandidate: CandidateRejectedError | null = null;
   for (const loadUrl of candidates) {
     throwIfAborted(signal);
     try {
@@ -190,8 +223,21 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
       return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (error instanceof CandidateRejectedError) lastRejectedCandidate = error;
       lastError = error;
     }
+  }
+
+  if (lastRejectedCandidate) {
+    const normalizedRequestedUrl = normalizeMaterialUrl(requestedUrl, baseUrl) ?? requestedUrl;
+    throw new RequestedRouteRejectedError({
+      url: normalizedRequestedUrl,
+      path: materialPagePath(normalizedRequestedUrl),
+      title: lastRejectedCandidate.state.title || 'Untitled',
+      reason: lastRejectedCandidate.message,
+      classification: lastRejectedCandidate.classification,
+      status: 'failed'
+    }, `Material page rejected for ${requestedUrl}. Tried: ${candidates.join(', ')}. Last rejection: ${lastRejectedCandidate.message}`);
   }
 
   const details = lastError instanceof Error ? lastError.message : String(lastError);
@@ -199,12 +245,31 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
 }
 
 async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
+  const state = await readMaterialContentState(page, requestedUrl);
+  if (state.renderedNotFound) {
+    throw new CandidateRejectedError('route rendered a not found page', state, 'not-found');
+  }
+  if (state.expectedComponentSlug && (!state.pathMatches || !state.contentMatches)) {
+    throw new CandidateRejectedError(`component route content did not match expected component slug ${state.expectedComponentSlug}`, state, 'route-mismatch');
+  }
+}
+
+async function readMaterialContentState(page: Page, requestedUrl: string): Promise<MaterialContentState> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
-  await page.waitForFunction(({ componentSlug, minPageTextLength }) => {
+  await page.waitForFunction(({ minPageTextLength }) => {
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    const title = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const text = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    return text.length >= minPageTextLength && Boolean(title);
+  }, { minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
+
+  return page.evaluate(({ componentSlug }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
-    const title = normalize(root.querySelector('h1')?.textContent ?? '');
-    const text = normalize(root.textContent ?? '');
+    const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const title = normalize(rawTitle);
+    const text = normalize(rawText);
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
     const renderedNotFound = title.includes('page cannot be found')
       || title.includes('page not found')
@@ -213,16 +278,32 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
       || text.includes('requested page was not found')
       || text.includes('could not find that page')
       || text.includes('could not find this page');
-    if (text.length < minPageTextLength || !title) return false;
-    if (renderedNotFound) return true;
-    if (!componentSlug) return true;
+    if (!componentSlug) {
+      return {
+        title: rawTitle,
+        text: rawText,
+        pathname,
+        renderedNotFound,
+        expectedComponentSlug: null,
+        pathMatches: true,
+        contentMatches: true
+      };
+    }
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
     const componentWords = componentName.split(' ').filter((word) => word.length > 1);
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
     const contentMatches = title !== 'components' && !renderedNotFound && componentWords.every((word) => text.includes(word));
-    return pathMatches && contentMatches;
-  }, { componentSlug: expectedComponentSlug, minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
+    return {
+      title: rawTitle,
+      text: rawText,
+      pathname,
+      renderedNotFound,
+      expectedComponentSlug: componentSlug,
+      pathMatches,
+      contentMatches
+    };
+  }, { componentSlug: expectedComponentSlug });
 }
 
 async function waitForStableMaterialSnapshot(page: Page, signal?: AbortSignal): Promise<void> {
@@ -895,7 +976,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   }
 
   async function crawlPage(page: Page, url: string): Promise<void> {
-    const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
+    let finalUrl: string;
+    try {
+      finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
+    } catch (error) {
+      if (error instanceof RequestedRouteRejectedError) {
+        suspiciousPages.push(error.rejectedRoute);
+        failedUrls.push(url);
+        lastFailedUrl = url;
+        emitProgress(true);
+        console.error(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
+        return;
+      }
+      throw error;
+    }
     if (finalUrl !== url) seen.add(finalUrl);
     currentUrls.set(currentUrls.get(0) === url ? 0 : Array.from(currentUrls.entries()).find(([, current]) => current === url)?.[0] ?? 0, finalUrl);
     emitProgress(true);
@@ -913,7 +1007,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       lastFailedUrl = url;
       emitProgress(true);
       console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
-    } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+      return;
+    }
+    if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
       pages.push(materialPage);
       lastSavedUrl = finalUrl;
       writtenPaths.add(materialPage.path);
