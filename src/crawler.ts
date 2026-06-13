@@ -8,7 +8,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -24,6 +24,21 @@ const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
+const NOT_FOUND_TITLE_PATTERNS = [
+  /\bpage cannot be found\b/i,
+  /\bthis page cannot be found\b/i,
+  /\bpage not found\b/i,
+  /\b404\b/i
+];
+const NOT_FOUND_BODY_PATTERNS = [
+  /\bthis page cannot be found\b/i,
+  /\bpage cannot be found\b/i,
+  /\bpage not found\b/i,
+  /\brequested page was not found\b/i,
+  /\bcould not find (that|this) page\b/i,
+  /\btry a different destination\b/i,
+  /\bhead back to the homepage\b/i
+];
 
 const NOISE_ONLY_MARKDOWN_LINES = new Set([
   'close',
@@ -191,13 +206,21 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
     const title = normalize(root.querySelector('h1')?.textContent ?? '');
     const text = normalize(root.textContent ?? '');
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
+    const renderedNotFound = title.includes('page cannot be found')
+      || title.includes('page not found')
+      || title === '404'
+      || text.includes('this page cannot be found')
+      || text.includes('requested page was not found')
+      || text.includes('could not find that page')
+      || text.includes('could not find this page');
     if (text.length < minPageTextLength || !title) return false;
+    if (renderedNotFound) return true;
     if (!componentSlug) return true;
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
     const componentWords = componentName.split(' ').filter((word) => word.length > 1);
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
-    const contentMatches = title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
+    const contentMatches = title !== 'components' && !renderedNotFound && componentWords.every((word) => text.includes(word));
     return pathMatches && contentMatches;
   }, { componentSlug: expectedComponentSlug, minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
 }
@@ -683,18 +706,18 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
   const firstHeading = normalizeText(page.headings[0] ?? page.title);
   const contentPreview = normalizeText(`${page.title} ${page.headings.join(' ')} ${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`);
 
-  if (title.includes('page cannot be found') || contentPreview.includes('this page cannot be found')) {
-    return suspiciousPage(page, 'route rendered a not found page');
+  if (isNotFoundPage(page)) {
+    return rejectedRoute(page, 'route rendered a not found page', 'not-found');
   }
 
   if (segments[0] === 'components' && segments.length >= 2) {
     const componentSlug = segments[1] ?? '';
     const componentName = normalizeSlug(componentSlug);
     if (title === 'components' || firstHeading === 'components') {
-      return suspiciousPage(page, `component route rendered the parent Components index instead of ${componentSlug}`);
+      return rejectedRoute(page, `component route rendered the parent Components index instead of ${componentSlug}`, 'route-mismatch');
     }
     if (!containsAllWords(contentPreview, componentName.split(' '))) {
-      return suspiciousPage(page, `component route content does not mention expected component slug ${componentSlug}`);
+      return rejectedRoute(page, `component route content does not mention expected component slug ${componentSlug}`, 'route-mismatch');
     }
   }
 
@@ -702,16 +725,15 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
 }
 
 export function createCrawlQualityReport(pages: MaterialPage[], rejectedSuspiciousPages: SuspiciousCrawlPage[] = []): CrawlQualityReport {
-  const suspiciousPages = [
-    ...rejectedSuspiciousPages,
-    ...pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page))
-  ];
+  const rejectedRoutes = rejectedSuspiciousPages.map(toRejectedRoute);
+  const suspiciousPages = pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page));
   const shortPages: ShortCrawlPage[] = pages
     .filter((page) => page.text.length < SHORT_PAGE_TEXT_LENGTH)
     .map((page) => ({ url: page.url, path: page.path, title: page.title, textLength: page.text.length }));
   const pagesBySection = countBy(pages.map((page) => page.section));
   return {
     suspiciousPages,
+    rejectedRoutes,
     duplicateContent: duplicateContentGroups(pages),
     shortPages,
     duplicateTitles: duplicateTitleGroups(pages),
@@ -988,8 +1010,27 @@ function countBy(values: string[]): Record<string, number> {
   }, {});
 }
 
-function suspiciousPage(page: MaterialPage, reason: string): SuspiciousCrawlPage {
-  return { url: page.url, path: page.path, title: page.title, reason };
+function rejectedRoute(page: MaterialPage, reason: string, classification: RejectedCrawlRoute['classification']): RejectedCrawlRoute {
+  return { url: page.url, path: page.path, title: page.title, reason, classification, status: 'failed' };
+}
+
+function toRejectedRoute(page: SuspiciousCrawlPage): RejectedCrawlRoute {
+  if ('classification' in page && 'status' in page) return page as RejectedCrawlRoute;
+  const classification = page.reason === 'route rendered a not found page' ? 'not-found' : 'route-mismatch';
+  return { ...page, classification, status: 'failed' };
+}
+
+function isNotFoundPage(page: Pick<MaterialPage, 'title' | 'headings' | 'text'>): boolean {
+  const title = page.title.trim();
+  const firstHeading = (page.headings[0] ?? '').trim();
+  const preview = `${page.title}\n${page.headings.join('\n')}\n${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`;
+  return matchesAnyPattern(title, NOT_FOUND_TITLE_PATTERNS)
+    || matchesAnyPattern(firstHeading, NOT_FOUND_TITLE_PATTERNS)
+    || matchesAnyPattern(preview, NOT_FOUND_BODY_PATTERNS);
+}
+
+function matchesAnyPattern(value: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
 }
 
 function normalizeSlug(value: string): string {

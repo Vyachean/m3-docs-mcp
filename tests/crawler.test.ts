@@ -244,6 +244,20 @@ describe('validateCrawledPage', () => {
     });
   });
 
+  it('rejects alternate not found page variants', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Page not found</h1>
+        <p>We could not find that page. Try a different destination.</p>
+      </main>
+    `, 'https://m3.material.io/foundations/layout-overview/adaptive-design', '2026-05-18T00:00:00.000Z');
+
+    expect(validateCrawledPage(page)).toMatchObject({
+      path: 'foundations/layout-overview/adaptive-design.md',
+      reason: 'route rendered a not found page'
+    });
+  });
+
   it('rejects component routes that do not mention the expected component slug', () => {
     const page = extractMaterialPageFromHtml(`
       <main>
@@ -263,14 +277,28 @@ describe('createCrawlQualityReport', () => {
   it('reports duplicate content, duplicate titles, short pages, and section counts', () => {
     const body = 'Buttons prompt most actions in a UI. Buttons are available in several variants and should communicate the action they perform. Use buttons for actions that affect the current screen, flow, or selected content. Button labels should be concise, specific, and easy to scan.';
     const first = extractMaterialPageFromHtml(`<main><h1>Buttons</h1><p>${body}</p></main>`, 'https://m3.material.io/components/buttons/overview', '2026-05-18T00:00:00.000Z');
-    const duplicate = { ...first, id: 'duplicate', url: 'https://m3.material.io/components/icon-buttons/overview', path: 'components/icon-buttons/overview.md', section: 'components/icon-buttons' };
+    const duplicate = { ...first, id: 'duplicate', url: 'https://m3.material.io/foundations/duplicate-buttons', path: 'foundations/duplicate-buttons.md', section: 'foundations' };
     const short = extractMaterialPageFromHtml('<main><h1>Short</h1><p>Brief.</p></main>', 'https://m3.material.io/get-started', '2026-05-18T00:00:00.000Z');
 
-    const report = createCrawlQualityReport([first, duplicate, short]);
+    const report = createCrawlQualityReport([first, duplicate, short], [{
+      url: 'https://m3.material.io/foundations/layout-overview/adaptive-design',
+      path: 'foundations/layout-overview/adaptive-design.md',
+      title: 'Page not found',
+      reason: 'route rendered a not found page'
+    }]);
 
-    expect(report.duplicateContent).toEqual([{ hash: expect.any(String), title: 'Buttons', paths: ['components/buttons/overview.md', 'components/icon-buttons/overview.md'], urls: ['https://m3.material.io/components/buttons/overview', 'https://m3.material.io/components/icon-buttons/overview'] }]);
-    expect(report.duplicateTitles).toEqual([{ title: 'Buttons', count: 2, paths: ['components/buttons/overview.md', 'components/icon-buttons/overview.md'] }]);
+    expect(report.duplicateContent).toEqual([{ hash: expect.any(String), title: 'Buttons', paths: ['components/buttons/overview.md', 'foundations/duplicate-buttons.md'], urls: ['https://m3.material.io/components/buttons/overview', 'https://m3.material.io/foundations/duplicate-buttons'] }]);
+    expect(report.duplicateTitles).toEqual([{ title: 'Buttons', count: 2, paths: ['components/buttons/overview.md', 'foundations/duplicate-buttons.md'] }]);
     expect(report.shortPages).toContainEqual({ url: 'https://m3.material.io/get-started', path: 'get-started.md', title: 'Short', textLength: expect.any(Number) });
-    expect(report.pagesBySection).toEqual({ 'components/buttons': 1, 'components/icon-buttons': 1, root: 1 });
+    expect(report.rejectedRoutes).toEqual([{
+      url: 'https://m3.material.io/foundations/layout-overview/adaptive-design',
+      path: 'foundations/layout-overview/adaptive-design.md',
+      title: 'Page not found',
+      reason: 'route rendered a not found page',
+      classification: 'not-found',
+      status: 'failed'
+    }]);
+    expect(report.suspiciousPages).toEqual([]);
+    expect(report.pagesBySection).toEqual({ 'components/buttons': 1, foundations: 1, root: 1 });
   });
 });

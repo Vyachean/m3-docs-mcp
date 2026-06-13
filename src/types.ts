@@ -17,6 +17,11 @@ export type SuspiciousCrawlPage = {
   reason: string;
 };
 
+export type RejectedCrawlRoute = SuspiciousCrawlPage & {
+  classification: 'not-found' | 'route-mismatch';
+  status: 'failed';
+};
+
 export type DuplicateContentGroup = {
   hash: string;
   title: string;
@@ -39,6 +44,7 @@ export type DuplicateTitleGroup = {
 
 export type CrawlQualityReport = {
   suspiciousPages: SuspiciousCrawlPage[];
+  rejectedRoutes: RejectedCrawlRoute[];
   duplicateContent: DuplicateContentGroup[];
   shortPages: ShortCrawlPage[];
   duplicateTitles: DuplicateTitleGroup[];

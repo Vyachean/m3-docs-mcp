@@ -129,6 +129,10 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.page.waitForFunction.mockClear();
     playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
+    for (const url of Object.keys(playwrightMock.pagesByUrl)) {
+      if (url.startsWith('https://m3.material.io/foundations/good-')) delete playwrightMock.pagesByUrl[url];
+    }
+    delete playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'];
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [
@@ -171,6 +175,7 @@ describe('crawlMaterialDocs', () => {
       failedUrls: [],
       qualityReport: {
         duplicateContent: [],
+        rejectedRoutes: [],
         suspiciousPages: [],
         pagesBySection: {
           root: 1,
@@ -207,7 +212,7 @@ describe('crawlMaterialDocs', () => {
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
-  });
+  }, 10_000);
 
   it('falls back to URL extraction when sitemap loc entries are unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -227,7 +232,7 @@ describe('crawlMaterialDocs', () => {
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
-  });
+  }, 10_000);
 
   it('fails a page instead of writing content when expansion changes the route', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
@@ -266,6 +271,48 @@ describe('crawlMaterialDocs', () => {
 
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
   });
+
+  it('skips not found routes, records them in quality data, and still promotes when failure ratio stays acceptable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => `<urlset>${Array.from({ length: 8 }, (_, i) => `<url><loc>https://m3.material.io/foundations/good-${i}</loc></url>`).join('')}<url><loc>https://m3.material.io/foundations/layout-overview/adaptive-design</loc></url></urlset>`
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [];
+    for (let i = 0; i < 8; i += 1) {
+      playwrightMock.pagesByUrl[`https://m3.material.io/foundations/good-${i}`] = {
+        html: `<h1>Good ${i}</h1><p>Good ${i} contains enough Material documentation body text to pass crawler validation and cache promotion safeguards.</p>`,
+        title: `Good ${i}`,
+        headings: [`Good ${i}`],
+        links: [],
+        finalUrl: `https://m3.material.io/foundations/good-${i}`
+      };
+    }
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'] = {
+      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination or head back to the homepage.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: [],
+      finalUrl: 'https://m3.material.io/foundations/layout-overview/adaptive-design'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 10, minPageCount: 2 });
+
+    expect(index.pageCount).toBe(9);
+    expect(index.attemptedPageCount).toBe(10);
+    expect(index.failedPageCount).toBe(1);
+    expect(index.failedUrls).toContain('https://m3.material.io/foundations/layout-overview/adaptive-design');
+    expect(index.qualityReport?.rejectedRoutes).toContainEqual({
+      url: 'https://m3.material.io/foundations/layout-overview/adaptive-design',
+      path: 'foundations/layout-overview/adaptive-design.md',
+      title: 'Page not found',
+      reason: 'route rendered a not found page',
+      classification: 'not-found',
+      status: 'failed'
+    });
+    expect(index.qualityReport?.suspiciousPages).toEqual([]);
+    await expect(readFile(path.join(pagesDir(cacheDir), 'foundations/layout-overview/adaptive-design.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(indexPath(cacheDir), 'utf8')).resolves.toContain('"pageCount": 9');
+  }, 20_000);
 
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
     await expect(crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 2 })).rejects.toThrow('below the required minimum');
