@@ -8,7 +8,7 @@ import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -24,6 +24,21 @@ const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
+const NOT_FOUND_TITLE_PATTERNS = [
+  /\bpage cannot be found\b/i,
+  /\bthis page cannot be found\b/i,
+  /\bpage not found\b/i,
+  /\b404\b/i
+];
+const NOT_FOUND_BODY_PATTERNS = [
+  /\bthis page cannot be found\b/i,
+  /\bpage cannot be found\b/i,
+  /\bpage not found\b/i,
+  /\brequested page was not found\b/i,
+  /\bcould not find (that|this) page\b/i,
+  /\btry a different destination\b/i,
+  /\bhead back to the homepage\b/i
+];
 
 const NOISE_ONLY_MARKDOWN_LINES = new Set([
   'close',
@@ -78,6 +93,43 @@ type StableSnapshot = {
   title: string;
   text: string;
 };
+
+type MaterialContentState = {
+  title: string;
+  text: string;
+  pathname: string;
+  renderedNotFound: boolean;
+  expectedComponentSlug: string | null;
+  pathMatches: boolean;
+  contentMatches: boolean;
+};
+
+type SerializedPattern = {
+  source: string;
+  flags: string;
+};
+
+class CandidateRejectedError extends Error {
+  readonly state: MaterialContentState;
+  readonly classification: RejectedCrawlRoute['classification'];
+
+  constructor(message: string, state: MaterialContentState, classification: RejectedCrawlRoute['classification']) {
+    super(message);
+    this.name = 'CandidateRejectedError';
+    this.state = state;
+    this.classification = classification;
+  }
+}
+
+class RequestedRouteRejectedError extends Error {
+  readonly rejectedRoute: RejectedCrawlRoute;
+
+  constructor(rejectedRoute: RejectedCrawlRoute, details: string) {
+    super(details);
+    this.name = 'RequestedRouteRejectedError';
+    this.rejectedRoute = rejectedRoute;
+  }
+}
 
 export async function installPlaywrightChromium(withDependencies = false): Promise<void> {
   const playwrightCli = resolvePlaywrightCliPath();
@@ -165,6 +217,7 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
   if (candidates.length === 0) throw new Error(`Unsupported Material URL: ${requestedUrl}`);
 
   let lastError: unknown;
+  let lastRejectedCandidate: CandidateRejectedError | null = null;
   for (const loadUrl of candidates) {
     throwIfAborted(signal);
     try {
@@ -175,8 +228,21 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
       return normalizeMaterialUrl(page.url(), baseUrl) ?? loadUrl;
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (error instanceof CandidateRejectedError) lastRejectedCandidate = error;
       lastError = error;
     }
+  }
+
+  if (lastRejectedCandidate) {
+    const normalizedRequestedUrl = normalizeMaterialUrl(requestedUrl, baseUrl) ?? requestedUrl;
+    throw new RequestedRouteRejectedError({
+      url: normalizedRequestedUrl,
+      path: materialPagePath(normalizedRequestedUrl),
+      title: lastRejectedCandidate.state.title || 'Untitled',
+      reason: lastRejectedCandidate.message,
+      classification: lastRejectedCandidate.classification,
+      status: 'failed'
+    }, `Material page rejected for ${requestedUrl}. Tried: ${candidates.join(', ')}. Last rejection: ${lastRejectedCandidate.message}`);
   }
 
   const details = lastError instanceof Error ? lastError.message : String(lastError);
@@ -184,22 +250,78 @@ async function navigateToStableMaterialPage(page: Page, requestedUrl: string, ba
 }
 
 async function waitForMaterialContent(page: Page, requestedUrl: string): Promise<void> {
+  const state = await readMaterialContentState(page, requestedUrl);
+  if (state.renderedNotFound) {
+    throw new CandidateRejectedError('route rendered a not found page', state, 'not-found');
+  }
+  if (state.expectedComponentSlug && (!state.pathMatches || !state.contentMatches)) {
+    throw new CandidateRejectedError(`component route content did not match expected component slug ${state.expectedComponentSlug}`, state, 'route-mismatch');
+  }
+}
+
+async function readMaterialContentState(page: Page, requestedUrl: string): Promise<MaterialContentState> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
-  await page.waitForFunction(({ componentSlug, minPageTextLength }) => {
+  const notFoundTitlePatterns = serializePatterns(NOT_FOUND_TITLE_PATTERNS);
+  const notFoundBodyPatterns = serializePatterns(NOT_FOUND_BODY_PATTERNS);
+  await page.waitForFunction(({ minPageTextLength, notFoundTitlePatterns, notFoundBodyPatterns }) => {
     const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const matchesAnyPattern = (value: string, patterns: SerializedPattern[]) => patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
-    const title = normalize(root.querySelector('h1')?.textContent ?? '');
-    const text = normalize(root.textContent ?? '');
+    const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const title = normalize(rawTitle);
+    const text = normalize(rawText);
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
+
+    return renderedNotFound || (rawText.length >= minPageTextLength && Boolean(rawTitle));
+  }, {
+    minPageTextLength: MIN_PAGE_TEXT_LENGTH,
+    notFoundTitlePatterns,
+    notFoundBodyPatterns
+  }, { timeout: 20_000 });
+
+  return page.evaluate(({ componentSlug, notFoundTitlePatterns, notFoundBodyPatterns }) => {
+    const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const matchesAnyPattern = (value: string, patterns: SerializedPattern[]) => patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const title = normalize(rawTitle);
+    const text = normalize(rawText);
     const pathname = window.location.pathname.replace(/^\/+|\/+$/g, '');
-    if (text.length < minPageTextLength || !title) return false;
-    if (!componentSlug) return true;
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
+    if (!componentSlug) {
+      return {
+        title: rawTitle,
+        text: rawText,
+        pathname,
+        renderedNotFound,
+        expectedComponentSlug: null,
+        pathMatches: true,
+        contentMatches: true
+      };
+    }
 
     const componentName = normalize(componentSlug.replace(/-/g, ' '));
     const componentWords = componentName.split(' ').filter((word) => word.length > 1);
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
-    const contentMatches = title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
-    return pathMatches && contentMatches;
-  }, { componentSlug: expectedComponentSlug, minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
+    const contentMatches = title !== 'components' && !renderedNotFound && componentWords.every((word) => text.includes(word));
+    return {
+      title: rawTitle,
+      text: rawText,
+      pathname,
+      renderedNotFound,
+      expectedComponentSlug: componentSlug,
+      pathMatches,
+      contentMatches
+    };
+  }, {
+    componentSlug: expectedComponentSlug,
+    notFoundTitlePatterns,
+    notFoundBodyPatterns
+  });
 }
 
 async function waitForStableMaterialSnapshot(page: Page, signal?: AbortSignal): Promise<void> {
@@ -683,18 +805,18 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
   const firstHeading = normalizeText(page.headings[0] ?? page.title);
   const contentPreview = normalizeText(`${page.title} ${page.headings.join(' ')} ${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`);
 
-  if (title.includes('page cannot be found') || contentPreview.includes('this page cannot be found')) {
-    return suspiciousPage(page, 'route rendered a not found page');
+  if (isNotFoundPage(page)) {
+    return rejectedRoute(page, 'route rendered a not found page', 'not-found');
   }
 
   if (segments[0] === 'components' && segments.length >= 2) {
     const componentSlug = segments[1] ?? '';
     const componentName = normalizeSlug(componentSlug);
     if (title === 'components' || firstHeading === 'components') {
-      return suspiciousPage(page, `component route rendered the parent Components index instead of ${componentSlug}`);
+      return rejectedRoute(page, `component route rendered the parent Components index instead of ${componentSlug}`, 'route-mismatch');
     }
     if (!containsAllWords(contentPreview, componentName.split(' '))) {
-      return suspiciousPage(page, `component route content does not mention expected component slug ${componentSlug}`);
+      return rejectedRoute(page, `component route content does not mention expected component slug ${componentSlug}`, 'route-mismatch');
     }
   }
 
@@ -702,16 +824,15 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
 }
 
 export function createCrawlQualityReport(pages: MaterialPage[], rejectedSuspiciousPages: SuspiciousCrawlPage[] = []): CrawlQualityReport {
-  const suspiciousPages = [
-    ...rejectedSuspiciousPages,
-    ...pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page))
-  ];
+  const rejectedRoutes = rejectedSuspiciousPages.map(toRejectedRoute);
+  const suspiciousPages = pages.map(validateCrawledPage).filter((page): page is SuspiciousCrawlPage => Boolean(page));
   const shortPages: ShortCrawlPage[] = pages
     .filter((page) => page.text.length < SHORT_PAGE_TEXT_LENGTH)
     .map((page) => ({ url: page.url, path: page.path, title: page.title, textLength: page.text.length }));
   const pagesBySection = countBy(pages.map((page) => page.section));
   return {
     suspiciousPages,
+    rejectedRoutes,
     duplicateContent: duplicateContentGroups(pages),
     shortPages,
     duplicateTitles: duplicateTitleGroups(pages),
@@ -873,7 +994,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   }
 
   async function crawlPage(page: Page, url: string): Promise<void> {
-    const finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
+    let finalUrl: string;
+    try {
+      finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
+    } catch (error) {
+      if (error instanceof RequestedRouteRejectedError) {
+        suspiciousPages.push(error.rejectedRoute);
+        failedUrls.push(url);
+        lastFailedUrl = url;
+        emitProgress(true);
+        console.error(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
+        return;
+      }
+      throw error;
+    }
     if (finalUrl !== url) seen.add(finalUrl);
     currentUrls.set(currentUrls.get(0) === url ? 0 : Array.from(currentUrls.entries()).find(([, current]) => current === url)?.[0] ?? 0, finalUrl);
     emitProgress(true);
@@ -891,7 +1025,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       lastFailedUrl = url;
       emitProgress(true);
       console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
-    } else if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+      return;
+    }
+    if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
       pages.push(materialPage);
       lastSavedUrl = finalUrl;
       writtenPaths.add(materialPage.path);
@@ -988,8 +1124,31 @@ function countBy(values: string[]): Record<string, number> {
   }, {});
 }
 
-function suspiciousPage(page: MaterialPage, reason: string): SuspiciousCrawlPage {
-  return { url: page.url, path: page.path, title: page.title, reason };
+function rejectedRoute(page: MaterialPage, reason: string, classification: RejectedCrawlRoute['classification']): RejectedCrawlRoute {
+  return { url: page.url, path: page.path, title: page.title, reason, classification, status: 'failed' };
+}
+
+function toRejectedRoute(page: SuspiciousCrawlPage): RejectedCrawlRoute {
+  if ('classification' in page && 'status' in page) return page as RejectedCrawlRoute;
+  const classification = page.reason === 'route rendered a not found page' ? 'not-found' : 'route-mismatch';
+  return { ...page, classification, status: 'failed' };
+}
+
+function isNotFoundPage(page: Pick<MaterialPage, 'title' | 'headings' | 'text'>): boolean {
+  const title = page.title.trim();
+  const firstHeading = (page.headings[0] ?? '').trim();
+  const preview = `${page.title}\n${page.headings.join('\n')}\n${page.text.slice(0, CONTENT_PREVIEW_LENGTH)}`;
+  return matchesAnyPattern(title, NOT_FOUND_TITLE_PATTERNS)
+    || matchesAnyPattern(firstHeading, NOT_FOUND_TITLE_PATTERNS)
+    || matchesAnyPattern(preview, NOT_FOUND_BODY_PATTERNS);
+}
+
+function matchesAnyPattern(value: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+function serializePatterns(patterns: RegExp[]): SerializedPattern[] {
+  return patterns.map((pattern) => ({ source: pattern.source, flags: pattern.flags }));
 }
 
 function normalizeSlug(value: string): string {

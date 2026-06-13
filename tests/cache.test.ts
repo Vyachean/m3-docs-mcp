@@ -233,6 +233,7 @@ describe('cache helpers', () => {
   it('rejects duplicate crawled content unless forced', () => {
     const duplicatedIndex = materialIndex(2, {
       qualityReport: {
+        rejectedRoutes: [],
         duplicateContent: [{ hash: 'same-body', title: 'Components', paths: ['components/buttons.md', 'components/dialogs.md'], urls: ['https://m3.material.io/components/buttons', 'https://m3.material.io/components/dialogs'] }],
         suspiciousPages: [],
         shortPages: [],
@@ -248,6 +249,7 @@ describe('cache helpers', () => {
   it('rejects suspicious crawled content unless forced', () => {
     const suspiciousIndex = materialIndex(1, {
       qualityReport: {
+        rejectedRoutes: [{ url: 'https://m3.material.io/components/buttons', path: 'components/buttons.md', title: 'Components', reason: 'component route rendered the parent Components index instead of buttons', classification: 'route-mismatch', status: 'failed' }],
         duplicateContent: [],
         suspiciousPages: [{ url: 'https://m3.material.io/components/buttons', path: 'components/buttons.md', title: 'Components', reason: 'component route rendered the parent Components index instead of buttons' }],
         shortPages: [],
@@ -257,6 +259,22 @@ describe('cache helpers', () => {
     });
 
     expect(() => assertSafeCachePromotion(suspiciousIndex, null)).toThrow('suspicious page content');
+    expect(() => assertSafeCachePromotion(suspiciousIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('rejects not found candidate content before promotion unless forced', () => {
+    const suspiciousIndex = materialIndex(1, {
+      qualityReport: {
+        rejectedRoutes: [{ url: 'https://m3.material.io/foundations/layout-overview/adaptive-design', path: 'foundations/layout-overview/adaptive-design.md', title: 'Page not found', reason: 'route rendered a not found page', classification: 'not-found', status: 'failed' }],
+        duplicateContent: [],
+        suspiciousPages: [{ url: 'https://m3.material.io/foundations/layout-overview/adaptive-design', path: 'foundations/layout-overview/adaptive-design.md', title: 'Page not found', reason: 'route rendered a not found page' }],
+        shortPages: [],
+        duplicateTitles: [],
+        pagesBySection: { 'foundations/layout-overview': 1 }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(suspiciousIndex, null)).toThrow('route rendered a not found page');
     expect(() => assertSafeCachePromotion(suspiciousIndex, null, { force: true })).not.toThrow();
   });
 

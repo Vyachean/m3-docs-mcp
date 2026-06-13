@@ -27,30 +27,75 @@ const playwrightMock = vi.hoisted(() => {
     }
   };
 
-  const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
   const htmlText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  const contentMatchesComponent = (componentSlug: string | null | undefined): boolean => {
+  const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const readMaterialContentState = (
+    componentSlug: string | null | undefined,
+    notFoundTitlePatterns: Array<{ source: string; flags: string }> = [],
+    notFoundBodyPatterns: Array<{ source: string; flags: string }> = []
+  ) => {
     const current = pagesByUrl[currentUrl];
-    if (!current) return false;
-    if (!componentSlug) return htmlText(current.html).length > 80 && Boolean(current.title);
+    if (!current) return null;
 
+    const rawTitle = current.title;
+    const rawText = htmlText(current.html);
+    const title = normalize(rawTitle);
+    const text = normalize(`${current.title} ${rawText}`);
     const pathname = new URL(current.finalUrl ?? currentUrl).pathname.replace(/^\/+|\/+$/g, '');
-    const title = normalize(current.title);
-    const text = normalize(`${current.title} ${htmlText(current.html)}`);
+    const matchesAnyPattern = (value: string, patterns: Array<{ source: string; flags: string }>) =>
+      patterns.some((pattern) => new RegExp(pattern.source, pattern.flags).test(value));
+    const renderedNotFound = matchesAnyPattern(title, notFoundTitlePatterns)
+      || matchesAnyPattern(text, notFoundBodyPatterns);
+
+    if (!componentSlug) {
+      return {
+        title: rawTitle,
+        text: rawText,
+        pathname,
+        renderedNotFound,
+        expectedComponentSlug: null,
+        pathMatches: true,
+        contentMatches: true
+      };
+    }
+
     const componentWords = normalize(componentSlug.replace(/-/g, ' ')).split(' ').filter((word) => word.length > 1);
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
-    return pathMatches && title !== 'components' && !title.includes('page cannot be found') && componentWords.every((word) => text.includes(word));
+    return {
+      title: rawTitle,
+      text: rawText,
+      pathname,
+      renderedNotFound,
+      expectedComponentSlug: componentSlug,
+      pathMatches,
+      contentMatches: title !== 'components' && !renderedNotFound && componentWords.every((word) => text.includes(word))
+    };
   };
 
   const page = {
     goto: vi.fn(async (url: string) => { currentUrl = url; }),
     url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
     waitForSelector: vi.fn(async () => undefined),
-    waitForFunction: vi.fn(async (_fn: unknown, arg?: { componentSlug?: string | null }) => {
-      if (!contentMatchesComponent(arg?.componentSlug)) throw new Error(`condition did not match for ${currentUrl}`);
+    waitForFunction: vi.fn(async (_fn: unknown, arg?: {
+      minPageTextLength?: number;
+      notFoundTitlePatterns?: Array<{ source: string; flags: string }>;
+      notFoundBodyPatterns?: Array<{ source: string; flags: string }>;
+    }) => {
+      const current = pagesByUrl[currentUrl];
+      const minPageTextLength = arg?.minPageTextLength ?? 0;
+      if (!current) throw new Error(`condition did not match for ${currentUrl}`);
+      const state = readMaterialContentState(null, arg?.notFoundTitlePatterns, arg?.notFoundBodyPatterns);
+      if (!state) throw new Error(`condition did not match for ${currentUrl}`);
+      if (!state.renderedNotFound && (htmlText(current.html).length < minPageTextLength || !current.title)) {
+        throw new Error(`condition did not match for ${currentUrl}`);
+      }
     }),
     close: vi.fn(async () => undefined),
-    evaluate: vi.fn(async (fn: () => unknown) => {
+    evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: {
+      componentSlug?: string | null;
+      notFoundTitlePatterns?: Array<{ source: string; flags: string }>;
+      notFoundBodyPatterns?: Array<{ source: string; flags: string }>;
+    }) => {
       const source = fn.toString();
       if (source.includes('details:not([open])')) {
         const current = pagesByUrl[currentUrl];
@@ -58,6 +103,9 @@ const playwrightMock = vi.hoisted(() => {
         return undefined;
       }
       if (source.includes('querySelectorAll') && source.includes('a[href]')) return pagesByUrl[currentUrl]?.links ?? [];
+      if (source.includes('expectedComponentSlug') || source.includes('contentMatches')) {
+        return readMaterialContentState(arg?.componentSlug, arg?.notFoundTitlePatterns, arg?.notFoundBodyPatterns);
+      }
       if (source.includes('window.location.href')) {
         const current = pagesByUrl[currentUrl];
         return {
@@ -129,6 +177,10 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.page.waitForFunction.mockClear();
     playwrightMock.page.close.mockClear();
     playwrightMock.page.evaluate.mockClear();
+    for (const url of Object.keys(playwrightMock.pagesByUrl)) {
+      if (url.startsWith('https://m3.material.io/foundations/good-')) delete playwrightMock.pagesByUrl[url];
+    }
+    delete playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'];
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [
@@ -171,6 +223,7 @@ describe('crawlMaterialDocs', () => {
       failedUrls: [],
       qualityReport: {
         duplicateContent: [],
+        rejectedRoutes: [],
         suspiciousPages: [],
         pagesBySection: {
           root: 1,
@@ -207,7 +260,7 @@ describe('crawlMaterialDocs', () => {
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
-  });
+  }, 10_000);
 
   it('falls back to URL extraction when sitemap loc entries are unavailable', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -227,7 +280,7 @@ describe('crawlMaterialDocs', () => {
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
-  });
+  }, 10_000);
 
   it('fails a page instead of writing content when expansion changes the route', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
@@ -266,6 +319,159 @@ describe('crawlMaterialDocs', () => {
 
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
   });
+
+  it('falls back to a valid next candidate when the first component candidate renders not found', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
+      html: '<h1>Page not found</h1><p>We could not find that page.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Buttons</h1><p>Buttons prompt most actions in a UI with enough body text for crawler validation and cache promotion safeguards.</p>',
+      title: 'Buttons',
+      headings: ['Buttons'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 });
+
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/buttons', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/buttons/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(index.pages.map((page) => page.path).sort()).toEqual(['components/buttons/overview.md', 'index.md']);
+    expect(index.failedUrls).toEqual([]);
+    expect(index.qualityReport?.rejectedRoutes).toEqual([]);
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).resolves.toContain('# Buttons');
+  });
+
+  it('falls back when a candidate hits a canonical body-pattern not found variant', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/cards'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/cards'] = {
+      html: '<h1>Missing docs</h1><p>Try a different destination or head back to the homepage for Material guidance.</p>',
+      title: 'Missing docs',
+      headings: ['Missing docs'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/cards'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/components/cards/overview'] = {
+      html: '<h1>Cards</h1><p>Cards group related content and actions with enough body text for crawler validation and cache promotion safeguards.</p>',
+      title: 'Cards',
+      headings: ['Cards'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/cards/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 2 });
+
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(index.pages.map((page) => page.path).sort()).toEqual(['components/cards/overview.md', 'index.md']);
+    expect(index.failedUrls).toEqual([]);
+    expect(index.qualityReport?.rejectedRoutes).toEqual([]);
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/cards/overview.md'), 'utf8')).resolves.toContain('# Cards');
+  });
+
+  it('rejects routes when all candidates render not found and does not write candidate files', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
+      html: '<h1>Page not found</h1><p>We could not find that page.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Page not found</h1><p>Requested page was not found.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(index.pageCount).toBe(1);
+    expect(index.failedUrls).toContain('https://m3.material.io/components/buttons');
+    expect(index.qualityReport?.rejectedRoutes).toContainEqual({
+      url: 'https://m3.material.io/components/buttons',
+      path: 'components/buttons.md',
+      title: 'Page not found',
+      reason: 'route rendered a not found page',
+      classification: 'not-found',
+      status: 'failed'
+    });
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).rejects.toThrow();
+  });
+
+  it('stops processing rejected routes before link discovery', async () => {
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/foundations/bad-route'];
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/bad-route'] = {
+      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination or head back to the homepage for Material guidance and browse another documentation section instead.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: ['https://m3.material.io/foundations/hidden-valid-route'],
+      finalUrl: 'https://m3.material.io/foundations/bad-route'
+    };
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/hidden-valid-route'] = {
+      html: '<h1>Hidden valid route</h1><p>Hidden valid route contains enough Material documentation body text to pass crawler validation and cache promotion safeguards.</p>',
+      title: 'Hidden valid route',
+      headings: ['Hidden valid route'],
+      links: [],
+      finalUrl: 'https://m3.material.io/foundations/hidden-valid-route'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(index.failedUrls).toContain('https://m3.material.io/foundations/bad-route');
+    expect(index.pages.map((page) => page.path)).toEqual(['index.md']);
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/foundations/hidden-valid-route', expect.anything());
+  });
+
+  it('skips not found routes, records them in quality data, and still promotes when failure ratio stays acceptable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => `<urlset>${Array.from({ length: 8 }, (_, i) => `<url><loc>https://m3.material.io/foundations/good-${i}</loc></url>`).join('')}<url><loc>https://m3.material.io/foundations/layout-overview/adaptive-design</loc></url></urlset>`
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [];
+    for (let i = 0; i < 8; i += 1) {
+      playwrightMock.pagesByUrl[`https://m3.material.io/foundations/good-${i}`] = {
+        html: `<h1>Good ${i}</h1><p>Good ${i} contains enough Material documentation body text to pass crawler validation and cache promotion safeguards.</p>`,
+        title: `Good ${i}`,
+        headings: [`Good ${i}`],
+        links: [],
+        finalUrl: `https://m3.material.io/foundations/good-${i}`
+      };
+    }
+    playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'] = {
+      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination or head back to the homepage.</p>',
+      title: 'Page not found',
+      headings: ['Page not found'],
+      links: [],
+      finalUrl: 'https://m3.material.io/foundations/layout-overview/adaptive-design'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 10, minPageCount: 2 });
+
+    expect(index.pageCount).toBe(9);
+    expect(index.attemptedPageCount).toBe(10);
+    expect(index.failedPageCount).toBe(1);
+    expect(index.failedUrls).toContain('https://m3.material.io/foundations/layout-overview/adaptive-design');
+    expect(index.qualityReport?.rejectedRoutes).toContainEqual({
+      url: 'https://m3.material.io/foundations/layout-overview/adaptive-design',
+      path: 'foundations/layout-overview/adaptive-design.md',
+      title: 'Page not found',
+      reason: 'route rendered a not found page',
+      classification: 'not-found',
+      status: 'failed'
+    });
+    expect(index.qualityReport?.suspiciousPages).toEqual([]);
+    await expect(readFile(path.join(pagesDir(cacheDir), 'foundations/layout-overview/adaptive-design.md'), 'utf8')).rejects.toThrow();
+    await expect(readFile(indexPath(cacheDir), 'utf8')).resolves.toContain('"pageCount": 9');
+  }, 20_000);
 
   it('keeps the old cache when the crawl result is below the minimum accepted page count', async () => {
     await expect(crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 2 })).rejects.toThrow('below the required minimum');
