@@ -257,10 +257,21 @@ async function waitForMaterialContent(page: Page, requestedUrl: string): Promise
 async function readMaterialContentState(page: Page, requestedUrl: string): Promise<MaterialContentState> {
   const expectedComponentSlug = componentSlugFromUrl(requestedUrl);
   await page.waitForFunction(({ minPageTextLength }) => {
+    const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
-    const title = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-    const text = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
-    return text.length >= minPageTextLength && Boolean(title);
+    const rawTitle = root.querySelector('h1')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const rawText = root.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+    const title = normalize(rawTitle);
+    const text = normalize(rawText);
+    const renderedNotFound = title.includes('page cannot be found')
+      || title.includes('page not found')
+      || title === '404'
+      || text.includes('this page cannot be found')
+      || text.includes('requested page was not found')
+      || text.includes('could not find that page')
+      || text.includes('could not find this page');
+
+    return renderedNotFound || (rawText.length >= minPageTextLength && Boolean(rawTitle));
   }, { minPageTextLength: MIN_PAGE_TEXT_LENGTH }, { timeout: 20_000 });
 
   return page.evaluate(({ componentSlug }) => {

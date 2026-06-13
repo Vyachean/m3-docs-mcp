@@ -79,7 +79,11 @@ const playwrightMock = vi.hoisted(() => {
       const current = pagesByUrl[currentUrl];
       const minPageTextLength = arg?.minPageTextLength ?? 0;
       if (!current) throw new Error(`condition did not match for ${currentUrl}`);
-      if (htmlText(current.html).length < minPageTextLength || !current.title) throw new Error(`condition did not match for ${currentUrl}`);
+      const state = readMaterialContentState(null);
+      if (!state) throw new Error(`condition did not match for ${currentUrl}`);
+      if (!state.renderedNotFound && (htmlText(current.html).length < minPageTextLength || !current.title)) {
+        throw new Error(`condition did not match for ${currentUrl}`);
+      }
     }),
     close: vi.fn(async () => undefined),
     evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: { componentSlug?: string | null }) => {
@@ -308,7 +312,7 @@ describe('crawlMaterialDocs', () => {
   it('falls back to a valid next candidate when the first component candidate renders not found', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
     playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
-      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination.</p>',
+      html: '<h1>Page not found</h1><p>We could not find that page.</p>',
       title: 'Page not found',
       headings: ['Page not found'],
       links: [],
@@ -335,14 +339,14 @@ describe('crawlMaterialDocs', () => {
   it('rejects routes when all candidates render not found and does not write candidate files', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
     playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'] = {
-      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination.</p>',
+      html: '<h1>Page not found</h1><p>We could not find that page.</p>',
       title: 'Page not found',
       headings: ['Page not found'],
       links: [],
       finalUrl: 'https://m3.material.io/components/buttons'
     };
     playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
-      html: '<h1>Page not found</h1><p>We could not find that page. Try a different destination or head back to the homepage.</p>',
+      html: '<h1>Page not found</h1><p>Requested page was not found.</p>',
       title: 'Page not found',
       headings: ['Page not found'],
       links: [],
