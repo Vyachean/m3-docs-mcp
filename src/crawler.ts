@@ -67,7 +67,8 @@ const TOKEN_VIEWER_ROW_SELECTORS = [
   '[class*="token-row"]',
   '[class*="tokenRow"]',
   '[class*="table-row"]',
-  '[class*="row"]'
+  '[class*="row"]',
+  'token'
 ].join(',');
 
 const TOKEN_VIEWER_CELL_SELECTORS = [
@@ -453,7 +454,14 @@ function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element
     .map((row) => tokenViewerCellsFromRow(turndown, row))
     .filter((cells) => cells.length > 0 && cells.some(Boolean));
 
-  if (rows.length > 0) return tokenRowsToMarkdown(rows);
+  if (rows.length > 0) {
+    const isTokenElementRows = rowCandidates.length > 0 && nodeName(rowCandidates[0]) === 'token';
+    if (isTokenElementRows) {
+      const maxColumns = Math.max(...rows.map((r) => r.length));
+      return tokenRowsToMarkdown([['Name', 'Token', 'Value'].slice(0, maxColumns), ...rows]);
+    }
+    return tokenRowsToMarkdown(rows);
+  }
 
   const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
   if (lines.length >= 4 && lines.length % 2 === 0) {
@@ -465,6 +473,13 @@ function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element
 }
 
 function tokenViewerCellsFromRow(turndown: TurndownService, row: Element): string[] {
+  if (nodeName(row) === 'token') {
+    const displayName = normalizeInlineText(row.querySelector('.display-name__text')?.textContent ?? '');
+    const tokenId = normalizeInlineText(row.querySelector('.text-value')?.textContent ?? '');
+    const value = normalizeInlineText(row.querySelector('.token-value-container')?.textContent ?? '');
+    return [displayName, tokenId, value].filter(Boolean);
+  }
+
   const explicitCells = Array.from(row.querySelectorAll(TOKEN_VIEWER_CELL_SELECTORS))
     .filter((cell) => cell !== row && !hasAncestorMatching(cell, row, TOKEN_VIEWER_CELL_SELECTORS));
   if (explicitCells.length > 1) {

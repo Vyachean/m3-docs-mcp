@@ -44,6 +44,46 @@ describe('Material markdown extraction regressions', () => {
     expect(page.markdown).toContain('| Shape | Corner full |');
   });
 
+  it('extracts token-viewer <token> custom elements into a Name/Token/Value table', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Design Tokens</h1>
+        <token-viewer>
+          <token aria-label="Container color">
+            <div class="token">
+              <div class="token-content">
+                <div class="display-name"><div class="display-name-container"><span class="display-name__text"> Container color </span></div></div>
+                <div class="column"><div class="token-name"><span class="text-value"> md.comp.list.list-item.container.color </span><button aria-label="Copy token name"><mat-icon>content_copy</mat-icon></button></div></div>
+              </div>
+              <div class="token-value-container">
+                <div class="token-value-wrapper">
+                  <token-value-color><div class="token-value-color-container"><div class="token-value-color"><span class="token-value-color-content"><span class="display-name-container"> #FEF7FF </span></span></div></div></token-value-color>
+                </div>
+              </div>
+            </div>
+          </token>
+          <token aria-label="Divider height">
+            <div class="token">
+              <div class="token-content">
+                <div class="display-name"><div class="display-name-container"><span class="display-name__text"> Divider height </span></div></div>
+                <div class="column"><div class="token-name"><span class="text-value"> md.comp.list.divider.height </span><button aria-label="Copy token name"><mat-icon>content_copy</mat-icon></button></div></div>
+              </div>
+              <div class="token-value-container">
+                <div class="token-value-wrapper">
+                  <token-value-length><div class="token-value-length-container"><div class="token-value-length"><span> 1dp </span></div></div></token-value-length>
+                </div>
+              </div>
+            </div>
+          </token>
+        </token-viewer>
+      </main>
+    `, 'https://m3.material.io/components/lists/specs', '2026-05-18T00:00:00.000Z');
+
+    expect(page.markdown).toContain('| Name | Token | Value |');
+    expect(page.markdown).toContain('| Container color | md.comp.list.list-item.container.color | #FEF7FF |');
+    expect(page.markdown).toContain('| Divider height | md.comp.list.divider.height | 1dp |');
+  });
+
   it('falls back to token-viewer key-value lines when no row structure is available', () => {
     const page = extractMaterialPageFromHtml(`
       <main>
