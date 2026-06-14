@@ -647,6 +647,281 @@ function escapeHtmlText(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// ─── TOKEN_TABLE extraction ───────────────────────────────────────────────────
+
+type TokenTableSystem = {
+  tokens: Array<{ name: string; tokenName: string; displayName: string; tokenValueType: string; state: string }>;
+  tokenSets: Array<{ name: string; displayName: string; tokenSetName: string }>;
+  tags: Array<{ name: string; displayName: string; tagName: string }>;
+  contextTagGroups: Array<{ name: string; displayName: string; defaultTag: string }>;
+  contextualReferenceTrees: Record<string, { contextualReferenceTree: ContextTreeEntry[] } | undefined>;
+};
+
+type ContextTreeEntry = {
+  contextTags: string[];
+  referenceTree: ReferenceNode;
+  resolvedValue: ResolvedTokenValue;
+};
+
+type ReferenceNode = {
+  tokenName: string;
+  childNodes?: ReferenceNode[];
+};
+
+type ResolvedTokenValue = {
+  color?: { red: number; green: number; blue: number; alpha?: number };
+  dimension?: { value: number; unit: string };
+  length?: { value?: number; unit?: string };
+  shape?: { family?: string; defaultSize?: { value?: number; unit?: string } };
+  fontSize?: { value?: number; unit?: string };
+  lineHeight?: { value?: number; unit?: string };
+  fontTracking?: { value?: number; unit?: string };
+  fontNames?: { values?: string[] };
+  elevation?: { value?: number; unit?: string };
+  type?: { fontNames?: { values?: string[] }; fontWeight?: number; fontSize?: { value?: number; unit?: string }; lineHeight?: { value?: number; unit?: string } };
+  opacity?: number;
+  fontWeight?: number;
+  number?: number;
+  undefined?: boolean;
+  [key: string]: unknown;
+};
+
+type TagIndex = {
+  idByTagName: Map<string, string>;
+};
+
+function buildTagIndex(sys: TokenTableSystem): TagIndex {
+  const idByTagName = new Map<string, string>();
+  for (const tag of sys.tags) idByTagName.set(tag.tagName, tag.name);
+  return { idByTagName };
+}
+
+function findContextEntry(
+  entries: ContextTreeEntry[],
+  idx: TagIndex,
+  theme: 'light' | 'dark',
+  opts: { audience?: string; contrast?: string } = {}
+): ContextTreeEntry | undefined {
+  const { audience = '3p', contrast = 'default' } = opts;
+  const themeId = idx.idByTagName.get(theme);
+  const antiThemeId = idx.idByTagName.get(theme === 'light' ? 'dark' : 'light');
+  const androidId = idx.idByTagName.get('android');
+  const audienceId = idx.idByTagName.get(audience);
+  const contrastId = idx.idByTagName.get(contrast);
+  const mediumId = idx.idByTagName.get('medium.contrast');
+  const highId = idx.idByTagName.get('high.contrast');
+  const iosId = idx.idByTagName.get('ios');
+  const webId = idx.idByTagName.get('web');
+  const composeId = idx.idByTagName.get('compose');
+  const elevatedId = idx.idByTagName.get('elevated');
+  const nonAndroidPlatforms = [iosId, webId, composeId].filter(Boolean) as string[];
+
+  const candidates = entries.filter((entry) => {
+    if (entry.resolvedValue?.undefined === true) return false;
+    const tags = entry.contextTags;
+    // No contextTags → universal default, valid for any non-HC query
+    if (!tags) return contrast !== 'high.contrast';
+    // Platform exclusion (before theme check so iOS-only entries are dropped)
+    if (elevatedId && tags.includes(elevatedId)) return false;
+    if (tags.some((t) => nonAndroidPlatforms.includes(t))) return false;
+    // If entry has an explicit theme tag, it must match the requested theme
+    const hasThemeTag = (themeId != null && tags.includes(themeId)) || (antiThemeId != null && tags.includes(antiThemeId));
+    if (hasThemeTag) {
+      if (themeId && !tags.includes(themeId)) return false;
+      if (antiThemeId && tags.includes(antiThemeId)) return false;
+    }
+    // Entries with no theme tag are theme-neutral (typography, etc.) — pass theme check
+    // HC contrast check: theme-neutral entries have no HC variant, exclude them from HC queries
+    if (contrast === 'high.contrast') {
+      if (mediumId && tags.includes(mediumId)) return false;
+      if (!highId || !tags.includes(highId)) return false;
+    } else {
+      if (mediumId && tags.includes(mediumId)) return false;
+      if (highId && tags.includes(highId)) return false;
+    }
+    return true;
+  });
+
+  if (candidates.length === 0) return undefined;
+
+  return candidates.sort((a, b) => {
+    const score = (e: ContextTreeEntry) => {
+      const t = e.contextTags;
+      if (!t) return -1; // universal entries lowest priority
+      let s = 0;
+      if (themeId && t.includes(themeId)) s += 8; // explicit theme match wins over theme-neutral
+      if (audienceId && t.includes(audienceId)) s += 4;
+      if (androidId && t.includes(androidId)) s += 2;
+      if (contrastId && t.includes(contrastId)) s += 1;
+      return s;
+    };
+    return score(b) - score(a);
+  })[0];
+}
+
+function normalizeUnit(unit: string): string {
+  if (unit === 'DIPS') return 'dp';
+  if (unit === 'POINTS' || unit === 'SP') return 'sp';
+  return unit.toLowerCase();
+}
+
+// Generic structural traversal — no key-name dictionary, detects shape by structure.
+function formatValueNode(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v !== 'object') return String(v);
+  if (Array.isArray(v)) return v.map(formatValueNode).filter(Boolean).join(', ');
+
+  const obj = v as Record<string, unknown>;
+
+  // Color: {red, green, blue[, alpha]}
+  if ('red' in obj && 'green' in obj && 'blue' in obj) {
+    const red = Number(obj.red), green = Number(obj.green), blue = Number(obj.blue);
+    const alpha = obj.alpha != null ? Number(obj.alpha) : 1;
+    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
+    const r = Math.round(red * 255).toString(16).padStart(2, '0');
+    const g = Math.round(green * 255).toString(16).padStart(2, '0');
+    const b = Math.round(blue * 255).toString(16).padStart(2, '0');
+    if (Number.isFinite(alpha) && alpha < 0.9999)
+      return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
+    return `#${r}${g}${b}`;
+  }
+
+  // Measurement: {unit, value?}
+  if ('unit' in obj && typeof obj.unit === 'string') {
+    const value = typeof obj.value === 'number' ? obj.value : 0;
+    return `${value}${normalizeUnit(obj.unit)}`;
+  }
+
+  // Named list: {values: [...]}
+  if ('values' in obj && Array.isArray(obj.values)) {
+    return obj.values.map(formatValueNode).filter(Boolean).join(', ');
+  }
+
+  // Generic: recurse into all child values
+  return Object.values(obj).map(formatValueNode).filter(Boolean).join(' ');
+}
+
+function formatResolvedValue(rv: ResolvedTokenValue): string {
+  if (!rv || rv.undefined === true) return '';
+  return Object.entries(rv)
+    .filter(([k]) => k !== 'undefined')
+    .map(([, v]) => formatValueNode(v))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function extractAliasChain(tree: ReferenceNode, selfTokenName: string): string[] {
+  const aliases: string[] = [];
+  let node: ReferenceNode | undefined = tree.childNodes?.[0];
+  while (node) {
+    if (node.tokenName && node.tokenName !== selfTokenName) aliases.push(node.tokenName);
+    node = node.childNodes?.[0];
+  }
+  return aliases;
+}
+
+export function extractDisplayTokenSets(html: string): string[] {
+  const match = html.match(/display-token-sets="([^"]+)"/i);
+  if (!match) return [];
+  try {
+    const sets: unknown = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
+    return Array.isArray(sets) ? sets.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
+  const idx = buildTagIndex(system);
+  const displaySetNames = new Set(displayTokenSets);
+  const relevantSets = system.tokenSets.filter((ts) => displaySetNames.has(ts.displayName) || displaySetNames.has(ts.tokenSetName));
+  if (relevantSets.length === 0) return '';
+
+  const sections: string[] = [];
+
+  for (const ts of relevantSets) {
+    const tokens = system.tokens.filter((t) => t.name.startsWith(ts.name) && t.state === 'ACTIVE');
+    if (tokens.length === 0) continue;
+
+    const rows: string[][] = [['Token', 'Name', 'sys alias', 'ref alias', 'Light', 'Dark', 'Light (High contrast)', 'Dark (High contrast)']];
+
+    for (const token of tokens) {
+      const treeData = system.contextualReferenceTrees[token.name];
+      if (!treeData?.contextualReferenceTree?.length) continue;
+      const entries = treeData.contextualReferenceTree;
+
+      const lightEntry = findContextEntry(entries, idx, 'light', { audience: '3p' })
+        ?? findContextEntry(entries, idx, 'light', { audience: '1p.baseline' })
+        ?? findContextEntry(entries, idx, 'light');
+      const darkEntry = findContextEntry(entries, idx, 'dark', { audience: '3p' })
+        ?? findContextEntry(entries, idx, 'dark', { audience: '1p.baseline' })
+        ?? findContextEntry(entries, idx, 'dark');
+      const lightHcEntry = findContextEntry(entries, idx, 'light', { audience: '3p', contrast: 'high.contrast' })
+        ?? findContextEntry(entries, idx, 'light', { contrast: 'high.contrast' });
+      const darkHcEntry = findContextEntry(entries, idx, 'dark', { audience: '3p', contrast: 'high.contrast' })
+        ?? findContextEntry(entries, idx, 'dark', { contrast: 'high.contrast' });
+
+      if (!lightEntry && !darkEntry) continue;
+
+      const lightValue = formatResolvedValue((lightEntry ?? darkEntry)!.resolvedValue);
+      const darkValue = formatResolvedValue((darkEntry ?? lightEntry)!.resolvedValue);
+      const lightHcValue = lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '';
+      const darkHcValue = darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : '';
+
+      const refTree = (lightEntry ?? darkEntry)!.referenceTree;
+      const aliases = extractAliasChain(refTree, token.tokenName);
+
+      rows.push([
+        token.tokenName,
+        token.displayName,
+        aliases[0] ?? '',
+        aliases[1] ?? '',
+        lightValue,
+        darkValue,
+        lightHcValue,
+        darkHcValue,
+      ]);
+    }
+
+    if (rows.length <= 1) continue;
+
+    // Drop HC columns if they're all empty
+    const hasHcData = rows.slice(1).some((r) => r[6] || r[7]);
+    const finalRows = hasHcData ? rows : rows.map((r) => r.slice(0, 6));
+
+    sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
+  }
+
+  return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
+}
+
+async function extractTokenTableSection(page: Page, html: string): Promise<string> {
+  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return '';
+  const displayTokenSets = extractDisplayTokenSets(html);
+  if (displayTokenSets.length === 0) return '';
+
+  const tokenTableUrl = await page.evaluate(() => {
+    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+    return entries.find((e) => e.name.includes('TOKEN_TABLE'))?.name ?? null;
+  });
+  if (!tokenTableUrl) return '';
+
+  const rawData = await page.evaluate(async (url) => {
+    try {
+      const resp = await fetch(url);
+      return resp.ok ? (resp.json() as Promise<unknown>) : null;
+    } catch {
+      return null;
+    }
+  }, tokenTableUrl);
+  if (!rawData || typeof rawData !== 'object') return '';
+
+  const system = (rawData as { system?: unknown }).system;
+  if (!system || typeof system !== 'object') return '';
+
+  return tokenTableToMarkdown(system as TokenTableSystem, displayTokenSets);
+}
+
 async function extract(page: Page, url: string): Promise<MaterialPage> {
   const content = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
@@ -686,7 +961,10 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
       headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
     };
   });
-  return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
+  const materialPage = extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
+  const tokenSection = await extractTokenTableSection(page, content.html).catch(() => '');
+  if (tokenSection) return { ...materialPage, markdown: materialPage.markdown + tokenSection };
+  return materialPage;
 }
 
 function postProcessMarkdown(markdown: string): string {
