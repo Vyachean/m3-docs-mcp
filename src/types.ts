@@ -18,6 +18,7 @@ export type JsonResponseType = 'page-metadata' | 'content-page' | 'dsdb-resource
 export type ExtractionFallbackReason =
   | 'json-fetch-failed'
   | 'json-title-missing'
+  | 'json-low-quality'
   | 'json-no-sections'
   | 'json-no-headings'
   | 'json-short-markdown'
@@ -82,6 +83,8 @@ export type ExtractionRouteDiagnostic = {
   unknownJsonResourceCount?: number;
   capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
   rawJsonDebugFilesWritten?: number;
+  routeMetadataWarnings?: string[];
+  candidateSelectionReasons?: string[];
 };
 
 export type ExtractionDiagnostics = {

@@ -5,6 +5,7 @@ import { asArray, asObject, compactJson, firstArray, firstString, getPath, readB
 import { createMaterialPageFromBody, renderHtmlToMarkdown, renderImageMarkdown, renderVideoMarkdown } from './render-markdown.js';
 
 const MIN_REASONABLE_MARKDOWN_LENGTH = 80;
+const MIN_ACCEPTABLE_QUALITY_SCORE = 4;
 
 type ParsedSection = {
   title: string;
@@ -106,6 +107,7 @@ function determineFallbackReason(page: MaterialPage, pageDiagnostic: ExtractionP
   if (page.headings.length === 0) return 'json-no-headings';
   if (page.markdown.length < MIN_REASONABLE_MARKDOWN_LENGTH) return 'json-short-markdown';
   if (page.text.length < MIN_REASONABLE_MARKDOWN_LENGTH) return 'json-suspicious-content';
+  if ((pageDiagnostic.qualityScore ?? 0) < MIN_ACCEPTABLE_QUALITY_SCORE) return 'json-low-quality';
   return null;
 }
 
@@ -115,11 +117,17 @@ function scoreJsonExtraction(page: MaterialPage, pageDiagnostic: ExtractionPageD
   if (!pageDiagnostic.noSections) score += 2;
   if (!pageDiagnostic.noHeadings) score += 1;
   if (page.text.length >= MIN_REASONABLE_MARKDOWN_LENGTH) score += 2;
+  if (page.headings.length >= 2) score += 1;
+  if (pageDiagnostic.imageCount > 0 || pageDiagnostic.videoCount > 0) score += 1;
   if (pageDiagnostic.tokenTables === 0 || pageDiagnostic.tokenTablesRendered === pageDiagnostic.tokenTables) score += 1;
+  if (pageDiagnostic.statusTablesResolved && pageDiagnostic.statusTablesResolved > 0) score += 1;
   if (pageDiagnostic.unknownChunkTypes.length > 0) score -= 1;
   if (pageDiagnostic.unknownResourceTypes.length > 0) score -= 1;
+  score -= pageDiagnostic.unresolvedResourceCount;
+  score -= pageDiagnostic.missingRequestedTokenSets.length;
   if (pageDiagnostic.routeTitlePathMismatch) score -= 1;
   if (pageDiagnostic.markdownLength < MIN_REASONABLE_MARKDOWN_LENGTH) score -= 1;
+  if (hasSuspiciousPlaceholderDensity(page.markdown)) score -= 2;
   return score;
 }
 
@@ -250,4 +258,9 @@ function summarizeUnknownChunk(chunk: Record<string, unknown>): Record<string, u
     libraryModuleType: chunk.libraryModuleType,
     keys: Object.keys(chunk).sort()
   };
+}
+
+function hasSuspiciousPlaceholderDensity(markdown: string): boolean {
+  const placeholderMatches = markdown.match(/\[(?:unresolved|missing|unknown)[^\]]*\]|Unsupported Material chunk|Material resource placeholder/gi) ?? [];
+  return placeholderMatches.length >= 3;
 }

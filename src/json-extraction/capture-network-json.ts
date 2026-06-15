@@ -1,33 +1,31 @@
 import type { Page, Response } from 'playwright';
-import { extractPageDataMetadata, fallbackPageCanonId } from './extract-page-data.js';
 import { classifyJsonResponse } from './classify-json-response.js';
-import { createJsonPageBundle, type JsonCapturedResponse, type JsonPageBundle } from './json-bundle.js';
-
-const RELEVANT_JSON_PATTERNS = [
-  /\/page-data\/.+\.json$/i,
-  /\/_dsm\/content\/m3\/.+\.json$/i,
-  /\/_dsm\/data\/dsdb-m3\/.+\.json$/i,
-  /TOKEN_TABLE\.[^/]+\.json$/i,
-  /STATUS_TABLE/i
-];
+import { buildJsonPageBundleFromResponses, type JsonCapturedResponse, type JsonPageBundle, type JsonSelectionContext } from './json-bundle.js';
 
 export function createNetworkJsonCapture(page: Page): {
   stop: () => void;
+  stopAndDrain: () => Promise<void>;
   getResponses: () => JsonCapturedResponse[];
-  buildBundle: () => JsonPageBundle;
+  buildBundle: (context?: JsonSelectionContext) => JsonPageBundle;
 } {
   const responses: JsonCapturedResponse[] = [];
+  const pending = new Set<Promise<void>>();
   const listener = async (response: Response) => {
     const url = response.url();
-    if (!RELEVANT_JSON_PATTERNS.some((pattern) => pattern.test(url))) return;
-    if (!response.ok()) return;
-
-    try {
-      const payload = await response.json();
-      responses.push(classifyJsonResponse({ url, payload }));
-    } catch {
-      // ignore non-JSON or truncated responses
-    }
+    if (!isRelevantJsonResponse(url)) return;
+    const parsePromise = (async () => {
+      if (!response.ok()) return;
+      try {
+        const payload = await response.json();
+        responses.push(classifyJsonResponse({ url, payload }));
+      } catch {
+        // ignore non-JSON or truncated responses
+      }
+    })();
+    pending.add(parsePromise);
+    void parsePromise.finally(() => {
+      pending.delete(parsePromise);
+    });
   };
 
   page.on('response', listener);
@@ -36,16 +34,30 @@ export function createNetworkJsonCapture(page: Page): {
     stop: () => {
       page.off('response', listener);
     },
+    stopAndDrain: async () => {
+      page.off('response', listener);
+      await Promise.allSettled(Array.from(pending));
+    },
     getResponses: () => responses.slice(),
-    buildBundle: () => buildBundleFromCapturedResponses(responses)
+    buildBundle: (context?: JsonSelectionContext) => buildBundleFromCapturedResponses(responses, context)
   };
 }
 
-export function buildBundleFromCapturedResponses(responses: JsonCapturedResponse[]): JsonPageBundle {
-  const pageData = responses.find((response) => response.type === 'page-metadata')?.payload ?? null;
-  const contentPage = responses.find((response) => response.type === 'content-page')?.payload ?? null;
-  const pageCanonId = extractPageDataMetadata(pageData).pageCanonId
-    ?? fallbackPageCanonId(pageData)
-    ?? null;
-  return createJsonPageBundle({ pageData, contentPage, pageCanonId, responses });
+export function buildBundleFromCapturedResponses(
+  responses: JsonCapturedResponse[],
+  context?: JsonSelectionContext
+): JsonPageBundle {
+  return buildJsonPageBundleFromResponses(responses, context);
+}
+
+function isRelevantJsonResponse(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname;
+    return pathname.endsWith('.json')
+      || pathname.includes('/page-data/')
+      || pathname.includes('/_dsm/content/')
+      || pathname.includes('/_dsm/data/');
+  } catch {
+    return /\.json(?:$|\?)/i.test(url);
+  }
 }

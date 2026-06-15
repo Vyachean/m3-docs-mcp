@@ -49,11 +49,12 @@ const NOT_FOUND_BODY_PATTERNS = [
 
 type DsdbRoute = {
   slug: string;
-  documentId: string;
-  collectionId: string;
-  exportedCarbonFileId: string;
+  documentId?: string;
+  collectionId?: string;
+  exportedCarbonFileId?: string;
   collectionName?: string;
   pageCanonId?: string;
+  metadataWarnings?: string[];
 };
 
 type DsdbSiteConfig = {
@@ -579,20 +580,7 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
     if (!cvMatch?.[1]) throw new Error('carbonVersion not found in Angular bundle');
     const carbonVersion = cvMatch[1];
 
-    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)"([^]*?)"exportedCarbonFileId":"([^"]+\.json)"/g;
-    const routes: DsdbRoute[] = [];
-    let m;
-    while ((m = routePattern.exec(mainJs)) !== null) {
-      const extraFields = m[4] ?? '';
-      routes.push({
-        slug: m[1],
-        documentId: m[2],
-        collectionId: m[3],
-        exportedCarbonFileId: m[5],
-        collectionName: extraFields.match(/"collectionName":"([^"]+)"/)?.[1],
-        pageCanonId: extraFields.match(/"pageCanon(?:ical)?Id":"([^"]+)"/)?.[1]
-      });
-    }
+    const routes = extractDsdbRoutesFromBundle(mainJs);
 
     if (routes.length === 0) throw new Error('No DSDB routes found in Angular bundle');
     return { carbonVersion, routes };
@@ -600,6 +588,101 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+export function extractDsdbRoutesFromBundle(mainJs: string): DsdbRoute[] {
+  const routes: DsdbRoute[] = [];
+  const seen = new Set<string>();
+  const fragments = findRouteObjectFragments(mainJs);
+  const candidates = fragments.length > 0 ? fragments : findLooseRouteFragments(mainJs);
+
+  for (const fragment of candidates) {
+    const route = parseDsdbRouteFragment(fragment);
+    if (!route?.slug) continue;
+    const routeKey = [
+      route.slug,
+      route.documentId ?? '',
+      route.pageCanonId ?? '',
+      route.exportedCarbonFileId ?? ''
+    ].join('|');
+    if (seen.has(routeKey)) continue;
+    seen.add(routeKey);
+    routes.push(route);
+  }
+
+  return routes;
+}
+
+function findRouteObjectFragments(source: string): string[] {
+  const fragments: string[] = [];
+  const slugPattern = /"slug":"[^"]+"/g;
+  let match: RegExpExecArray | null;
+  while ((match = slugPattern.exec(source)) !== null) {
+    const fragment = extractBalancedObject(source, match.index);
+    if (fragment && fragment.includes('"slug"')) fragments.push(fragment);
+  }
+  return fragments;
+}
+
+function findLooseRouteFragments(source: string): string[] {
+  const matches = Array.from(source.matchAll(/"slug":"[^"]+"/g));
+  return matches.map((match, index) => {
+    const start = match.index ?? 0;
+    const end = matches[index + 1]?.index ?? source.length;
+    return source.slice(start, end);
+  });
+}
+
+function extractBalancedObject(source: string, slugIndex: number): string | null {
+  let start = slugIndex;
+  let depth = 0;
+  let foundStart = false;
+  for (let i = slugIndex; i >= 0; i -= 1) {
+    const char = source[i];
+    if (char === '}') depth += 1;
+    if (char === '{') {
+      if (depth === 0) {
+        start = i;
+        foundStart = true;
+        break;
+      }
+      depth -= 1;
+    }
+  }
+  if (!foundStart) return null;
+
+  depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+function parseDsdbRouteFragment(fragment: string): DsdbRoute | null {
+  const readField = (field: string): string | undefined => fragment.match(new RegExp(`"${field}":"([^"]+)"`))?.[1];
+  const slug = readField('slug');
+  if (!slug) return null;
+
+  const route: DsdbRoute = {
+    slug,
+    documentId: readField('documentId'),
+    collectionId: readField('collectionId'),
+    collectionName: readField('collectionName'),
+    exportedCarbonFileId: readField('exportedCarbonFileId'),
+    pageCanonId: readField('pageCanonId') ?? readField('pageCanonicalId')
+  };
+
+  const warnings: string[] = [];
+  if (!route.documentId && !route.pageCanonId && !route.exportedCarbonFileId) warnings.push('missing-document-identifiers');
+  if (!route.collectionId && !route.collectionName) warnings.push('missing-collection-metadata');
+  if (!route.exportedCarbonFileId) warnings.push('missing-exported-carbon-file-id');
+  if (warnings.length > 0) route.metadataWarnings = warnings;
+  return route;
 }
 
 function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
@@ -711,6 +794,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     unknownJsonResourceCount = 0,
     capturedJsonResponseCounts = {},
     rawJsonDebugFilesWritten = 0
+    ,
+    routeMetadataWarnings = [],
+    candidateSelectionReasons = []
   }: {
     url: string;
     path: string;
@@ -734,6 +820,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     unknownJsonResourceCount?: number;
     capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
     rawJsonDebugFilesWritten?: number;
+    routeMetadataWarnings?: string[];
+    candidateSelectionReasons?: string[];
   }): ExtractionRouteDiagnostic => ({
     url,
     path,
@@ -761,7 +849,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     missingRequestedTokenSets,
     unknownJsonResourceCount,
     capturedJsonResponseCounts,
-    rawJsonDebugFilesWritten
+    rawJsonDebugFilesWritten,
+    ...(routeMetadataWarnings.length > 0 ? { routeMetadataWarnings } : {}),
+    ...(candidateSelectionReasons.length > 0 ? { candidateSelectionReasons } : {})
   });
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
@@ -832,6 +922,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
+                ,
+                routeMetadataWarnings: route.metadataWarnings ?? []
               }));
               return;
             }
@@ -854,7 +946,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
-                rawJsonDebugFilesWritten
+                rawJsonDebugFilesWritten,
+                routeMetadataWarnings: route.metadataWarnings ?? [],
+                candidateSelectionReasons: bundle.selectionReasons
               }));
               writtenPaths.add(materialPage.path);
               jsonExtractedSlugs.add(route.slug);
@@ -1098,9 +1192,16 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'lazy-load scrolling');
     await waitForStableMaterialSnapshot(page, signal);
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'stabilization');
-    networkCapture.stop();
+    await networkCapture.stopAndDrain();
 
-    const capturedBundle = buildBundleFromCapturedResponses(networkCapture.getResponses());
+    const capturedBundle = networkCapture.buildBundle({
+      requestedUrl: url,
+      finalUrl,
+      slug: routeSlugFromPath(materialPagePath(finalUrl)),
+      routeMetadata: {
+        slug: routeSlugFromPath(materialPagePath(finalUrl))
+      }
+    });
     const capturedJsonResponseCounts = countCapturedResponseTypes(capturedBundle.responses);
     const unknownJsonResourceCount = capturedBundle.responses.filter((response) => response.type === 'unknown-json-resource').length;
 
@@ -1135,7 +1236,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
           unknownJsonResourceCount,
           capturedJsonResponseCounts,
-          rawJsonDebugFilesWritten
+          rawJsonDebugFilesWritten,
+          candidateSelectionReasons: capturedBundle.selectionReasons
         }));
         lastSavedUrl = finalUrl;
         writtenPaths.add(networkExtraction.page.path);
@@ -1171,7 +1273,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
         missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
         unknownJsonResourceCount,
-        capturedJsonResponseCounts
+        capturedJsonResponseCounts,
+        candidateSelectionReasons: capturedBundle.selectionReasons
       }));
     } else {
       recordRouteDiagnostic(createRouteDiagnostic({
@@ -1186,7 +1289,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         fallbackReasons: [...(routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackReasons ?? []), 'network-json-failed'],
         fallbackSkippedReasons: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackSkippedReasons ?? [],
         unknownJsonResourceCount,
-        capturedJsonResponseCounts
+        capturedJsonResponseCounts,
+        candidateSelectionReasons: capturedBundle.selectionReasons
       }));
     }
 
