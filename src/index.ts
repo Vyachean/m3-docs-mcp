@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
 import { cacheStatus, getDefaultCacheDir } from './cache.js';
+import { printJson, readCachedResult, type ReadCommandOptions } from './cli-read.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
@@ -8,6 +9,10 @@ import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePos
 import type { CrawlProgress } from './types.js';
 
 const program = new Command();
+
+type SearchCommandOptions = ReadCommandOptions & {
+  limit: string;
+};
 
 program
   .name('m3-docs-mcp')
@@ -82,6 +87,45 @@ program.command('update')
     }
   });
 
+program.command('search')
+  .description('Search the local Material 3 documentation cache from the CLI')
+  .argument('<query...>', 'Search query')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .option('--limit <number>', 'Maximum search results, up to 25', '10')
+  .action(async (queryParts: string[], options: SearchCommandOptions) => {
+    const limit = parseBoundedPositiveIntegerOption('--limit', options.limit, 1, 25);
+    const query = queryParts.join(' ').trim();
+    await printCachedCommandResult(options, 'results', [], (store) => store.searchDocs(query, limit));
+  });
+
+program.command('page')
+  .description('Print one cached Material 3 documentation page by cache path or source URL')
+  .argument('<path-or-url>', 'Cache path, Material page path, or source URL')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (pathOrUrl: string, options: ReadCommandOptions) => {
+    await printCachedCommandResult(options, 'page', null, (store) => store.getPage(pathOrUrl));
+  });
+
+program.command('component')
+  .description('Print cached Material 3 documentation pages matching a component name')
+  .argument('<component-name...>', 'Component name or slug')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (componentNameParts: string[], options: ReadCommandOptions) => {
+    const componentName = componentNameParts.join(' ').trim();
+    await printCachedCommandResult(options, 'pages', [], (store) => store.getComponentDocs(componentName));
+  });
+
+program.command('components')
+  .description('List component slugs discovered in the local Material 3 documentation cache')
+  .option('--cache-dir <path>', 'Cache directory')
+  .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
+  .action(async (options: ReadCommandOptions) => {
+    await printCachedCommandResult(options, 'components', [], (store) => store.listComponents());
+  });
+
 program.command('install-browser')
   .description('Install the Playwright Chromium browser used by the crawler')
   .option('--with-deps', 'Also install Playwright system dependencies on supported Linux distributions')
@@ -103,6 +147,17 @@ program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.stack ?? error.message : String(error));
   process.exitCode = 1;
 });
+
+async function printCachedCommandResult(
+  options: ReadCommandOptions,
+  resultKey: string,
+  unavailableFallback: unknown,
+  read: Parameters<typeof readCachedResult>[3]
+): Promise<void> {
+  const result = await readCachedResult(options, resultKey, unavailableFallback, read);
+  printJson(result.value);
+  if (result.exitCode !== undefined) process.exitCode = result.exitCode;
+}
 
 function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
   let previousLength = 0;
