@@ -381,9 +381,9 @@ function abortError(signal: AbortSignal): Error {
   return new Error(signal.reason ? String(signal.reason) : 'Material 3 crawl was interrupted.');
 }
 
-export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
+export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>, tokenSystem?: TokenTableSystem): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
-  addMaterialMarkdownRules(turndown);
+  addMaterialMarkdownRules(turndown, tokenSystem);
 
   const relPath = materialPagePath(url);
   const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
@@ -408,7 +408,7 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   };
 }
 
-function addMaterialMarkdownRules(turndown: TurndownService): void {
+function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
     replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
@@ -416,7 +416,22 @@ function addMaterialMarkdownRules(turndown: TurndownService): void {
 
   turndown.addRule('materialTokenViewer', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'token-viewer',
-    replacement: (_content, node) => tokenViewerElementToMarkdown(turndown, node as Element)
+    replacement: (_content, node) => {
+      if (!isElementNode(node)) return '';
+      if (tokenSystem) {
+        const setsAttr = node.getAttribute('display-token-sets');
+        if (setsAttr) {
+          try {
+            const parsed: unknown = JSON.parse(setsAttr);
+            const displayTokenSets = Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
+            if (displayTokenSets.length > 0) return tokenTableToMarkdown(tokenSystem, displayTokenSets);
+          } catch {
+            // fall through to DOM extraction
+          }
+        }
+      }
+      return tokenViewerElementToMarkdown(turndown, node as Element);
+    }
   });
 
   turndown.addRule('materialBackgroundImage', {
@@ -897,16 +912,15 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
   return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
 }
 
-async function extractTokenTableSection(page: Page, html: string): Promise<string> {
-  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return '';
-  const displayTokenSets = extractDisplayTokenSets(html);
-  if (displayTokenSets.length === 0) return '';
+async function extractTokenSystem(page: Page, html: string): Promise<TokenTableSystem | null> {
+  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return null;
+  if (!extractDisplayTokenSets(html).length) return null;
 
   const tokenTableUrl = await page.evaluate(() => {
     const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
     return entries.find((e) => e.name.includes('TOKEN_TABLE'))?.name ?? null;
   });
-  if (!tokenTableUrl) return '';
+  if (!tokenTableUrl) return null;
 
   const rawData = await page.evaluate(async (url) => {
     try {
@@ -916,12 +930,11 @@ async function extractTokenTableSection(page: Page, html: string): Promise<strin
       return null;
     }
   }, tokenTableUrl);
-  if (!rawData || typeof rawData !== 'object') return '';
+  if (!rawData || typeof rawData !== 'object') return null;
 
   const system = (rawData as { system?: unknown }).system;
-  if (!system || typeof system !== 'object') return '';
-
-  return tokenTableToMarkdown(system as TokenTableSystem, displayTokenSets);
+  if (!system || typeof system !== 'object') return null;
+  return system as TokenTableSystem;
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
@@ -963,10 +976,8 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
       headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
     };
   });
-  const materialPage = extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
-  const tokenSection = await extractTokenTableSection(page, content.html).catch(() => '');
-  if (tokenSection) return { ...materialPage, markdown: materialPage.markdown + tokenSection };
-  return materialPage;
+  const tokenSystem = await extractTokenSystem(page, content.html).catch(() => null);
+  return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings }, tokenSystem);
 }
 
 function postProcessMarkdown(markdown: string): string {
