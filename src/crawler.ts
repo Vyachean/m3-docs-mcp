@@ -4,9 +4,10 @@ import { rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import TurndownService from 'turndown';
-import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
+import { z } from 'zod';
+import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
@@ -14,6 +15,11 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
+// Re-crawl blog posts from the current year and the previous year; skip everything older.
+const BLOG_POST_REUSE_YEAR_LAG = 1;
+const DSDB_FETCH_TIMEOUT_MS = 15_000;
+const DSDB_CONFIG_TIMEOUT_MS = 30_000;
+const DSDB_DEFAULT_CONCURRENCY = 8;
 const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
@@ -58,7 +64,10 @@ const TOKEN_BROWSER_NOISE_PATTERNS = [
   /arrowdropdown/i,
   /keyboardarrowdown/i,
   /gridview/i,
-  /folderenabled/i
+  /folderenabled/i,
+  /^visibility$/i,
+  /^expand_all$/i,
+  /^folder$/i,
 ];
 
 const TOKEN_VIEWER_ROW_SELECTORS = [
@@ -82,6 +91,49 @@ const TOKEN_VIEWER_CELL_SELECTORS = [
   '[class*="value"]',
   '[class*="token"]'
 ].join(',');
+
+type DsdbRoute = {
+  slug: string;
+  documentId: string;
+  collectionId: string;
+  exportedCarbonFileId: string;
+};
+
+type DsdbSiteConfig = {
+  carbonVersion: string;
+  routes: DsdbRoute[];
+};
+
+const DsdbChunkSchema = z.object({
+  contentChunkType: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'RESOURCE']),
+  htmlValue: z.string().nullish(),
+  imageUrl: z.string().nullish(),
+  altText: z.string().nullish(),
+  footer: z.string().nullish(),
+});
+
+const DsdbBlockSchema = z.object({
+  title: z.string().nullish(),
+  isHidden: z.boolean(),
+  contentChunks: z.array(DsdbChunkSchema),
+});
+
+const DsdbSectionSchema = z.object({
+  name: z.string(),
+  isVisible: z.boolean(),
+  contentBlocks: z.array(DsdbBlockSchema),
+});
+
+const DsdbPageDataSchema = z.object({
+  title: z.string(),
+  updatedTimestamp: z.string(),
+  sections: z.array(DsdbSectionSchema),
+});
+
+type DsdbChunk = z.infer<typeof DsdbChunkSchema>;
+type DsdbBlock = z.infer<typeof DsdbBlockSchema>;
+type DsdbSection = z.infer<typeof DsdbSectionSchema>;
+type DsdbPageData = z.infer<typeof DsdbPageDataSchema>;
 
 type ExtractedContent = {
   html: string;
@@ -379,9 +431,9 @@ function abortError(signal: AbortSignal): Error {
   return new Error(signal.reason ? String(signal.reason) : 'Material 3 crawl was interrupted.');
 }
 
-export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>): MaterialPage {
+export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>, tokenSystem?: TokenTableSystem): MaterialPage {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
-  addMaterialMarkdownRules(turndown);
+  addMaterialMarkdownRules(turndown, tokenSystem);
 
   const relPath = materialPagePath(url);
   const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
@@ -406,7 +458,43 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   };
 }
 
-function addMaterialMarkdownRules(turndown: TurndownService): void {
+function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem): string[] {
+  // Priority 1: explicit display-token-sets attribute with values
+  const setsAttr = viewer.getAttribute('display-token-sets');
+  if (setsAttr) {
+    try {
+      const parsed: unknown = JSON.parse(setsAttr);
+      if (Array.isArray(parsed)) {
+        const sets = parsed.filter((s): s is string => typeof s === 'string');
+        if (sets.length > 0) return sets;
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // Priority 2: discover set names from token-set picker buttons
+  // When display-token-sets="[]", the page shows a picker UI with buttons labelled by token set name.
+  // Strip Material icon words (visibility, expand_all, folder) that are concatenated with set names.
+  const knownNames = new Set([
+    ...tokenSystem.tokenSets.map((ts) => ts.displayName),
+    ...tokenSystem.tokenSets.map((ts) => ts.tokenSetName),
+  ]);
+  const discovered: string[] = [];
+  for (const btn of Array.from(viewer.querySelectorAll('button'))) {
+    const candidate = normalizeInlineText(btn.textContent ?? '')
+      .split(/\s+/)
+      .filter((word) => !isTokenViewerNoise(word))
+      .join(' ')
+      .trim();
+    if (candidate && knownNames.has(candidate) && !discovered.includes(candidate)) {
+      discovered.push(candidate);
+    }
+  }
+  return discovered;
+}
+
+function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
     replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
@@ -414,7 +502,18 @@ function addMaterialMarkdownRules(turndown: TurndownService): void {
 
   turndown.addRule('materialTokenViewer', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'token-viewer',
-    replacement: (_content, node) => tokenViewerElementToMarkdown(turndown, node as Element)
+    replacement: (_content, node) => {
+      if (!isElementNode(node)) return '';
+      if (tokenSystem) {
+        const displayTokenSets = resolveDisplayTokenSets(node as Element, tokenSystem);
+        if (displayTokenSets.length > 0) {
+          const full = tokenTableToMarkdown(tokenSystem, displayTokenSets);
+          // Strip the top-level section header — the page's own <h2> already provides it
+          return full.replace(/^\n*## Design Tokens\n\n/, '\n\n');
+        }
+      }
+      return tokenViewerElementToMarkdown(turndown, node as Element);
+    }
   });
 
   turndown.addRule('materialBackgroundImage', {
@@ -462,6 +561,11 @@ function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element
     }
     return tokenRowsToMarkdown(rows);
   }
+
+  // If the viewer contains buttons, it's the token-set picker UI (no token set selected yet) —
+  // not actual token data. Buttons appear when the page shows the set-selector dropdown,
+  // not the expanded token table.
+  if (viewer.querySelector('button')) return '';
 
   const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
   if (lines.length >= 4 && lines.length % 2 === 0) {
@@ -636,6 +740,7 @@ function preserveTokenViewerTextLines(html: string): string {
   return html.replace(/<token-viewer\b([^>]*)>([\s\S]*?)<\/token-viewer>/gi, (match, attributes: string, body: string) => {
     if (/<(?:table|thead|tbody|tfoot|tr|th|td)\b/i.test(body)) return match;
     if (/\b(?:role|class)\s*=/i.test(body)) return match;
+    if (/<button\b/i.test(body)) return match;
 
     const lines = visibleTextLines(stripHtml(body));
     if (lines.length <= 1) return match;
@@ -895,16 +1000,14 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
   return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
 }
 
-async function extractTokenTableSection(page: Page, html: string): Promise<string> {
-  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return '';
-  const displayTokenSets = extractDisplayTokenSets(html);
-  if (displayTokenSets.length === 0) return '';
+async function extractTokenSystem(page: Page, html: string): Promise<TokenTableSystem | undefined> {
+  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return undefined;
 
   const tokenTableUrl = await page.evaluate(() => {
     const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
     return entries.find((e) => e.name.includes('TOKEN_TABLE'))?.name ?? null;
   });
-  if (!tokenTableUrl) return '';
+  if (!tokenTableUrl) return undefined;
 
   const rawData = await page.evaluate(async (url) => {
     try {
@@ -914,18 +1017,29 @@ async function extractTokenTableSection(page: Page, html: string): Promise<strin
       return null;
     }
   }, tokenTableUrl);
-  if (!rawData || typeof rawData !== 'object') return '';
+  if (!rawData || typeof rawData !== 'object') return undefined;
 
   const system = (rawData as { system?: unknown }).system;
-  if (!system || typeof system !== 'object') return '';
-
-  return tokenTableToMarkdown(system as TokenTableSystem, displayTokenSets);
+  if (!system || typeof system !== 'object') return undefined;
+  return system as TokenTableSystem;
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
+  // Angular loads token-viewer elements asynchronously; wait for them before capturing HTML.
+  // The selector fails quickly on pages with no token-viewers and succeeds early on others.
+  await page.waitForSelector('token-viewer', { timeout: 10000 }).catch(() => undefined);
+
   const content = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const clone = root.cloneNode(true) as HTMLElement;
+
+    // Extract the token system JSON before stripping it — it can be 10-20 MB of embedded JSON.
+    const tokenSystemJson: string | null =
+      clone.querySelector('token-viewer[design-system-data]')?.getAttribute('design-system-data') ?? null;
+    for (const el of Array.from(clone.querySelectorAll<Element>('[design-system-data]'))) {
+      el.removeAttribute('design-system-data');
+    }
+
     for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
       for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
     }
@@ -958,13 +1072,24 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
     return {
       html: clone.innerHTML,
       title: textContent(clone.querySelector('h1')),
-      headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
+      headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean),
+      tokenSystemJson,
     };
   });
-  const materialPage = extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings });
-  const tokenSection = await extractTokenTableSection(page, content.html).catch(() => '');
-  if (tokenSection) return { ...materialPage, markdown: materialPage.markdown + tokenSection };
-  return materialPage;
+
+  let tokenSystem: TokenTableSystem | undefined;
+  if (content.tokenSystemJson) {
+    try {
+      const parsed: unknown = JSON.parse(content.tokenSystemJson);
+      const sys = (parsed as { system?: unknown })?.system;
+      if (sys && typeof sys === 'object') tokenSystem = sys as TokenTableSystem;
+    } catch { /* ignore */ }
+  }
+  if (!tokenSystem) {
+    tokenSystem = await extractTokenSystem(page, content.html).catch(() => undefined as undefined);
+  }
+
+  return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings }, tokenSystem);
 }
 
 function postProcessMarkdown(markdown: string): string {
@@ -1133,13 +1258,113 @@ export function createCrawlQualityReport(pages: MaterialPage[], rejectedSuspicio
   };
 }
 
+export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal): Promise<DsdbSiteConfig> {
+  throwIfAborted(signal);
+  const configController = new AbortController();
+  const timer = setTimeout(() => configController.abort(), DSDB_CONFIG_TIMEOUT_MS);
+  const onAbort = () => configController.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const htmlRes = await fetch(baseUrl, { signal: configController.signal });
+    if (!htmlRes.ok) throw new Error(`Failed to fetch ${baseUrl}: ${htmlRes.status}`);
+    const html = await htmlRes.text();
+
+    throwIfAborted(signal);
+
+    const mainJsMatch = html.match(/src="(\/static\/angular\/main\.[a-f0-9]+\.js)"/);
+    if (!mainJsMatch?.[1]) throw new Error('Angular main bundle URL not found in page HTML');
+
+    const mainJsUrl = new URL(mainJsMatch[1], baseUrl).toString();
+    const jsRes = await fetch(mainJsUrl, { signal: configController.signal });
+    if (!jsRes.ok) throw new Error(`Failed to fetch Angular bundle: ${jsRes.status}`);
+    const mainJs = await jsRes.text();
+
+    throwIfAborted(signal);
+
+    const cvMatch = mainJs.match(/"carbonVersion":"([^"]+)"/);
+    if (!cvMatch?.[1]) throw new Error('carbonVersion not found in Angular bundle');
+    const carbonVersion = cvMatch[1];
+
+    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)","exportedCarbonFileId":"([a-f0-9-]+\.json)"/g;
+    const routes: DsdbRoute[] = [];
+    let m;
+    while ((m = routePattern.exec(mainJs)) !== null) {
+      routes.push({ slug: m[1], documentId: m[2], collectionId: m[3], exportedCarbonFileId: m[4] });
+    }
+
+    if (routes.length === 0) throw new Error('No DSDB routes found in Angular bundle');
+    return { carbonVersion, routes };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function fetchDsdbPage(baseUrl: string, carbonVersion: string, uuid: string, signal?: AbortSignal): Promise<DsdbPageData> {
+  throwIfAborted(signal);
+  const url = `${baseUrl}/_dsm/data/dsdb-m3/${carbonVersion}/${uuid}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DSDB_FETCH_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`DSDB fetch failed (${res.status}) for ${uuid}`);
+    return DsdbPageDataSchema.parse(await res.json());
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+function assembleDsdbHtml(data: DsdbPageData): string {
+  const parts: string[] = [`<h1>${escapeHtmlText(data.title)}</h1>`];
+  for (const section of data.sections) {
+    if (!section.isVisible) continue;
+    parts.push(`<h2>${escapeHtmlText(section.name)}</h2>`);
+    for (const block of section.contentBlocks) {
+      if (block.isHidden) continue;
+      if (block.title) parts.push(`<h3>${escapeHtmlText(block.title)}</h3>`);
+      for (const chunk of block.contentChunks) {
+        if (chunk.contentChunkType === 'TEXT' && chunk.htmlValue) {
+          parts.push(chunk.htmlValue);
+        } else if (chunk.contentChunkType === 'IMAGE' && chunk.imageUrl) {
+          const src = preferLargeImageUrl(chunk.imageUrl);
+          const alt = chunk.altText ?? '';
+          if (chunk.footer) {
+            parts.push(`<figure><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"><figcaption>${chunk.footer}</figcaption></figure>`);
+          } else {
+            parts.push(`<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}">`);
+          }
+        }
+        // VIDEO and RESOURCE chunks have no text content
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function dsdbRouteToMaterialPage(data: DsdbPageData, route: DsdbRoute, baseUrl: string, capturedAt: string): MaterialPage {
+  const url = new URL(`/${route.slug}`, baseUrl).toString();
+  const html = assembleDsdbHtml(data);
+  return extractMaterialPageFromHtml(html, url, capturedAt);
+}
+
+function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
+  const path = urlPath.replace(/^\/+|\/+$/g, '');
+  if (dsdbSlugs.has(path)) return true;
+  const lastSlash = path.lastIndexOf('/');
+  return lastSlash > 0 && dsdbSlugs.has(path.slice(0, lastSlash));
+}
+
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
   const previousIndex = await readIndex(targetCacheDir);
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
 
   try {
-    const index = await crawlIntoCache(stagingCacheDir, options);
+    const index = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
     assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(index, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
@@ -1150,7 +1375,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   }
 }
 
-async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<MaterialIndex> {
+async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const maxPages = options.maxPages ?? 250;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
@@ -1161,8 +1386,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   let lastFailedUrl: string | null = null;
   throwIfAborted(signal);
 
-  const browser = await launchChromium(options.headless ?? true);
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
+  const reusableBlogPages = buildReusableBlogPageMap(previousIndex);
+  const blogPostYears = new Map<string, number>();
+
+  // Declared here so the nested worker() function can close over it
+  let browserContext: BrowserContext | undefined;
+
   const queue: string[] = [];
   const queued = new Set<string>();
   const seen = new Set<string>();
@@ -1173,6 +1402,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
+  let dsdbAttemptedCount = 0;
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
     const completedAt = running ? null : new Date().toISOString();
@@ -1183,7 +1413,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       running,
       maxPages,
       concurrency,
-      attemptedPageCount: seen.size,
+      attemptedPageCount: dsdbAttemptedCount + seen.size,
       savedPageCount: pages.length,
       failedPageCount: failedUrls.length,
       queuedPageCount: queue.length,
@@ -1196,29 +1426,85 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     options.onProgress?.(progress);
   };
 
-  const onAbort = () => {
-    aborted = true;
-    emitProgress(false, 'Material 3 crawl was interrupted.');
-    wakeWorkers();
-    void context.close().catch(() => undefined);
-  };
-  signal?.addEventListener('abort', onAbort, { once: true });
-  enqueue(baseUrl);
-  for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
-  emitProgress(true);
+  // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
+  const dsdbSlugs = new Set<string>();
+  {
+    let dsdbConfig: DsdbSiteConfig | null = null;
+    try {
+      throwIfAborted(signal);
+      dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.error(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-  try {
-    await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
-  } catch (error) {
-    emitProgress(false, error instanceof Error ? error.message : String(error));
-    throw error;
-  } finally {
-    signal?.removeEventListener('abort', onAbort);
-    wakeWorkers();
-    await browser.close();
+    if (dsdbConfig) {
+      const capturedAt = new Date().toISOString();
+      for (const route of dsdbConfig.routes) dsdbSlugs.add(route.slug);
+
+      const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
+      const routes = dsdbConfig.routes;
+      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += dsdbBatchSize) {
+        throwIfAborted(signal);
+        const batch = routes.slice(i, i + dsdbBatchSize);
+        await Promise.all(batch.map(async (route) => {
+          if (pages.length >= maxPages || signal?.aborted) return;
+          dsdbAttemptedCount += 1;
+          try {
+            throwIfAborted(signal);
+            const data = await fetchDsdbPage(baseUrl, dsdbConfig!.carbonVersion, route.exportedCarbonFileId, signal);
+            throwIfAborted(signal);
+            const materialPage = dsdbRouteToMaterialPage(data, route, baseUrl, capturedAt);
+            if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+              pages.push(materialPage);
+              writtenPaths.add(materialPage.path);
+              lastSavedUrl = materialPage.url;
+              await writePage(materialPage, cacheDir);
+              emitProgress(true);
+            }
+          } catch (err) {
+            if (signal?.aborted) return;
+            const failUrl = new URL(`/${route.slug}`, baseUrl).toString();
+            failedUrls.push(failUrl);
+            lastFailedUrl = failUrl;
+            console.error(`DSDB fetch failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            emitProgress(true);
+          }
+        }));
+      }
+      emitProgress(true);
+    }
   }
 
-  throwIfAborted(signal);
+  // ── Phase 2: Browser crawl for non-DSDB pages (blog posts, landing pages) ──
+  if (pages.length < maxPages && !signal?.aborted) {
+    const browser = await launchChromium(options.headless ?? true);
+    browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
+
+    const onAbort = () => {
+      aborted = true;
+      emitProgress(false, 'Material 3 crawl was interrupted.');
+      wakeWorkers();
+      void browserContext?.close().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    enqueue(baseUrl);
+    for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
+    emitProgress(true);
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
+    } catch (error) {
+      emitProgress(false, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      wakeWorkers();
+      await browser.close();
+    }
+
+    throwIfAborted(signal);
+  }
 
   const capturedAt = new Date().toISOString();
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
@@ -1226,7 +1512,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
     source: baseUrl,
     capturedAt,
     pageCount: pages.length,
-    attemptedPageCount: seen.size,
+    attemptedPageCount: dsdbAttemptedCount + seen.size,
     failedPageCount: failedUrls.length,
     failedUrls,
     qualityReport,
@@ -1254,7 +1540,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       currentUrls.set(workerIndex, url);
       emitProgress(true);
       try {
-        page = await context.newPage();
+        page = await browserContext!.newPage();
         throwIfAborted(signal);
         await crawlPage(page, url);
       } catch (error) {
@@ -1287,6 +1573,27 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   }
 
   async function crawlPage(page: Page, url: string): Promise<void> {
+    if (reusableBlogPages.size > 0) {
+      const cached = reusableBlogPages.get(url);
+      if (cached && !writtenPaths.has(cached.path)) {
+        try {
+          const markdown = await readPage(cached.path, previousCacheDir);
+          const text = stripMarkdown(stripMarkdownFrontmatter(markdown)).replace(/\s+/g, ' ').trim();
+          if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
+            const materialPage: MaterialPage = { ...cached, text, markdown };
+            pages.push(materialPage);
+            writtenPaths.add(materialPage.path);
+            lastSavedUrl = url;
+            await writePage(materialPage, cacheDir);
+            emitProgress(true);
+          }
+          return;
+        } catch {
+          // cache read failed — fall through to live crawl
+        }
+      }
+    }
+
     let finalUrl: string;
     try {
       finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
@@ -1321,14 +1628,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       return;
     }
     if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
-      pages.push(materialPage);
+      const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
+      const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
+      pages.push(pageToSave);
       lastSavedUrl = finalUrl;
-      writtenPaths.add(materialPage.path);
-      await writePage(materialPage, cacheDir);
+      writtenPaths.add(pageToSave.path);
+      await writePage(pageToSave, cacheDir);
       emitProgress(true);
     }
 
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
+    if (isBlogListingUrl(finalUrl, baseUrl)) {
+      const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
+      for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
+    }
     for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
     emitProgress(true);
   }
@@ -1336,6 +1649,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   function enqueue(raw: string): void {
     const link = normalizeMaterialCrawlUrl(raw, baseUrl);
     if (!link || seen.has(link) || queued.has(link)) return;
+    const linkPath = new URL(link).pathname.replace(/^\/+|\/+$/g, '');
+    if (isDsdbCoveredPath(linkPath, dsdbSlugs)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
     queue.sort(compareMaterialCrawlPriority);
@@ -1353,6 +1668,53 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   function wakeWorkers(): void {
     for (const resolve of waiters.splice(0)) resolve();
   }
+}
+
+function buildReusableBlogPageMap(previousIndex: MaterialIndex | null): Map<string, Omit<MaterialPage, 'text' | 'markdown'>> {
+  const map = new Map<string, Omit<MaterialPage, 'text' | 'markdown'>>();
+  if (!previousIndex) return map;
+  const oldestAllowedYear = new Date().getFullYear() - BLOG_POST_REUSE_YEAR_LAG;
+  for (const page of previousIndex.pages) {
+    if (!page.path.startsWith('blog/')) continue;
+    if (page.publishedYear && page.publishedYear < oldestAllowedYear) map.set(page.url, page);
+  }
+  return map;
+}
+
+function isBlogListingUrl(url: string, baseUrl: string): boolean {
+  return new URL(url).pathname.replace(/^\/+|\/+$/g, '') === 'blog';
+}
+
+async function extractBlogListingYears(page: Page, baseUrl: string): Promise<Array<[string, number]>> {
+  const origin = new URL(baseUrl).origin;
+  return page.evaluate((origin) => {
+    const result: Array<[string, number]> = [];
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    let blogListingCurrentYear = 0;
+
+    function walk(node: Element): void {
+      const tag = node.nodeName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) {
+        const text = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const m = text.match(/^(20\d\d)$/);
+        if (m) { blogListingCurrentYear = parseInt(m[1], 10); return; }
+      }
+      if (tag === 'a' && blogListingCurrentYear > 0) {
+        const href = (node as HTMLAnchorElement).href;
+        try {
+          const url = new URL(href);
+          if (url.origin === origin && url.pathname.startsWith('/blog/') && url.pathname.length > '/blog/'.length) {
+            url.hash = '';
+            url.search = '';
+            result.push([url.toString().replace(/\/$/, ''), blogListingCurrentYear]);
+          }
+        } catch { /* ignore */ }
+      }
+      for (const child of Array.from(node.children)) walk(child);
+    }
+    walk(root);
+    return result;
+  }, origin);
 }
 
 function compareMaterialCrawlPriority(a: string, b: string): number {

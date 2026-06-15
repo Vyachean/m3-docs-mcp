@@ -8,6 +8,7 @@ export type MaterialPage = {
   text: string;
   markdown: string;
   capturedAt: string;
+  publishedYear?: number;
 };
 
 export type SuspiciousCrawlPage = {

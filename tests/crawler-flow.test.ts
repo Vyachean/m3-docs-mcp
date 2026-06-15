@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { indexPath, pagesDir, writeIndex } from '../src/cache.js';
-import type { MaterialIndex } from '../src/types.js';
+import { indexPath, pagesDir, writePage, writeIndex } from '../src/cache.js';
+import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
@@ -91,11 +91,7 @@ const playwrightMock = vi.hoisted(() => {
       }
     }),
     close: vi.fn(async () => undefined),
-    evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: {
-      componentSlug?: string | null;
-      notFoundTitlePatterns?: Array<{ source: string; flags: string }>;
-      notFoundBodyPatterns?: Array<{ source: string; flags: string }>;
-    }) => {
+    evaluate: vi.fn(async (fn: (...args: any[]) => unknown, arg?: any) => {
       const source = fn.toString();
       if (source.includes('details:not([open])')) {
         const current = pagesByUrl[currentUrl];
@@ -117,6 +113,18 @@ const playwrightMock = vi.hoisted(() => {
       if (source.includes('clone.innerHTML')) {
         const current = pagesByUrl[currentUrl];
         return current ? { html: current.html, title: current.title, headings: current.headings } : { html: '', title: '', headings: [] };
+      }
+      if (source.includes('blogListingCurrentYear')) {
+        const current = pagesByUrl[currentUrl];
+        if (!current) return [];
+        const origin = typeof arg === 'string' ? arg : 'https://m3.material.io';
+        const year = current.headings
+          .map((h: string) => parseInt(h, 10))
+          .find((n: number) => n >= 2000 && n <= 2100);
+        if (!year) return [];
+        return (current.links as string[])
+          .filter((l: string) => { try { const u = new URL(l); return u.origin === origin && u.pathname.startsWith('/blog/') && u.pathname.length > '/blog/'.length; } catch { return false; } })
+          .map((l: string) => [new URL(l).toString().replace(/\/$/, ''), year] as [string, number]);
       }
       return undefined;
     })
@@ -179,6 +187,7 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.page.evaluate.mockClear();
     for (const url of Object.keys(playwrightMock.pagesByUrl)) {
       if (url.startsWith('https://m3.material.io/foundations/good-')) delete playwrightMock.pagesByUrl[url];
+      if (url.startsWith('https://m3.material.io/blog')) delete playwrightMock.pagesByUrl[url];
     }
     delete playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
@@ -499,4 +508,157 @@ describe('crawlMaterialDocs', () => {
     expect(persistedIndex.pageCount).toBe(1);
     expect(persistedIndex.pages[0]?.path).toBe('index.md');
   });
+
+  it('reuses cached blog posts with publishedYear older than last year without re-crawling', async () => {
+    const oldYear = new Date().getFullYear() - 2;
+    const capturedAt = new Date().toISOString();
+    const blogUrl = 'https://m3.material.io/blog/old-post';
+    const blogPath = 'blog/old-post.md';
+    const blogMarkdown = `---\ntitle: "Old Blog Post"\nsourceUrl: ${blogUrl}\nsection: blog\ncapturedAt: ${capturedAt}\n---\n\n# Old Blog Post\n\nThis is an old blog post with enough text for crawler validation and incremental cache reuse.\n`;
+    const blogPage: MaterialPage = {
+      id: 'blog-old-post-id',
+      title: 'Old Blog Post',
+      url: blogUrl,
+      path: blogPath,
+      section: 'blog',
+      headings: ['Old Blog Post'],
+      text: 'This is an old blog post with enough text for crawler validation and incremental cache reuse.',
+      markdown: blogMarkdown,
+      capturedAt,
+      publishedYear: oldYear
+    };
+
+    const oldIndex: MaterialIndex = {
+      source: 'https://m3.material.io',
+      capturedAt,
+      pageCount: 1,
+      attemptedPageCount: 1,
+      failedPageCount: 0,
+      failedUrls: [],
+      pages: [{ id: blogPage.id, title: blogPage.title, url: blogPage.url, path: blogPage.path, section: blogPage.section, headings: blogPage.headings, capturedAt, publishedYear: oldYear }]
+    };
+    await writeIndex(oldIndex, cacheDir);
+    await writePage(blogPage, cacheDir);
+
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogUrl];
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith(blogUrl, expect.anything());
+    expect(index.pages.find((p) => p.url === blogUrl)).toMatchObject({ title: 'Old Blog Post', path: blogPath, publishedYear: oldYear });
+    await expect(readFile(path.join(pagesDir(cacheDir), blogPath), 'utf8')).resolves.toContain('# Old Blog Post');
+  });
+
+  it('re-crawls blog posts with publishedYear from last year or later', async () => {
+    const recentYear = new Date().getFullYear() - 1;
+    const capturedAt = new Date().toISOString();
+    const blogUrl = 'https://m3.material.io/blog/recent-post';
+    const blogPath = 'blog/recent-post.md';
+    const blogPage: MaterialPage = {
+      id: 'blog-recent-id',
+      title: 'Recent Blog Post',
+      url: blogUrl,
+      path: blogPath,
+      section: 'blog',
+      headings: ['Recent Blog Post'],
+      text: 'Recent blog post text.',
+      markdown: `---\ntitle: "Recent Blog Post"\nsourceUrl: ${blogUrl}\nsection: blog\ncapturedAt: ${capturedAt}\n---\n\n# Recent Blog Post\n\nRecent blog post text.\n`,
+      capturedAt,
+      publishedYear: recentYear
+    };
+
+    const oldIndex: MaterialIndex = {
+      source: 'https://m3.material.io',
+      capturedAt,
+      pageCount: 1,
+      attemptedPageCount: 1,
+      failedPageCount: 0,
+      failedUrls: [],
+      pages: [{ id: blogPage.id, title: blogPage.title, url: blogPage.url, path: blogPage.path, section: blogPage.section, headings: blogPage.headings, capturedAt, publishedYear: recentYear }]
+    };
+    await writeIndex(oldIndex, cacheDir);
+    await writePage(blogPage, cacheDir);
+
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogUrl];
+    playwrightMock.pagesByUrl[blogUrl] = {
+      html: '<h1>Recent Blog Post</h1><p>Recent blog post with enough text for crawler validation and live re-crawl verification.</p>',
+      title: 'Recent Blog Post',
+      headings: ['Recent Blog Post'],
+      links: [],
+      finalUrl: blogUrl
+    };
+
+    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
+  });
+
+  it('re-crawls blog posts with no publishedYear in the previous index', async () => {
+    const capturedAt = new Date().toISOString();
+    const blogUrl = 'https://m3.material.io/blog/unknown-year-post';
+    const blogPath = 'blog/unknown-year-post.md';
+    const blogPage: MaterialPage = {
+      id: 'blog-unknown-id',
+      title: 'Unknown Year Post',
+      url: blogUrl,
+      path: blogPath,
+      section: 'blog',
+      headings: ['Unknown Year Post'],
+      text: 'Unknown year blog post text for testing.',
+      markdown: `---\ntitle: "Unknown Year Post"\nsourceUrl: ${blogUrl}\nsection: blog\ncapturedAt: ${capturedAt}\n---\n\n# Unknown Year Post\n\nUnknown year blog post text for testing.\n`,
+      capturedAt
+    };
+
+    const oldIndex: MaterialIndex = {
+      source: 'https://m3.material.io',
+      capturedAt,
+      pageCount: 1,
+      attemptedPageCount: 1,
+      failedPageCount: 0,
+      failedUrls: [],
+      pages: [{ id: blogPage.id, title: blogPage.title, url: blogPage.url, path: blogPage.path, section: blogPage.section, headings: blogPage.headings, capturedAt }]
+    };
+    await writeIndex(oldIndex, cacheDir);
+    await writePage(blogPage, cacheDir);
+
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogUrl];
+    playwrightMock.pagesByUrl[blogUrl] = {
+      html: '<h1>Unknown Year Post</h1><p>Unknown year blog post with enough text for crawler validation and live re-crawl.</p>',
+      title: 'Unknown Year Post',
+      headings: ['Unknown Year Post'],
+      links: [],
+      finalUrl: blogUrl
+    };
+
+    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
+  });
+
+  it('extracts publishedYear from the blog listing page and saves it with blog post pages', async () => {
+    const currentYear = new Date().getFullYear();
+    const blogListingUrl = 'https://m3.material.io/blog';
+    const blogPostUrl = 'https://m3.material.io/blog/new-article';
+
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogListingUrl];
+    playwrightMock.pagesByUrl[blogListingUrl] = {
+      html: `<h1>Blog</h1><p>The Material Design blog covers component updates, design guidance, and platform news for designers and developers working with Material 3.</p><h2>${currentYear}</h2><a href="${blogPostUrl}">New Article</a>`,
+      title: 'Blog',
+      headings: ['Blog', String(currentYear)],
+      links: [blogPostUrl],
+      finalUrl: blogListingUrl
+    };
+    playwrightMock.pagesByUrl[blogPostUrl] = {
+      html: '<h1>New Article</h1><p>This is a new article with enough text for crawler validation and year extraction testing.</p>',
+      title: 'New Article',
+      headings: ['New Article'],
+      links: [],
+      finalUrl: blogPostUrl
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    const blogEntry = index.pages.find((p) => p.url === blogPostUrl);
+    expect(blogEntry?.publishedYear).toBe(currentYear);
+  }, 15_000);
 });
