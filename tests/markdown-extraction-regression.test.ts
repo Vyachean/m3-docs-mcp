@@ -225,6 +225,10 @@ describe('Material markdown extraction regressions', () => {
     // No duplicate tables: simplified Name|Token|Value should not appear separately
     const tokenColHeaderCount = (page.markdown.match(/\| Token \|/g) ?? []).length;
     expect(tokenColHeaderCount).toBe(1);
+
+    // No duplicate "Design Tokens" headings — the page's own <h2> and the token table should not both emit one
+    const designTokensHeadingCount = (page.markdown.match(/^## Design [Tt]okens/gm) ?? []).length;
+    expect(designTokensHeadingCount).toBe(1);
   });
 
   it('falls back to DOM extraction when no tokenSystem is provided', () => {
@@ -248,5 +252,58 @@ describe('Material markdown extraction regressions', () => {
     // Full TOKEN_TABLE columns should NOT be present (no tokenSystem)
     expect(page.markdown).not.toContain('sys alias');
     expect(page.markdown).not.toContain('Light | Dark');
+  });
+
+  it('discovers token sets from picker button text when display-token-sets="[]"', () => {
+    // Simulates component pages where token-viewer shows a picker UI with buttons
+    // labelled by token set name. The button text contains the set name + icon names.
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Button</h1>
+        <h2>Tokens and specs</h2>
+        <token-viewer display-token-sets="[]">
+          <button>Button - Common arrow_drop_down</button>
+          <button>visibility</button>
+          <button>grid_view</button>
+          <button>expand_all</button>
+          <button>Default, Light arrow_drop_down</button>
+        </token-viewer>
+      </main>
+    `, 'https://m3.material.io/components/buttons/specs', '2026-05-18T00:00:00.000Z', undefined, makeTokenSystem() as any);
+
+    // Token data should be extracted via button text discovery
+    expect(page.markdown).toContain('| Token | Name | sys alias | ref alias | Light | Dark |');
+    expect(page.markdown).toContain('md.comp.button.container.color');
+
+    // The page h2 "Tokens and specs" should be the only heading in that area (no duplicate from tokenTableToMarkdown)
+    const designTokensHeadingCount = (page.markdown.match(/^## (Tokens|Design [Tt]okens)/gm) ?? []).length;
+    expect(designTokensHeadingCount).toBe(1);
+
+    // No garbled UI noise should appear in the token section
+    expect(page.markdown).not.toContain('visibility');
+    expect(page.markdown).not.toContain('expand_all');
+    expect(page.markdown).not.toContain('arrow_drop_down');
+  });
+
+  it('suppresses token-viewer picker noise when no tokenSystem is provided and viewer contains buttons', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>Bottom Sheet</h1>
+        <h2>Tokens and specs</h2>
+        <token-viewer display-token-sets="[]">
+          <button>Sheets - Bottom arrow_drop_down</button>
+          <button>visibility</button>
+          <button>expand_all</button>
+        </token-viewer>
+      </main>
+    `, 'https://m3.material.io/components/bottom-sheets/specs', '2026-05-18T00:00:00.000Z');
+
+    // Without tokenSystem, picker UI should be suppressed entirely (no garbled table)
+    expect(page.markdown).not.toContain('visibility');
+    expect(page.markdown).not.toContain('expand_all');
+    expect(page.markdown).not.toContain('arrow_drop_down');
+    expect(page.markdown).not.toContain('| Sheets');
+    // Section heading is still present from the HTML
+    expect(page.markdown).toContain('## Tokens and specs');
   });
 });

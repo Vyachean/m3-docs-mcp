@@ -60,7 +60,10 @@ const TOKEN_BROWSER_NOISE_PATTERNS = [
   /arrowdropdown/i,
   /keyboardarrowdown/i,
   /gridview/i,
-  /folderenabled/i
+  /folderenabled/i,
+  /^visibility$/i,
+  /^expand_all$/i,
+  /^folder$/i,
 ];
 
 const TOKEN_VIEWER_ROW_SELECTORS = [
@@ -408,6 +411,42 @@ export function extractMaterialPageFromHtml(html: string, url: string, capturedA
   };
 }
 
+function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem): string[] {
+  // Priority 1: explicit display-token-sets attribute with values
+  const setsAttr = viewer.getAttribute('display-token-sets');
+  if (setsAttr) {
+    try {
+      const parsed: unknown = JSON.parse(setsAttr);
+      if (Array.isArray(parsed)) {
+        const sets = parsed.filter((s): s is string => typeof s === 'string');
+        if (sets.length > 0) return sets;
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // Priority 2: discover set names from token-set picker buttons
+  // When display-token-sets="[]", the page shows a picker UI with buttons labelled by token set name.
+  // Strip Material icon words (visibility, expand_all, folder) that are concatenated with set names.
+  const knownNames = new Set([
+    ...tokenSystem.tokenSets.map((ts) => ts.displayName),
+    ...tokenSystem.tokenSets.map((ts) => ts.tokenSetName),
+  ]);
+  const discovered: string[] = [];
+  for (const btn of Array.from(viewer.querySelectorAll('button'))) {
+    const candidate = normalizeInlineText(btn.textContent ?? '')
+      .split(/\s+/)
+      .filter((word) => !isTokenViewerNoise(word))
+      .join(' ')
+      .trim();
+    if (candidate && knownNames.has(candidate) && !discovered.includes(candidate)) {
+      discovered.push(candidate);
+    }
+  }
+  return discovered;
+}
+
 function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
@@ -419,15 +458,11 @@ function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: Token
     replacement: (_content, node) => {
       if (!isElementNode(node)) return '';
       if (tokenSystem) {
-        const setsAttr = node.getAttribute('display-token-sets');
-        if (setsAttr) {
-          try {
-            const parsed: unknown = JSON.parse(setsAttr);
-            const displayTokenSets = Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === 'string') : [];
-            if (displayTokenSets.length > 0) return tokenTableToMarkdown(tokenSystem, displayTokenSets);
-          } catch {
-            // fall through to DOM extraction
-          }
+        const displayTokenSets = resolveDisplayTokenSets(node as Element, tokenSystem);
+        if (displayTokenSets.length > 0) {
+          const full = tokenTableToMarkdown(tokenSystem, displayTokenSets);
+          // Strip the top-level section header — the page's own <h2> already provides it
+          return full.replace(/^\n*## Design Tokens\n\n/, '\n\n');
         }
       }
       return tokenViewerElementToMarkdown(turndown, node as Element);
@@ -479,6 +514,11 @@ function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element
     }
     return tokenRowsToMarkdown(rows);
   }
+
+  // If the viewer contains buttons, it's the token-set picker UI (no token set selected yet) —
+  // not actual token data. Buttons appear when the page shows the set-selector dropdown,
+  // not the expanded token table.
+  if (viewer.querySelector('button')) return '';
 
   const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
   if (lines.length >= 4 && lines.length % 2 === 0) {
@@ -653,6 +693,7 @@ function preserveTokenViewerTextLines(html: string): string {
   return html.replace(/<token-viewer\b([^>]*)>([\s\S]*?)<\/token-viewer>/gi, (match, attributes: string, body: string) => {
     if (/<(?:table|thead|tbody|tfoot|tr|th|td)\b/i.test(body)) return match;
     if (/\b(?:role|class)\s*=/i.test(body)) return match;
+    if (/<button\b/i.test(body)) return match;
 
     const lines = visibleTextLines(stripHtml(body));
     if (lines.length <= 1) return match;
@@ -912,15 +953,14 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
   return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
 }
 
-async function extractTokenSystem(page: Page, html: string): Promise<TokenTableSystem | null> {
-  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return null;
-  if (!extractDisplayTokenSets(html).length) return null;
+async function extractTokenSystem(page: Page, html: string): Promise<TokenTableSystem | undefined> {
+  if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return undefined;
 
   const tokenTableUrl = await page.evaluate(() => {
     const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
     return entries.find((e) => e.name.includes('TOKEN_TABLE'))?.name ?? null;
   });
-  if (!tokenTableUrl) return null;
+  if (!tokenTableUrl) return undefined;
 
   const rawData = await page.evaluate(async (url) => {
     try {
@@ -930,10 +970,10 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
       return null;
     }
   }, tokenTableUrl);
-  if (!rawData || typeof rawData !== 'object') return null;
+  if (!rawData || typeof rawData !== 'object') return undefined;
 
   const system = (rawData as { system?: unknown }).system;
-  if (!system || typeof system !== 'object') return null;
+  if (!system || typeof system !== 'object') return undefined;
   return system as TokenTableSystem;
 }
 
@@ -976,7 +1016,7 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
       headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
     };
   });
-  const tokenSystem = await extractTokenSystem(page, content.html).catch(() => null);
+  const tokenSystem = await extractTokenSystem(page, content.html).catch(() => undefined as undefined);
   return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings }, tokenSystem);
 }
 
