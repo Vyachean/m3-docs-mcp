@@ -1,6 +1,6 @@
 import type { ExtractionPageDiagnostic } from '../types.js';
 import { compactJson, getPath, readString, walkObjects } from './schemas.js';
-import { renderResourcePlaceholder, renderStatusTableMarkdown, renderTokenTableWithDiagnostics, type TokenTableSystem } from './render-markdown.js';
+import { normalizeTokenTableSystem, renderResourcePlaceholder, renderStatusTableMarkdown, renderTokenTableWithDiagnostics, type TokenTableSystem } from './render-markdown.js';
 
 export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
 
@@ -118,7 +118,18 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-token-system', resource: resourceName, tokenSets: requestedTokenSets });
   }
 
-  const tokenRender = renderTokenTableWithDiagnostics(system, requestedTokenSets);
+  let tokenRender: ReturnType<typeof renderTokenTableWithDiagnostics>;
+  try {
+    tokenRender = renderTokenTableWithDiagnostics(system, requestedTokenSets);
+  } catch (error) {
+    pageDiagnostic.unresolvedResourceCount += 1;
+    return renderResourcePlaceholder('TOKEN_TABLE', {
+      reason: 'render-error',
+      phase: 'render-token-table',
+      resource: resourceName,
+      error: String(error)
+    });
+  }
   const rendered = tokenRender.markdown;
   const missingRequestedTokenSets = requestedTokenSets.filter((tokenSet) => !matchesRequestedTokenSet(system, tokenSet));
   if (missingRequestedTokenSets.length > 0) pageDiagnostic.missingRequestedTokenSets.push(...missingRequestedTokenSets);
@@ -144,9 +155,9 @@ export async function renderDsdbResourceChunk(
 
 function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
   const direct = getPath(resource, 'system');
-  if (direct && typeof direct === 'object') return direct as TokenTableSystem;
+  if (direct) return normalizeTokenTableSystem(direct);
   const nested = getPath(resource, 'payload', 'system');
-  if (nested && typeof nested === 'object') return nested as TokenTableSystem;
+  if (nested) return normalizeTokenTableSystem(nested);
   return null;
 }
 

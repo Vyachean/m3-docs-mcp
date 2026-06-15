@@ -1,6 +1,7 @@
 import TurndownService from 'turndown';
 import { materialPageId, materialPagePath, sectionFromPagePath } from '../crawler-utils.js';
 import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
+import { asArray, asObject } from './schemas.js';
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -532,7 +533,7 @@ export function renderTokenTableWithDiagnostics(
       const treeData = system.contextualReferenceTrees[token.name];
       if (!treeData?.contextualReferenceTree?.length) continue;
       const entries = treeData.contextualReferenceTree;
-      const entryContextKeys = entries.map((entry) => entry.contextTags.slice().sort().join('|')).filter(Boolean);
+      const entryContextKeys = entries.map((entry) => asArray<string>(entry.contextTags).slice().sort().join('|')).filter(Boolean);
       for (const key of entryContextKeys) availableContextKeys.add(key);
       if (new Set(entryContextKeys).size > 1) multipleContextVariantsAvailable = true;
       const lightEntry = findContextEntry(entries, idx, 'light', { audience: '3p' }) ?? findContextEntry(entries, idx, 'light', { audience: '1p.baseline' }) ?? findContextEntry(entries, idx, 'light');
@@ -553,7 +554,7 @@ export function renderTokenTableWithDiagnostics(
       ];
       if (renderedValues[0] === '[unresolved]' || renderedValues[1] === '[unresolved]') unresolvedTokenCount += 1;
       for (const entry of [lightEntry, darkEntry, lightHcEntry, darkHcEntry]) {
-        const key = entry ? entry.contextTags.slice().sort().join('|') : '';
+        const key = entry ? asArray<string>(entry.contextTags).slice().sort().join('|') : '';
         if (key) selectedContextKeys.add(key);
       }
       rows.push([
@@ -596,6 +597,44 @@ export function renderTokenTableWithDiagnostics(
 
 export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
   return renderTokenTableWithDiagnostics(system, displayTokenSets).markdown;
+}
+
+export function normalizeTokenTableSystem(raw: unknown): TokenTableSystem | null {
+  const obj = asObject(raw);
+  if (!obj) return null;
+  const tokens = asArray(obj.tokens) as TokenTableSystem['tokens'];
+  const tokenSets = asArray(obj.tokenSets) as TokenTableSystem['tokenSets'];
+  if (tokens.length === 0 && tokenSets.length === 0) return null;
+  return {
+    tokens,
+    tokenSets,
+    tags: asArray(obj.tags) as TokenTableSystem['tags'],
+    contextTagGroups: asArray(obj.contextTagGroups) as TokenTableSystem['contextTagGroups'],
+    contextualReferenceTrees: normalizeContextualRefTrees(obj.contextualReferenceTrees)
+  };
+}
+
+function normalizeContextualRefTrees(raw: unknown): TokenTableSystem['contextualReferenceTrees'] {
+  const obj = asObject(raw);
+  if (!obj) return {};
+  const result: TokenTableSystem['contextualReferenceTrees'] = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const treeObj = asObject(value);
+    if (!treeObj) { result[key] = undefined; continue; }
+    result[key] = {
+      contextualReferenceTree: asArray(treeObj.contextualReferenceTree).map(normalizeContextTreeEntry)
+    };
+  }
+  return result;
+}
+
+function normalizeContextTreeEntry(raw: unknown): ContextTreeEntry {
+  const e = asObject(raw) ?? {};
+  return {
+    contextTags: asArray(e.contextTags).filter((t): t is string => typeof t === 'string'),
+    referenceTree: (e.referenceTree as ReferenceNode | undefined) ?? { tokenName: '' },
+    resolvedValue: (e.resolvedValue as ResolvedTokenValue | undefined) ?? {}
+  };
 }
 
 export function renderStatusTableMarkdown(resource: unknown): string {
@@ -826,7 +865,7 @@ function entryMatchesContext(
   idx: TagIndex,
   expected: { audience?: string; contrast?: string }
 ): boolean {
-  const contextNames = new Set(entry.contextTags.map((tag) => idx.idByTagName.get(tag) ?? tag));
+  const contextNames = new Set(asArray<string>(entry.contextTags).map((tag) => idx.idByTagName.get(tag) ?? tag));
   if (expected.audience && !contextNames.has(expected.audience)) return false;
   if (expected.contrast && !contextNames.has(expected.contrast)) return false;
   return true;

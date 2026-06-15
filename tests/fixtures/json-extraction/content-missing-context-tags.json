@@ -1,0 +1,22 @@
+{
+  "title": "Divider",
+  "sections": [
+    {
+      "name": "Specs",
+      "contentBlocks": [
+        {
+          "contentChunks": [
+            {
+              "contentChunkType": "RESOURCE",
+              "libraryModuleType": "TOKEN_TABLE",
+              "resourceName": "designSystems/ds1/components/divider",
+              "moduleConfigurationOverrides": {
+                "tokenSets": ["Divider - Color"]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
