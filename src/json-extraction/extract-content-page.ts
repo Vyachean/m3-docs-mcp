@@ -1,5 +1,5 @@
 import type { ExtractionFallbackReason, ExtractionPageDiagnostic, MaterialPage } from '../types.js';
-import { renderDsdbResourceChunk, type DsdbResourceFetcher } from './extract-dsdb-resource.js';
+import { decodeResourceChunk, renderDsdbResourceChunk, type DsdbResourceFetcher } from './extract-dsdb-resource.js';
 import { extractPageDataMetadata } from './extract-page-data.js';
 import { compactJson, parseContentPage, type DecodedContentChunk } from './schemas.js';
 import {
@@ -179,7 +179,7 @@ async function renderChunkMarkdown(
   }
 
   if (chunkType === 'RESOURCE') {
-    return renderDsdbResourceChunk(chunk, fetchResource, pageDiagnostic);
+    return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic);
   }
 
   pageDiagnostic.unknownChunkTypes.push(chunkType);

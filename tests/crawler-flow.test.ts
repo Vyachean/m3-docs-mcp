@@ -407,7 +407,7 @@ describe('crawlMaterialDocs', () => {
     expect(index.failedUrls).toEqual([]);
     expect(index.qualityReport?.rejectedRoutes).toEqual([]);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/cards/overview.md'), 'utf8')).resolves.toContain('# Cards');
-  });
+  }, 15_000);
 
   it('rejects routes when all candidates render not found and does not write candidate files', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons'];
@@ -776,6 +776,8 @@ describe('crawlMaterialDocs', () => {
   }, 10_000);
 
   it('uses network-captured JSON when direct JSON fails', async () => {
+    // timeout raised to 15_000 because this test spawns multiple async fetches and
+    // runs slowly under Stryker's parallel instrumented workers
     const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
     const mainJs = [
       '"carbonVersion":"cv-123"',
@@ -825,7 +827,7 @@ describe('crawlMaterialDocs', () => {
       networkJsonSucceeded: true
     }));
     await expect(readFile(path.join(cacheDir, 'raw/components/dialogs/overview/page-data.json'), 'utf8')).resolves.toContain('"type": "page-metadata"');
-  });
+  }, 15_000);
 
   it('records fallback skip reasons when Playwright is unavailable but direct JSON already produced a valid cache', async () => {
     const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';

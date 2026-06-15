@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTokenTableSystem, renderTokenTableWithDiagnostics, renderStatusTableMarkdown } from '../src/json-extraction/render-markdown.js';
-import { renderDsdbResourceChunk } from '../src/json-extraction/extract-dsdb-resource.js';
+import { decodeResourceChunk, renderDsdbResourceChunk } from '../src/json-extraction/extract-dsdb-resource.js';
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
+import { parseStatusTable, decodeStatusTableResource } from '../src/json-extraction/schemas.js';
 import type { ExtractionPageDiagnostic } from '../src/types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -285,37 +286,108 @@ describe('renderTokenTableWithDiagnostics – malformed normalized systems', () 
 });
 
 // ─── renderStatusTableMarkdown ────────────────────────────────────────────────
+// Renderer only accepts DecodedStatusTable — decode first with parseStatusTable.
 
-describe('renderStatusTableMarkdown – malformed inputs', () => {
-  it('returns empty string for null', () => {
-    expect(renderStatusTableMarkdown(null)).toBe('');
-  });
-
-  it('returns empty string for non-object', () => {
-    expect(renderStatusTableMarkdown('string')).toBe('');
-    expect(renderStatusTableMarkdown(42)).toBe('');
-  });
-
-  it('returns empty string when rows/headers arrays are missing', () => {
-    expect(renderStatusTableMarkdown({ somethingElse: true })).toBe('');
-  });
-
-  it('returns empty string when rows array exists but is empty', () => {
-    expect(renderStatusTableMarkdown({ headers: ['Status', 'Description'], rows: [] })).toBe('');
-  });
-
-  it('returns empty string when headers array exists but is empty', () => {
-    expect(renderStatusTableMarkdown({ headers: [], rows: [['Active', 'In use']] })).toBe('');
-  });
-
-  it('renders a table when headers and rows are valid', () => {
-    const md = renderStatusTableMarkdown({ headers: ['Status', 'Description'], rows: [['Active', 'In use']] });
+describe('renderStatusTableMarkdown – accepts only decoded status table', () => {
+  it('renders a table for a valid decoded status table', () => {
+    const decoded = parseStatusTable({ headers: ['Status', 'Description'], rows: [['Active', 'In use']] })!;
+    expect(decoded).not.toBeNull();
+    const md = renderStatusTableMarkdown(decoded);
     expect(md).toContain('| Status | Description |');
     expect(md).toContain('| Active | In use |');
   });
 
+  it('renders multi-row tables correctly', () => {
+    const decoded = parseStatusTable({
+      headers: ['Component', 'Status', 'Notes'],
+      rows: [['Button', 'Stable', 'OK'], ['Chip', 'Beta', 'WIP']]
+    })!;
+    const md = renderStatusTableMarkdown(decoded);
+    expect(md).toContain('| Button |');
+    expect(md).toContain('| Chip |');
+  });
+});
+
+// ─── decodeStatusTableResource – decoder for raw status table resources ───────
+
+describe('decodeStatusTableResource – decoder boundary', () => {
+  it('returns UnsupportedStatusTable for null', () => {
+    const result = decodeStatusTableResource(null);
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedStatusTable for non-object', () => {
+    const result = decodeStatusTableResource('string');
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedStatusTable when rows/headers arrays are missing', () => {
+    const result = decodeStatusTableResource({ somethingElse: true });
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedStatusTable when rows array is empty', () => {
+    const result = decodeStatusTableResource({ headers: ['Status', 'Description'], rows: [] });
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedStatusTable when headers array is empty', () => {
+    const result = decodeStatusTableResource({ headers: [], rows: [['Active', 'In use']] });
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns DecodedStatusTable for valid input', () => {
+    const result = decodeStatusTableResource({ headers: ['Status', 'Description'], rows: [['Active', 'In use']] });
+    expect('_unsupported' in result).toBe(false);
+    if (!('_unsupported' in result)) {
+      expect(result.headers).toEqual(['Status', 'Description']);
+      expect(result.rows).toEqual([['Active', 'In use']]);
+    }
+  });
+
   it('does not throw for rows with unexpected value shapes', () => {
-    expect(() => renderStatusTableMarkdown({ headers: ['A', 'B'], rows: [[null, undefined], [{ obj: true }, [1, 2]]] })).not.toThrow();
+    expect(() => decodeStatusTableResource({ headers: ['A', 'B'], rows: [[null, undefined], [{ obj: true }, [1, 2]]] })).not.toThrow();
+  });
+});
+
+// ─── decodeResourceChunk – decoder for raw resource chunks ───────────────────
+
+describe('decodeResourceChunk – malformed resource chunks', () => {
+  it('returns DecodedResourceChunk for a valid chunk object', () => {
+    const result = decodeResourceChunk({ libraryModuleType: 'TOKEN_TABLE', resourceName: 'some/resource' });
+    expect('_unsupported' in result).toBe(false);
+    if (!('_unsupported' in result)) {
+      expect(result.libraryModuleType).toBe('TOKEN_TABLE');
+    }
+  });
+
+  it('returns UnsupportedResourceChunk for a non-object (string)', () => {
+    const result = decodeResourceChunk('not-an-object');
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedResourceChunk for a non-object (null)', () => {
+    const result = decodeResourceChunk(null);
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('returns UnsupportedResourceChunk for a non-object (number)', () => {
+    const result = decodeResourceChunk(42);
+    expect('_unsupported' in result && result._unsupported).toBe(true);
+  });
+
+  it('includes issue messages in UnsupportedResourceChunk', () => {
+    const result = decodeResourceChunk('bad');
+    if ('_unsupported' in result && result._unsupported) {
+      expect(Array.isArray(result.issues)).toBe(true);
+    }
+  });
+
+  it('renderer cannot be called with raw unknown – decodeResourceChunk is the boundary', () => {
+    // This test documents the boundary: callers must decode first, then render.
+    // The type system enforces this; renderDsdbResourceChunk no longer accepts unknown.
+    const decoded = decodeResourceChunk({ libraryModuleType: 'UNKNOWN_RESOURCE' });
+    expect(decoded).toBeDefined();
   });
 });
 
@@ -324,7 +396,7 @@ describe('renderStatusTableMarkdown – malformed inputs', () => {
 describe('STATUS_TABLE resource diagnostic accounting', () => {
   async function renderChunk(resource: unknown) {
     const diag = emptyPageDiagnostic();
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'some/resource' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'some/resource' });
     await renderDsdbResourceChunk(chunk, async () => resource, diag);
     return diag;
   }
@@ -368,7 +440,7 @@ describe('STATUS_TABLE resource diagnostic accounting', () => {
   });
 
   it('renders a placeholder and diagnostic, not a raw TypeError, for missing resource', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'some/resource' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'some/resource' });
     const diag = emptyPageDiagnostic();
     const result = await renderDsdbResourceChunk(chunk, async () => null, diag);
     expect(result).toContain('Material resource placeholder');
@@ -380,15 +452,15 @@ describe('STATUS_TABLE resource diagnostic accounting', () => {
 // ─── TOKEN_TABLE resource robustness ─────────────────────────────────────────
 
 describe('TOKEN_TABLE resource chunk – malformed resource payloads', () => {
-  const tokenChunk = {
+  const tokenChunkDecoded = decodeResourceChunk({
     libraryModuleType: 'TOKEN_TABLE',
     resourceName: 'designSystems/ds/components/cmp',
     moduleConfiguration: { tokenSets: ['Divider - Common'] }
-  };
+  });
 
   async function renderTokenChunk(resource: unknown) {
     const diag = emptyPageDiagnostic();
-    const result = await renderDsdbResourceChunk(tokenChunk, async () => resource, diag);
+    const result = await renderDsdbResourceChunk(tokenChunkDecoded, async () => resource, diag);
     return { result, diag };
   }
 
@@ -448,11 +520,11 @@ describe('TOKEN_TABLE resource chunk – malformed resource payloads', () => {
 
   it('renders valid table for fully valid resource without throwing', async () => {
     const resource = { system: VALID_TOKEN_SYSTEM };
-    const chunk = {
+    const chunk = decodeResourceChunk({
       libraryModuleType: 'TOKEN_TABLE',
       resourceName: 'designSystems/ds/components/cmp',
       moduleConfiguration: { tokenSets: ['Divider - Common'] }
-    };
+    });
     const diag = emptyPageDiagnostic();
     const result = await renderDsdbResourceChunk(chunk, async () => resource, diag);
     expect(result).toContain('### Divider - Common');
@@ -526,7 +598,7 @@ describe('normalizeTokenTableSystem – non-object resolvedValue in contextual t
 
 describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   it('placeholder includes resource name and reason when resource is missing', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' });
     const diag = emptyPageDiagnostic();
     const result = await renderDsdbResourceChunk(chunk, async () => null, diag);
     expect(result).toContain('missing-status-table-resource');
@@ -534,7 +606,7 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   });
 
   it('placeholder includes resource name and reason when schema is unsupported', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' });
     const diag = emptyPageDiagnostic();
     const result = await renderDsdbResourceChunk(chunk, async () => ({ unknownShape: true }), diag);
     expect(result).toContain('unknown-status-table-schema');
@@ -542,7 +614,7 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   });
 
   it('statusTableDiagnostics contains structured entry with resource info for missing resource', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' });
     const diag = emptyPageDiagnostic();
     await renderDsdbResourceChunk(chunk, async () => null, diag);
     expect(diag.statusTableDiagnostics).toBeDefined();
@@ -556,7 +628,7 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   });
 
   it('statusTableDiagnostics contains structured entry for unsupported schema', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' });
     const diag = emptyPageDiagnostic();
     await renderDsdbResourceChunk(chunk, async () => ({ unknownShape: true }), diag);
     const entry = diag.statusTableDiagnostics![0]!;
@@ -566,7 +638,7 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   });
 
   it('statusTableDiagnostics contains structured entry for successful render', async () => {
-    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' });
     const diag = emptyPageDiagnostic();
     await renderDsdbResourceChunk(chunk, async () => ({ headers: ['Status', 'Notes'], rows: [['Active', 'OK']] }), diag);
     const entry = diag.statusTableDiagnostics![0]!;
@@ -580,15 +652,15 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
 // ─── extractTokenTableSystem – nested payload.system fallback ─────────────────
 
 describe('extractTokenTableSystem – nested payload.system fallback', () => {
-  const tokenChunk = {
+  const tokenChunkDecoded2 = decodeResourceChunk({
     libraryModuleType: 'TOKEN_TABLE',
     resourceName: 'designSystems/ds/components/cmp',
     moduleConfiguration: { tokenSets: ['Divider - Common'] }
-  };
+  });
 
   async function renderTokenChunk(resource: unknown) {
     const diag = emptyPageDiagnostic();
-    const result = await renderDsdbResourceChunk(tokenChunk, async () => resource, diag);
+    const result = await renderDsdbResourceChunk(tokenChunkDecoded2, async () => resource, diag);
     return { result, diag };
   }
 
@@ -696,7 +768,7 @@ describe('normalizeTokenSetItem – empty and missing names', () => {
 
 // ─── parseTokenTableSystem – zod boundary smoke tests ────────────────────────
 
-import { parseTokenTableSystem, parseStatusTable, parseContentPage } from '../src/json-extraction/schemas.js';
+import { parseTokenTableSystem, parseContentPage } from '../src/json-extraction/schemas.js';
 
 describe('parseTokenTableSystem – zod boundary', () => {
   it('returns null for null/undefined', () => {

@@ -35,9 +35,11 @@ Rules:
 - TypeScript types for decoded payloads must be derived from zod schemas via `z.infer` / `z.output` — not hand-written interfaces.
 - Renderers and business logic must accept decoded internal models only.
 - `as SomeExternalType`, `as any`, broad `as Record<string, unknown>`, and `as JsonObject` casts are **forbidden** for trusting external data.
-- Private schema helper functions (`asObject`, `asArray`, etc.) may only be used inside zod preprocess/transform implementation details — not as the public external JSON boundary.
+- Private schema helper functions (`asObject`, `asArray`, etc.) exist inside `schemas.ts` as private implementation details only — they are **not exported** and must not be imported by other modules.
+- Other modules that need to inspect unknown JSON must use zod schemas (`safeParse`) or local type predicates (`function isRecord(v): v is Record<string,unknown>`) — never import private helpers from `schemas.ts`.
 - Malformed external structures must produce unsupported placeholders or diagnostics, not raw `TypeError`s.
-- Unavoidable local assertions must be documented and must not be used to trust external data.
+- Unavoidable internal helper casts must be annotated `// zod-boundary-internal-cast` and must not be used to trust external data.
+- Decode before render: add a `decodeXxx(raw: unknown): Decoded | Unsupported` boundary function and pass only the decoded value to the renderer.
 
 **Expected flow:**
 

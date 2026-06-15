@@ -1,4 +1,27 @@
-import { asObject, firstString, getPath } from './schemas.js';
+// ── Local helpers (type-predicate approach, no 'as' casts) ───────────────────
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function getLocal(root: unknown, ...path: string[]): unknown {
+  let current: unknown = root;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function firstStringLocal(root: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const v = getLocal(root, ...path);
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return null;
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export type JsonPageMetadata = {
   title: string | null;
@@ -7,14 +30,14 @@ export type JsonPageMetadata = {
 };
 
 export function extractPageDataMetadata(rawPageData: unknown): JsonPageMetadata {
-  const title = firstString(rawPageData, [
+  const title = firstStringLocal(rawPageData, [
     ['result', 'data', 'mdx', 'frontmatter', 'title'],
     ['result', 'pageContext', 'title'],
     ['pageContext', 'title'],
     ['title']
   ]);
 
-  const pageCanonId = firstString(rawPageData, [
+  const pageCanonId = firstStringLocal(rawPageData, [
     ['result', 'pageContext', 'pageCanonId'],
     ['result', 'pageContext', 'pageCanonicalId'],
     ['pageContext', 'pageCanonId'],
@@ -24,7 +47,7 @@ export function extractPageDataMetadata(rawPageData: unknown): JsonPageMetadata 
     ['result', 'pageContext', 'documentId']
   ]);
 
-  const pathname = firstString(rawPageData, [
+  const pathname = firstStringLocal(rawPageData, [
     ['path'],
     ['pageContext', 'slug'],
     ['result', 'pageContext', 'slug'],
@@ -50,8 +73,8 @@ export function deriveCollectionSegmentFromSlug(slug: string): string | null {
 }
 
 export function fallbackPageCanonId(rawPageData: unknown): string | null {
-  const pageContext = asObject(getPath(rawPageData, 'result', 'pageContext'));
-  if (!pageContext) return null;
+  const pageContext = getLocal(rawPageData, 'result', 'pageContext');
+  if (!isRecord(pageContext)) return null;
   for (const key of Object.keys(pageContext)) {
     const value = pageContext[key];
     if (typeof value === 'string' && /canon|document/i.test(key)) return value;

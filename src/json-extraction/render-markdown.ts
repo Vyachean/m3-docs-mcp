@@ -4,7 +4,6 @@ import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
 import type { DecodedContentSection } from './schemas.js';
 import {
   compactJson,
-  parseStatusTable,
   parseTokenTableSystem,
   type DecodedContextTreeEntry,
   type DecodedReferenceNode,
@@ -12,8 +11,8 @@ import {
   type DecodedTokenTableSystem,
 } from './schemas.js';
 
-// Re-export for consumers that previously imported from here
-export type { DecodedTokenTableSystem as TokenTableSystem };
+// Backwards-compatible alias for consumers that previously imported from here
+export type TokenTableSystem = DecodedTokenTableSystem;
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -142,7 +141,7 @@ export function renderVideoMarkdown({
   return lines.join('\n\n');
 }
 
-export function renderResourcePlaceholder(label: string, details: Record<string, unknown>): string {
+export function renderResourcePlaceholder(label: string, details: Record<string, unknown>): string { // zod-boundary-internal-cast – details is always internally-constructed metadata, not external JSON
   return [
     `> Material resource placeholder: ${label}`,
     `> ${escapeMarkdownListText(JSON.stringify(details))}`
@@ -412,7 +411,7 @@ function formatValueNode(v: unknown): string {
   if (typeof v !== 'object') return String(v);
   if (Array.isArray(v)) return v.map(formatValueNode).filter(Boolean).join(', ');
 
-  const obj = v as Record<string, unknown>;
+  const obj = v as Record<string, unknown>; // zod-boundary-internal-cast
   if ('red' in obj && 'green' in obj && 'blue' in obj) {
     const red = Number(obj.red);
     const green = Number(obj.green);
@@ -576,9 +575,7 @@ export function normalizeTokenTableSystem(raw: unknown): DecodedTokenTableSystem
   return parseTokenTableSystem(raw);
 }
 
-export function renderStatusTableMarkdown(resource: unknown): string {
-  const decoded: DecodedStatusTable | null = parseStatusTable(resource);
-  if (!decoded) return '';
+export function renderStatusTableMarkdown(decoded: DecodedStatusTable): string {
   return markdownTable([decoded.headers, ...decoded.rows]);
 }
 
@@ -782,7 +779,7 @@ function stableStringify(value: unknown): string {
   if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
 
-  const obj = value as Record<string, unknown>;
+  const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
   const entries = Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
   return `{${entries.join(',')}}`;
 }

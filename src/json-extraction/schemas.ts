@@ -10,7 +10,11 @@ export function compactJson(value: unknown): string {
   }
 }
 
-export function walkObjects(root: unknown, visitor: (value: Record<string, unknown>) => void): void {
+// ── Internal helpers (private – used only inside this module) ─────────────────
+
+type JsonObject = Record<string, unknown>;
+
+function walkObjects(root: unknown, visitor: (value: Record<string, unknown>) => void): void {
   const seen = new Set<unknown>();
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object' || seen.has(value)) return;
@@ -19,34 +23,30 @@ export function walkObjects(root: unknown, visitor: (value: Record<string, unkno
       for (const item of value) visit(item);
       return;
     }
-    const obj = value as Record<string, unknown>;
+    const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
     visitor(obj);
     for (const nested of Object.values(obj)) visit(nested);
   };
   visit(root);
 }
 
-// ── Legacy helper exports (used by classify-json-response, extract-page-data, json-bundle) ──
-
-export type JsonObject = Record<string, unknown>;
-
-export function asObject(value: unknown): JsonObject | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null;
+function asObject(value: unknown): JsonObject | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null; // zod-boundary-internal-cast
 }
 
-export function asArray<T = unknown>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : [];
+function asArray<T = unknown>(value: unknown): T[] {
+  return Array.isArray(value) ? (value as T[]) : []; // zod-boundary-internal-cast
 }
 
-export function readString(value: unknown): string | null {
+function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
-export function readBoolean(value: unknown): boolean | null {
+function readBoolean(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null;
 }
 
-export function getPath(root: unknown, ...path: string[]): unknown {
+function getPath(root: unknown, ...path: string[]): unknown {
   let current: unknown = root;
   for (const key of path) {
     const o = asObject(current);
@@ -56,7 +56,7 @@ export function getPath(root: unknown, ...path: string[]): unknown {
   return current;
 }
 
-export function firstString(root: unknown, paths: string[][]): string | null {
+function firstString(root: unknown, paths: string[][]): string | null {
   for (const path of paths) {
     const v = readString(getPath(root, ...path));
     if (v) return v;
@@ -64,7 +64,7 @@ export function firstString(root: unknown, paths: string[][]): string | null {
   return null;
 }
 
-export function firstObject(root: unknown, paths: string[][]): JsonObject | null {
+function firstObject(root: unknown, paths: string[][]): JsonObject | null {
   for (const path of paths) {
     const v = asObject(getPath(root, ...path));
     if (v) return v;
@@ -72,7 +72,7 @@ export function firstObject(root: unknown, paths: string[][]): JsonObject | null
   return null;
 }
 
-export function firstArray(root: unknown, paths: string[][]): unknown[] {
+function firstArray(root: unknown, paths: string[][]): unknown[] {
   for (const path of paths) {
     const v = getPath(root, ...path);
     if (Array.isArray(v)) return v;
@@ -80,18 +80,18 @@ export function firstArray(root: unknown, paths: string[][]): unknown[] {
   return [];
 }
 
-export function normalizeStringArray(values: unknown[]): string[] {
+function normalizeStringArray(values: unknown[]): string[] {
   return values.map(readString).filter((v): v is string => Boolean(v));
 }
 
 // ── Internal schema helpers ───────────────────────────────────────────────────
 
-// Uses z.ZodTypeAny + z.output<S> so TypeScript infers the correct output type.
-function _parseItems<S extends z.ZodTypeAny>(schema: S, raw: unknown): z.output<S>[] {
+// Explicit annotation on r threads z.infer<S> through the safeParse return type
+// so TypeScript resolves r.data as the schema's output type without any assertion.
+function _parseItems<S extends z.ZodTypeAny>(schema: S, raw: unknown): Array<z.infer<S>> {
   return asArray(raw).flatMap((item) => {
-    const r = schema.safeParse(item);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    return r.success ? [r.data as z.output<S>] : [];
+    const r: z.SafeParseReturnType<z.input<S>, z.infer<S>> = schema.safeParse(item);
+    return r.success ? [r.data] : [];
   });
 }
 
@@ -209,7 +209,7 @@ function _statusHeaders(resource: unknown): string[] {
         typeof v === 'string'
           ? v
           : typeof v === 'object' && v && 'label' in v
-            ? String((v as Record<string, unknown>).label ?? '')
+            ? String((v as Record<string, unknown>).label ?? '') // zod-boundary-internal-cast
             : ''
       )
       .filter(Boolean);
@@ -228,7 +228,7 @@ function _statusRows(resource: unknown): string[][] {
       .map((row) => {
         if (Array.isArray(row)) return row.map((v) => (typeof v === 'string' ? v : _stableStringify(v)));
         if (row && typeof row === 'object') {
-          return Object.values(row as Record<string, unknown>).map((v) =>
+          return Object.values(row as Record<string, unknown>).map((v) => // zod-boundary-internal-cast
             typeof v === 'string' ? v : _stableStringify(v)
           );
         }
@@ -245,7 +245,7 @@ function _stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((e) => _stableStringify(e)).join(',')}]`;
-  const obj = value as Record<string, unknown>;
+  const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
   return `{${Object.keys(obj)
     .sort()
     .map((k) => `${JSON.stringify(k)}:${_stableStringify(obj[k])}`)
@@ -258,6 +258,16 @@ export function parseStatusTable(resource: unknown): DecodedStatusTable | null {
   if (headers.length === 0 || rows.length === 0) return null;
   const result = DecodedStatusTableSchema.safeParse({ headers, rows });
   return result.success ? result.data : null;
+}
+
+export type UnsupportedStatusTable = {
+  readonly _unsupported: true;
+};
+
+export function decodeStatusTableResource(raw: unknown): DecodedStatusTable | UnsupportedStatusTable {
+  const decoded = parseStatusTable(raw);
+  if (!decoded) return { _unsupported: true };
+  return decoded;
 }
 
 // ── Content Page Schemas ──────────────────────────────────────────────────────

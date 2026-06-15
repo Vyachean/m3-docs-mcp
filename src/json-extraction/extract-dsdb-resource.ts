@@ -1,15 +1,16 @@
 import type { ExtractionPageDiagnostic } from '../types.js';
 import {
-  asObject,
   compactJson,
+  decodeStatusTableResource,
   extractRequestedTokenSetsFromChunk,
   extractResourceNameFromChunk,
   parseTokenTableSystem,
   ResourceChunkSchema,
   type DecodedResourceChunk,
+  type DecodedStatusTable,
+  type UnsupportedStatusTable,
 } from './schemas.js';
 import {
-  normalizeTokenTableSystem,
   renderResourcePlaceholder,
   renderStatusTableMarkdown,
   renderTokenTableWithDiagnostics,
@@ -17,6 +18,25 @@ import {
 } from './render-markdown.js';
 
 export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
+
+export type UnsupportedResourceChunk = {
+  readonly _unsupported: true;
+  readonly issues: readonly string[];
+};
+
+export function decodeResourceChunk(raw: unknown): DecodedResourceChunk | UnsupportedResourceChunk {
+  const result = ResourceChunkSchema.safeParse(raw);
+  if (!result.success) {
+    return { _unsupported: true, issues: result.error.issues.map((i) => i.message) };
+  }
+  return result.data;
+}
+
+function isUnsupportedResourceChunk(
+  chunk: DecodedResourceChunk | UnsupportedResourceChunk
+): chunk is UnsupportedResourceChunk {
+  return '_unsupported' in chunk && chunk._unsupported === true;
+}
 
 export function extractRequestedTokenSets(raw: unknown): string[] {
   const decoded = ResourceChunkSchema.safeParse(raw);
@@ -31,37 +51,48 @@ export function extractResourceName(raw: unknown): string | null {
 }
 
 export async function renderDsdbResourceChunk(
-  raw: unknown,
+  chunk: DecodedResourceChunk | UnsupportedResourceChunk,
   fetchResource: DsdbResourceFetcher,
   pageDiagnostic: ExtractionPageDiagnostic
 ): Promise<string> {
-  const decoded: DecodedResourceChunk = ResourceChunkSchema.catch({} as DecodedResourceChunk).parse(raw);
+  if (isUnsupportedResourceChunk(chunk)) {
+    pageDiagnostic.unresolvedResourceCount += 1;
+    return renderResourcePlaceholder('UNKNOWN_RESOURCE', {
+      reason: 'malformed-resource-chunk',
+      issues: chunk.issues
+    });
+  }
 
   const libraryModuleType =
-    decoded.libraryModuleType ??
-    decoded.moduleType ??
-    decoded.resourceType ??
+    chunk.libraryModuleType ??
+    chunk.moduleType ??
+    chunk.resourceType ??
     'UNKNOWN_RESOURCE';
 
   if (libraryModuleType === 'STATUS_TABLE') {
-    const resourceName = extractResourceNameFromChunk(decoded);
+    const resourceName = extractResourceNameFromChunk(chunk);
     pageDiagnostic.statusTablesRequested = (pageDiagnostic.statusTablesRequested ?? 0) + 1;
     const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
     const resourceFound = Boolean(resource);
     if (resourceFound) pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
-    const rendered = renderStatusTableMarkdown(resource);
+
+    const statusDecoded = decodeStatusTableResource(resource);
     const statusTableDiagnostics = pageDiagnostic.statusTableDiagnostics ?? (pageDiagnostic.statusTableDiagnostics = []);
-    if (rendered) {
-      pageDiagnostic.statusTablesRendered = (pageDiagnostic.statusTablesRendered ?? 0) + 1;
-      statusTableDiagnostics.push({
-        resourceName,
-        requested: true,
-        resolved: resourceFound,
-        rendered: true,
-        renderedAsPlaceholder: false,
-        unsupportedSchema: false
-      });
-      return rendered;
+
+    if (!isUnsupportedStatusTable(statusDecoded)) {
+      const rendered = renderStatusTableMarkdown(statusDecoded);
+      if (rendered) {
+        pageDiagnostic.statusTablesRendered = (pageDiagnostic.statusTablesRendered ?? 0) + 1;
+        statusTableDiagnostics.push({
+          resourceName,
+          requested: true,
+          resolved: resourceFound,
+          rendered: true,
+          renderedAsPlaceholder: false,
+          unsupportedSchema: false
+        });
+        return rendered;
+      }
     }
 
     const unsupportedSchema = resourceFound;
@@ -80,7 +111,7 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder('STATUS_TABLE', {
       reason: resource ? 'unknown-status-table-schema' : 'missing-status-table-resource',
       resource: resourceName,
-      chunk: compactJson(raw).slice(0, 280)
+      chunk: compactJson(chunk).slice(0, 280)
     });
   }
 
@@ -89,14 +120,14 @@ export async function renderDsdbResourceChunk(
     pageDiagnostic.unresolvedResourceCount += 1;
     return renderResourcePlaceholder(libraryModuleType, {
       type: libraryModuleType,
-      resource: extractResourceNameFromChunk(decoded),
-      chunk: compactJson(raw).slice(0, 280)
+      resource: extractResourceNameFromChunk(chunk),
+      chunk: compactJson(chunk).slice(0, 280)
     });
   }
 
   pageDiagnostic.tokenTables += 1;
-  const requestedTokenSets = extractRequestedTokenSetsFromChunk(decoded);
-  const resourceName = extractResourceNameFromChunk(decoded);
+  const requestedTokenSets = extractRequestedTokenSetsFromChunk(chunk);
+  const resourceName = extractResourceNameFromChunk(chunk);
   if (!resourceName) {
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
     pageDiagnostic.unresolvedResourceCount += 1;
@@ -146,6 +177,12 @@ export async function renderDsdbResourceChunk(
   return `${rendered.replace(/^\n*## Design Tokens\n\n/, '')}${missingTokenSetNote ? `\n\n${missingTokenSetNote}` : ''}`;
 }
 
+function isUnsupportedStatusTable(
+  decoded: DecodedStatusTable | UnsupportedStatusTable
+): decoded is UnsupportedStatusTable {
+  return '_unsupported' in decoded && decoded._unsupported === true;
+}
+
 function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
   const direct = getPath(resource, 'system');
   if (direct) {
@@ -160,12 +197,16 @@ function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
   return null;
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 function getPath(root: unknown, ...path: string[]): unknown {
   let current: unknown = root;
   for (const key of path) {
-    const obj = asObject(current);
-    if (!obj || !(key in obj)) return undefined;
-    current = obj[key];
+    if (!isRecord(current)) return undefined;
+    if (!(key in current)) return undefined;
+    current = current[key];
   }
   return current;
 }

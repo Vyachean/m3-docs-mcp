@@ -3,7 +3,29 @@ import crypto from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import type { JsonResponseType } from '../types.js';
 import { extractPageDataMetadata } from './extract-page-data.js';
-import { firstString } from './schemas.js';
+
+// ── Local helpers (type-predicate approach, no 'as' casts) ───────────────────
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function getLocal(root: unknown, ...path: string[]): unknown {
+  let current: unknown = root;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function firstStringLocal(root: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const v = getLocal(root, ...path);
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return null;
+}
 
 export type JsonCapturedResponse = {
   url: string;
@@ -101,7 +123,7 @@ export function buildJsonPageBundleFromResponses(
   const pageData = pageDataCandidate?.payload ?? null;
   const contentPage = contentPageCandidate?.payload ?? null;
   const pageCanonId = extractPageDataMetadata(pageData).pageCanonId
-    ?? firstString(contentPage, [['pageCanonId'], ['pageCanonicalId'], ['documentId'], ['metadata', 'pageCanonId']])
+    ?? firstStringLocal(contentPage, [['pageCanonId'], ['pageCanonicalId'], ['documentId'], ['metadata', 'pageCanonId']])
     ?? context?.pageCanonId
     ?? context?.routeMetadata?.pageCanonId
     ?? context?.documentId
@@ -168,9 +190,9 @@ function scoreCapturedResponse(response: JsonCapturedResponse, context?: JsonSel
   if (routeTokens.some((token) => pathname.includes(token))) score += 3;
 
   const pageDataMeta = extractPageDataMetadata(response.payload);
-  const payloadTitle = firstString(response.payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
+  const payloadTitle = firstStringLocal(response.payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
   const payloadPath = normalizeRoutePath(pageDataMeta.pathname);
-  const payloadCanon = pageDataMeta.pageCanonId ?? firstString(response.payload, [['pageCanonId'], ['pageCanonicalId'], ['documentId']]);
+  const payloadCanon = pageDataMeta.pageCanonId ?? firstStringLocal(response.payload, [['pageCanonId'], ['pageCanonicalId'], ['documentId']]);
 
   if (payloadPath && routePaths.includes(payloadPath)) score += 10;
   if (payloadCanon && routeTokens.includes(payloadCanon)) score += 8;
@@ -183,14 +205,14 @@ function scoreCapturedResponse(response: JsonCapturedResponse, context?: JsonSel
 }
 
 function basePayloadQualityScore(response: JsonCapturedResponse): number {
-  const payloadTitle = firstString(response.payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
+  const payloadTitle = firstStringLocal(response.payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
   const pageMeta = extractPageDataMetadata(response.payload);
   let score = 0;
   if (payloadTitle) score += 2;
   if (pageMeta.title) score += 2;
   if (pageMeta.pathname) score += 2;
   if (pageMeta.pageCanonId) score += 2;
-  if (Array.isArray((response.payload as { sections?: unknown })?.sections)) score += 3;
+  if (isRecord(response.payload) && Array.isArray(response.payload.sections)) score += 3;
   return score;
 }
 
