@@ -280,6 +280,148 @@ Arguments:
 - Startup cache warming may run a crawl in the background when Playwright Chromium is installed.
 - Package installation must not download Playwright browsers, because MCP clients such as Codex can time out before the stdio handshake completes.
 
+## Operational logs
+
+When an agent-started MCP server or `update` command runs, a persistent operational log is written next to the cache.
+
+### Log location
+
+```
+<cacheDir>/logs/mcp.log.jsonl
+```
+
+The default cache directory is platform-dependent (see [Cache directory](#cache-directory) above). Each line in the log file is a valid JSON object.
+
+### Log format
+
+Every log entry includes:
+
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | string | ISO 8601 timestamp |
+| `level` | string | `debug`, `info`, `warn`, or `error` |
+| `runId` | string | Random hex ID unique to this MCP session or CLI invocation |
+| `pid` | number | OS process ID |
+| `event` | string | Machine-readable event name (e.g. `refresh-start`, `route-failure`) |
+| `message` | string | Human-readable description |
+| `cacheDir` | string | Cache directory path |
+| `command` | string | `serve` or `update` |
+
+Optional fields when relevant:
+
+| Field | Description |
+|---|---|
+| `url` | The page URL that failed or was processed |
+| `path` | Local cache path |
+| `source` | Extraction source: `direct-json`, `network-json`, `dom-fallback`, `crawler`, `cache`, `mcp` |
+| `phase` | Crawl phase: `direct-json` or `browser-crawl` |
+| `durationMs` | Elapsed time in milliseconds |
+| `counters` | Key/value numeric counters (page counts, failure counts, etc.) |
+| `errorClass` | Exception class name (e.g. `TypeError`) |
+| `errorMessage` | Exception message |
+| `errorStack` | Stack trace |
+
+### What is NOT logged
+
+To protect privacy and keep logs compact, the following are never written to the log:
+- Cookies or authentication headers
+- Request or response headers
+- Full HAR payloads
+- Full raw Material JSON response bodies
+- Full markdown or page body content
+
+### Retention and rotation
+
+- The current log file is rotated when it exceeds **5 MB**.
+- Up to **5 rotated** files are kept (`mcp.log.1.jsonl` … `mcp.log.5.jsonl`).
+- Older rotated files are deleted automatically.
+- Rotation uses atomic rename, which is safe when two processes start close together.
+
+### Inspecting logs
+
+```bash
+# Show the last 20 log entries
+tail -n 20 ~/.cache/m3-docs-mcp/logs/mcp.log.jsonl | jq .
+
+# Show only errors
+grep '"level":"error"' ~/.cache/m3-docs-mcp/logs/mcp.log.jsonl | jq .
+
+# Show all route failures
+grep '"event":"route-failure"' ~/.cache/m3-docs-mcp/logs/mcp.log.jsonl | jq '{url: .url, phase: .phase, error: .errorMessage}'
+
+# Check when the last refresh started and finished
+grep '"event":"refresh-' ~/.cache/m3-docs-mcp/logs/mcp.log.jsonl | jq '{event: .event, ts: .timestamp}'
+```
+
+### Diagnosing failed agent-started refreshes
+
+If the MCP server was started by an agent and the refresh failed or was interrupted:
+
+1. Check the log file: `<cacheDir>/logs/mcp.log.jsonl`
+2. Look for `refresh-failure` events for the overall failure cause
+3. Look for `route-failure` events for individual page failures (includes URL, phase, error class/message)
+4. Look for `refresh-lock-conflict` if two processes tried to refresh simultaneously
+
+The `status` CLI command also reports log location:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp status | jq '{logDir: .logDir, currentLogFile: .currentLogFile}'
+```
+
+## Cache staging and cleanup
+
+### Staging directories
+
+During a refresh, a temporary staging directory is created in the same parent directory as the cache:
+
+```
+<parentDir>/.m3-docs-mcp-staging-<random>
+```
+
+On success, the staging directory is atomically promoted to replace the active cache. On failure, it is deleted.
+
+If a process was killed mid-refresh, stale staging directories may be left behind. The next refresh automatically removes staging directories older than **6 hours** before starting, and again after completing.
+
+Cleanup never removes:
+- The current run's staging directory
+- The active cache directory
+- Staging directories newer than the TTL (they may belong to an in-progress run)
+
+### `.previous` backup
+
+During promotion, the existing cache is temporarily renamed to `<cacheDir>.previous` as an atomic safety backup. This is deleted immediately after successful promotion. If the process exits between the backup and the final delete, a stale `.previous` backup may be left. The next cleanup pass removes it after it exceeds the 6-hour TTL.
+
+### Cleanup counters
+
+The `m3-docs-mcp update` command JSON output includes cleanup statistics:
+
+```json
+{
+  "staleStagingDirsFound": 2,
+  "staleStagingDirsRemoved": 2,
+  "stalePreviousBackupsFound": 1,
+  "stalePreviousBackupsRemoved": 1,
+  "cleanupWarnings": []
+}
+```
+
+## Refresh lock
+
+To prevent two processes from promoting the cache simultaneously, a lock file is created before promotion:
+
+```
+<cacheDir>.lock
+```
+
+The lock contains the PID, run ID, start time, command, and cache directory of the process holding it.
+
+Lock behavior:
+- A fresh lock blocks other processes from starting a refresh. The blocked process exits with a clear error message.
+- A lock older than **2 hours** is considered stale and overwritten.
+- The lock is deleted after a successful or failed refresh.
+- If the process exits without releasing the lock, it is automatically recovered after 2 hours.
+- In-process deduplication (within the same MCP server) still applies: a second tool call to `refresh_material_docs` while a refresh is running reuses the existing refresh promise.
+
 ## Current limitations
 
 This implementation extracts text/Markdown and page metadata. Image references are embedded as remote Markdown image URLs, but image assets are not downloaded or stored locally. The JSON extraction layer is schema-tolerant and preserves unknown content with explicit placeholders, but route discovery, per-page diffing, and richer section normalization can still be improved in later PRs.

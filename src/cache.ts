@@ -4,6 +4,14 @@ import path from 'node:path';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
 
+export function logDir(cacheDir: string): string {
+  return path.join(cacheDir, 'logs');
+}
+
+export function currentLogFile(cacheDir: string): string {
+  return path.join(logDir(cacheDir), 'mcp.log.jsonl');
+}
+
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
 const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
@@ -112,6 +120,8 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     failedUrls: index?.failedUrls ?? [],
     ageMs,
     isFresh: isCacheFresh(ageMs, maxAgeHours),
+    logDir: logDir(cacheDir),
+    currentLogFile: currentLogFile(cacheDir),
     ...(coverageHealth !== undefined ? { coverageHealth } : {}),
     ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
     ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {})

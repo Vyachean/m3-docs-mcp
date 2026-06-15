@@ -4,7 +4,7 @@ import { cacheStatus, getDefaultCacheDir, indexPath, readIndex, readPage } from 
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
-import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
+import type { CacheStatus, MaterialIndex, OperationalLogger, RefreshOptions, SearchResult } from './types.js';
 
 const MATERIAL_BASE_URL = 'https://m3.material.io';
 const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
@@ -25,16 +25,28 @@ export class MaterialDocsStore {
   private search: MiniSearch<SearchDoc> | null = null;
   private refreshPromise: Promise<MaterialIndex> | null = null;
 
-  constructor(private readonly cacheDir = getDefaultCacheDir()) {}
+  constructor(
+    private readonly cacheDir = getDefaultCacheDir(),
+    private readonly logger?: OperationalLogger
+  ) {}
 
   async ensureAvailable(): Promise<MaterialIndex> {
     return this.readCurrentIndex();
   }
 
   async refresh(options: RefreshOptions = {}): Promise<MaterialIndex> {
-    if (this.refreshPromise) return this.refreshPromise;
+    if (this.refreshPromise) {
+      this.logger?.info('refresh-deduplicated', 'Refresh already in progress for this store; reusing existing refresh');
+      return this.refreshPromise;
+    }
 
-    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options })
+    const crawlOptions = {
+      cacheDir: this.cacheDir,
+      ...options,
+      ...(this.logger ? { logger: this.logger } : {})
+    };
+
+    this.refreshPromise = crawlMaterialDocs(crawlOptions)
       .then((index) => {
         this.index = index;
         this.indexFingerprint = null;

@@ -3,6 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
+import { createOperationalLogger, generateRunId } from './operational-log.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 import type { CacheStatus, CrawlProgress } from './types.js';
@@ -33,13 +34,27 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   const autoUpdate = options.autoUpdate ?? process.env.M3_DOCS_AUTO_UPDATE !== 'false';
   const startupMaxPages = parsePositiveIntegerOption('M3_DOCS_STARTUP_MAX_PAGES', options.startupMaxPages ?? process.env.M3_DOCS_STARTUP_MAX_PAGES, 250);
   const startupConcurrency = parseBoundedPositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1, MAX_CRAWL_CONCURRENCY);
-  const store = new MaterialDocsStore(cacheDir);
+
+  const runId = generateRunId();
+  const logger = createOperationalLogger(cacheDir, { runId, command: 'serve' });
+  logger.info('mcp-server-start', 'MCP server starting', {
+    command: 'serve',
+    counters: { startupMaxPages, startupConcurrency }
+  });
+  logger.info('cache-dir-resolved', `Cache directory resolved: ${cacheDir}`, { path: cacheDir });
+
+  const store = new MaterialDocsStore(cacheDir, logger);
   const startupRefresh = createStartupRefreshController(store, startupMaxPages, startupConcurrency);
   const server = new McpServer({ name: 'm3-docs-mcp', version: '0.1.0' });
 
   if (autoUpdate) {
     startupRefresh.refreshIfNeeded(maxAgeHours).catch((error: unknown) => {
-      console.error('Failed to check Material 3 docs cache freshness:', error instanceof Error ? error.message : String(error));
+      const msg = error instanceof Error ? error.message : String(error);
+      logger.error('cache-status-check-failed', `Failed to check Material 3 docs cache freshness: ${msg}`, {
+        errorClass: error instanceof Error ? error.constructor.name : 'Error',
+        errorMessage: msg
+      });
+      console.error('Failed to check Material 3 docs cache freshness:', msg);
     });
   }
 

@@ -4,6 +4,7 @@ import { cacheStatus, getDefaultCacheDir } from './cache.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
+import { createOperationalLogger, generateRunId } from './operational-log.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import type { CrawlProgress } from './types.js';
 
@@ -45,10 +46,20 @@ program.command('update')
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
     const concurrency = parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY);
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
+    const runId = generateRunId();
+    const logger = createOperationalLogger(cacheDir, { runId, command: 'update' });
+
+    logger.info('cli-update-start', 'CLI update command started', {
+      command: 'update',
+      counters: { maxPages, minPageCount, concurrency }
+    });
+    logger.info('cache-dir-resolved', `Cache directory resolved: ${cacheDir}`, { path: cacheDir });
+
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
     const renderProgress = createCliProgressRenderer();
     console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}, includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
+    console.error(`Operational logs: ${logger.currentLogFile}`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir,
@@ -59,7 +70,9 @@ program.command('update')
         force: options.force,
         includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
-        onProgress: renderProgress
+        onProgress: renderProgress,
+        logger,
+        command: 'update'
       });
       renderProgress(null);
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
@@ -70,19 +83,24 @@ program.command('update')
         attemptedPageCount: index.attemptedPageCount,
         failedPageCount: index.failedPageCount,
         failedUrls: index.failedUrls,
+        logDir: logger.logDir,
+        currentLogFile: logger.currentLogFile,
         extractionDiagnostics: index.extractionDiagnostics,
         coverageDiagnostics: index.coverageDiagnostics
       }, null, 2));
     } catch (error) {
       renderProgress(null);
       if (abortController.signal.aborted) {
+        logger.warn('refresh-interrupted', 'Cache refresh interrupted by signal');
         console.error('Material 3 docs cache refresh interrupted. Existing cache was left unchanged. If this was the first refresh, status will still report hasCache=false.');
+        await logger.close();
         process.exitCode = 130;
         return;
       }
       throw error;
     } finally {
       removeSignalHandlers();
+      await logger.close();
     }
   });
 

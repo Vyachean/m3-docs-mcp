@@ -6,6 +6,8 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { cleanupStaleCacheDirs } from './cache-cleanup.js';
+import { acquireRefreshLock } from './refresh-lock.js';
 import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
@@ -762,18 +764,96 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const logger = options.logger;
+  const command = options.command ?? 'update';
+  const refreshStartedAt = Date.now();
+
+  logger?.info('cache-status-read', 'Reading existing cache index');
+
   const previousIndex = await readIndex(targetCacheDir);
+
+  // Pre-refresh cleanup: remove stale staging dirs from prior interrupted runs
+  await cleanupStaleCacheDirs(targetCacheDir, { logger }).catch(() => undefined);
+
+  // Acquire cross-process lock to prevent concurrent cache promotion
+  const lockInfo = {
+    runId: logger?.logDir ? logger.logDir : `pid-${process.pid}`,
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    command,
+    cacheDir: targetCacheDir
+  };
+  const lockResult = await acquireRefreshLock(targetCacheDir, lockInfo, { logger });
+  if (!lockResult.acquired) {
+    const existing = lockResult.existingLock;
+    const msg = `Another cache refresh is already in progress (PID=${existing.pid}, runId=${existing.runId}, started=${existing.startedAt}). The lock will be released automatically after 2 hours if the process is no longer running.`;
+    logger?.error('refresh-lock-conflict', msg);
+    throw new Error(msg);
+  }
+  const lock = lockResult.handle;
+
+  logger?.info('refresh-start', 'Cache refresh started', {
+    command,
+    counters: {
+      maxPages: options.maxPages ?? 250,
+      minPageCount: options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT,
+      concurrency: options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY,
+      force: options.force ? 1 : 0,
+      includeBlog: options.includeBlog ? 1 : 0
+    }
+  });
+
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
 
   try {
     const index = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
     assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(index, previousIndex, { force: options.force });
+
+    logger?.info('cache-promotion-start', 'Promoting staging cache to target directory', {
+      path: targetCacheDir
+    });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
+    logger?.info('cache-promotion-success', 'Cache promotion successful', {
+      path: targetCacheDir,
+      counters: {
+        pageCount: index.pageCount,
+        failedPageCount: index.failedPageCount,
+        attemptedPageCount: index.attemptedPageCount
+      }
+    });
+
+    // Post-refresh cleanup
+    await cleanupStaleCacheDirs(targetCacheDir, { logger }).catch(() => undefined);
+
+    const durationMs = Date.now() - refreshStartedAt;
+    logger?.info('refresh-success', 'Cache refresh completed successfully', {
+      durationMs,
+      counters: {
+        pageCount: index.pageCount,
+        failedPageCount: index.failedPageCount,
+        attemptedPageCount: index.attemptedPageCount
+      }
+    });
+
     return index;
   } catch (error) {
     await rm(stagingCacheDir, { recursive: true, force: true });
+
+    const durationMs = Date.now() - refreshStartedAt;
+    logger?.error('refresh-failure', `Cache refresh failed: ${error instanceof Error ? error.message : String(error)}`, {
+      durationMs,
+      errorClass: error instanceof Error ? error.constructor.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined
+    });
+
+    // Attempt cleanup even on failure
+    await cleanupStaleCacheDirs(targetCacheDir, { logger }).catch(() => undefined);
+
     throw error;
+  } finally {
+    await lock.release();
   }
 }
 
@@ -839,6 +919,25 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       error
     };
     options.onProgress?.(progress);
+  };
+
+  // Throttled progress snapshot: log at most every 30 seconds
+  const PROGRESS_LOG_INTERVAL_MS = 30_000;
+  let lastProgressLogTime = 0;
+  const logProgressSnapshot = (): void => {
+    const now = Date.now();
+    if (now - lastProgressLogTime < PROGRESS_LOG_INTERVAL_MS) return;
+    lastProgressLogTime = now;
+    options.logger?.debug('crawler-progress', 'Crawler progress snapshot', {
+      counters: {
+        savedPageCount: pages.length,
+        failedPageCount: failedUrls.length,
+        attemptedPageCount: dsdbAttemptedCount + seen.size,
+        queuedPageCount: queue.length,
+        activeWorkerCount: activeWorkers,
+        maxPages
+      }
+    });
   };
 
   const recordRouteDiagnostic = (diagnostic: ExtractionRouteDiagnostic): void => {
@@ -962,6 +1061,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
   const jsonExtractedSlugs = new Set<string>();
+  const phase1StartedAt = Date.now();
+  options.logger?.info('direct-json-phase-start', 'Starting direct JSON fetch phase (no browser)');
   {
     if (typeof fetch === 'function') {
       try {
@@ -1096,13 +1197,32 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               directJsonAttempted: true,
               fallbackReasons: ['json-fetch-failed']
             }));
+            const routeUrl = new URL(`/${route.slug}`, baseUrl).toString();
+            options.logger?.error('route-failure', `JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`, {
+              url: routeUrl,
+              path: routePathFromSlug(route.slug),
+              phase: 'direct-json',
+              source: 'direct-json',
+              errorClass: err instanceof Error ? err.constructor.name : 'Error',
+              errorMessage: err instanceof Error ? err.message : String(err),
+              errorStack: err instanceof Error ? err.stack : undefined
+            });
             console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }));
+        logProgressSnapshot();
       }
       emitProgress(true);
     }
   }
+
+  options.logger?.info('direct-json-phase-end', 'Direct JSON fetch phase complete', {
+    durationMs: Date.now() - phase1StartedAt,
+    counters: {
+      savedPageCount: pages.length,
+      fallbackRouteCount: jsonFallbackRoutes.size
+    }
+  });
 
   // ── Phase 2: Browser crawl for JSON misses and uncovered routes ───────────
   for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
@@ -1121,6 +1241,16 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
   if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+    const phase2StartedAt = Date.now();
+    options.logger?.info('browser-crawl-phase-start', 'Starting browser crawl phase', {
+      counters: {
+        fallbackRouteCount: jsonFallbackRoutes.size,
+        discoveredUrlCount: discoveredPublicDocPaths.size,
+        jsonSavedPageCount: pages.length,
+        concurrency
+      }
+    });
+
     let browser: Browser | null = null;
     try {
       browser = await launchChromium(options.headless ?? true);
@@ -1132,6 +1262,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), fallbackReason];
         }
         coverageDiagnostics.coverageWarnings.push('coverage-unverified:playwright-unavailable');
+        options.logger?.warn('browser-crawl-skipped', 'Playwright unavailable; skipping browser crawl (JSON satisfied minimum)', {
+          errorMessage: error instanceof Error ? error.message : String(error)
+        });
       } else {
         throw error;
       }
@@ -1163,6 +1296,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         signal?.removeEventListener('abort', onAbort);
         wakeWorkers();
         await browser.close();
+        options.logger?.info('browser-crawl-phase-end', 'Browser crawl phase complete', {
+          durationMs: Date.now() - phase2StartedAt,
+          counters: {
+            totalSavedPageCount: pages.length,
+            failedPageCount: failedUrls.length
+          }
+        });
       }
 
       throwIfAborted(signal);
@@ -1228,7 +1368,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     coverageDiagnostics,
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
+  options.logger?.info('cache-write-start', 'Writing cache index to staging directory', {
+    path: cacheDir,
+    counters: { pageCount: pages.length, failedPageCount: failedUrls.length }
+  });
   await writeIndex(index, cacheDir);
+  options.logger?.info('cache-write-end', 'Cache index written', {
+    path: cacheDir,
+    counters: { pageCount: pages.length }
+  });
   emitProgress(false);
   return index;
 
@@ -1258,7 +1406,16 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         failedUrls.push(url);
         lastFailedUrl = url;
         emitProgress(true);
+        options.logger?.error('route-failure', `Failed to crawl ${url}: ${error instanceof Error ? error.message : String(error)}`, {
+          url,
+          phase: 'browser-crawl',
+          source: 'crawler',
+          errorClass: error instanceof Error ? error.constructor.name : 'Error',
+          errorMessage: error instanceof Error ? error.message : String(error),
+          errorStack: error instanceof Error ? error.stack : undefined
+        });
         console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
+        logProgressSnapshot();
       } finally {
         activeWorkers -= 1;
         currentUrls.delete(workerIndex);

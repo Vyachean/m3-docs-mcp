@@ -50,6 +50,8 @@ const mocks = vi.hoisted(() => {
     failedUrls: [],
     ageMs: 60_000,
     isFresh: true,
+    logDir: '/cache/logs',
+    currentLogFile: '/cache/logs/mcp.log.jsonl',
     ...overrides
   });
 

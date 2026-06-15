@@ -1,3 +1,39 @@
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+export type LogSource = 'direct-json' | 'network-json' | 'dom-fallback' | 'crawler' | 'cache' | 'mcp';
+
+export type LogFields = {
+  command?: string;
+  toolName?: string;
+  url?: string;
+  path?: string;
+  source?: LogSource;
+  phase?: string;
+  durationMs?: number;
+  counters?: Record<string, number>;
+  errorClass?: string;
+  errorMessage?: string;
+  errorStack?: string;
+};
+
+export type OperationalLogger = {
+  info(event: string, message: string, fields?: LogFields): void;
+  warn(event: string, message: string, fields?: LogFields): void;
+  error(event: string, message: string, fields?: LogFields): void;
+  debug(event: string, message: string, fields?: LogFields): void;
+  readonly logDir: string;
+  readonly currentLogFile: string;
+  close(): Promise<void>;
+};
+
+export type CleanupDiagnostics = {
+  staleStagingDirsFound: number;
+  staleStagingDirsRemoved: number;
+  stalePreviousBackupsFound: number;
+  stalePreviousBackupsRemoved: number;
+  cleanupWarnings: string[];
+};
+
 export type MaterialPage = {
   id: string;
   title: string;
@@ -252,6 +288,8 @@ export type CacheStatus = {
   failedUrls: string[];
   ageMs: number | null;
   isFresh: boolean;
+  logDir: string;
+  currentLogFile: string;
   coverageHealth?: CoverageHealth;
   extractionDiagnostics?: ExtractionDiagnostics;
   coverageDiagnostics?: CoverageDiagnostics;
@@ -288,6 +326,8 @@ export type CrawlOptions = {
   includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
+  logger?: OperationalLogger;
+  command?: string;
 };
 
 export type RefreshOptions = {
