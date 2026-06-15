@@ -978,9 +978,21 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
+  // Angular loads token-viewer elements asynchronously; wait for them before capturing HTML.
+  // The selector fails quickly on pages with no token-viewers and succeeds early on others.
+  await page.waitForSelector('token-viewer', { timeout: 10000 }).catch(() => undefined);
+
   const content = await page.evaluate(() => {
     const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
     const clone = root.cloneNode(true) as HTMLElement;
+
+    // Extract the token system JSON before stripping it — it can be 10-20 MB of embedded JSON.
+    const tokenSystemJson: string | null =
+      clone.querySelector('token-viewer[design-system-data]')?.getAttribute('design-system-data') ?? null;
+    for (const el of Array.from(clone.querySelectorAll<Element>('[design-system-data]'))) {
+      el.removeAttribute('design-system-data');
+    }
+
     for (const selector of ['script', 'style', 'noscript', 'svg[aria-hidden="true"]']) {
       for (const el of Array.from(clone.querySelectorAll(selector))) el.remove();
     }
@@ -1013,10 +1025,23 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
     return {
       html: clone.innerHTML,
       title: textContent(clone.querySelector('h1')),
-      headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean)
+      headings: Array.from(clone.querySelectorAll('h1, h2, h3, h4')).map(textContent).filter(Boolean),
+      tokenSystemJson,
     };
   });
-  const tokenSystem = await extractTokenSystem(page, content.html).catch(() => undefined as undefined);
+
+  let tokenSystem: TokenTableSystem | undefined;
+  if (content.tokenSystemJson) {
+    try {
+      const parsed: unknown = JSON.parse(content.tokenSystemJson);
+      const sys = (parsed as { system?: unknown })?.system;
+      if (sys && typeof sys === 'object') tokenSystem = sys as TokenTableSystem;
+    } catch { /* ignore */ }
+  }
+  if (!tokenSystem) {
+    tokenSystem = await extractTokenSystem(page, content.html).catch(() => undefined as undefined);
+  }
+
   return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings }, tokenSystem);
 }
 
