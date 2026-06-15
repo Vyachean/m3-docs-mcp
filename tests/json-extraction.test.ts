@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { extractDsdbRoutesFromBundle } from '../src/crawler.js';
 import { pushPageDiagnostic, createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from '../src/json-extraction/capture-network-json.js';
-import { classifyJsonResponse } from '../src/json-extraction/classify-json-response.js';
+import { classifyJsonResponse, classifyResponseType } from '../src/json-extraction/classify-json-response.js';
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
-import { writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
+import { buildJsonPageBundleFromResponses, writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
 import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls } from '../src/json-extraction/fetch-json-page.js';
 
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/json-extraction', name), 'utf8'));
@@ -195,6 +195,39 @@ describe('JSON-first extraction', () => {
     }).type).toBe('page-metadata');
   });
 
+  it('classifies a content page with nested TOKEN_TABLE resources as content-page', () => {
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-button-specs.json',
+      fixture('content-token-table.json')
+    )).toBe('content-page');
+  });
+
+  it('classifies a content page with nested STATUS_TABLE resources as content-page', () => {
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-status-docs.json',
+      fixture('content-status-table.json')
+    )).toBe('content-page');
+  });
+
+  it('classifies root-level JSON resource payloads without overclassifying title-only objects', () => {
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/TOKEN_TABLE.6c818a16475113bd.json',
+      fixture('network-token-table.json')
+    )).toBe('token-table');
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/STATUS_TABLE.states.json',
+      fixture('network-status-table.json')
+    )).toBe('status-table');
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/EXPERIMENTAL_GRID.sample.json',
+      fixture('network-unknown.json')
+    )).toBe('dsdb-resource');
+    expect(classifyResponseType(
+      'https://m3.material.io/_dsm/content/m3/cv-123/title-only.json',
+      { title: 'Title only' }
+    )).not.toBe('content-page');
+  });
+
   it('builds a normalized JSON page bundle from captured responses', async () => {
     const bundle = buildBundleFromCapturedResponses([
       classifyJsonResponse({
@@ -215,6 +248,30 @@ describe('JSON-first extraction', () => {
     expect(bundle.pageData).toBeTruthy();
     expect(bundle.contentPage).toBeTruthy();
     await expect(bundle.fetchResource('designSystems/20543ce18892f7d9/components/6c818a16475113bd', 'TOKEN_TABLE')).resolves.toEqual(fixture('network-token-table.json'));
+  });
+
+  it('selects the content page when embedded resource chunks are present and still resolves captured resources', async () => {
+    const contentPage = fixture('content-token-table.json');
+    const bundle = buildJsonPageBundleFromResponses([
+      classifyJsonResponse({
+        url: 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-button-specs.json',
+        payload: contentPage
+      }),
+      classifyJsonResponse({
+        url: 'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/TOKEN_TABLE.6c818a16475113bd.json',
+        payload: fixture('network-token-table.json')
+      })
+    ], {
+      finalUrl: 'https://m3.material.io/components/button/specs',
+      slug: 'components/button/specs',
+      pageCanonId: 'page-canon-button-specs'
+    });
+
+    expect(bundle.contentPage).toEqual(contentPage);
+    await expect(bundle.fetchResource(
+      'designSystems/20543ce18892f7d9/components/6c818a16475113bd',
+      'TOKEN_TABLE'
+    )).resolves.toEqual(fixture('network-token-table.json'));
   });
 
   it('selects captured JSON for the current route instead of the first matching response', () => {

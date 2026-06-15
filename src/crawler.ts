@@ -984,7 +984,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback)) {
-    let browser: Browser;
+    let browser: Browser | null = null;
     try {
       browser = await launchChromium(options.headless ?? true);
     } catch (error) {
@@ -997,7 +997,6 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       } else {
         throw error;
       }
-      browser = undefined as never;
     }
     if (!browser) {
       // Direct JSON already produced an acceptable cache; keep it and record the skip.

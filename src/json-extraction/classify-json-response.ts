@@ -1,5 +1,5 @@
 import { extractPageDataMetadata } from './extract-page-data.js';
-import { asObject, firstArray, firstString, getPath, walkObjects } from './schemas.js';
+import { asObject, firstString, getPath, walkObjects } from './schemas.js';
 import type { JsonCapturedResponse } from './json-bundle.js';
 import type { JsonResponseType } from '../types.js';
 
@@ -22,14 +22,14 @@ export function classifyJsonResponse({
 export function classifyResponseType(url: string, payload: unknown): JsonResponseType {
   if (isTokenTablePayload(payload)) return 'token-table';
   if (isStatusTablePayload(payload)) return 'status-table';
-  if (isDsdbResourcePayload(payload)) return 'dsdb-resource';
-  if (isContentPagePayload(payload)) return 'content-page';
+  if (isContentPagePayload(url, payload)) return 'content-page';
   if (isPageDataPayload(payload)) return 'page-metadata';
+  if (isDsdbResourcePayload(payload)) return 'dsdb-resource';
   const pathname = getUrlPathname(url);
   if (/TOKEN_TABLE\.[^/]+\.json$/i.test(pathname)) return 'token-table';
   if (/STATUS_TABLE/i.test(pathname)) return 'status-table';
-  if (/\/page-data\/.+\.json$/i.test(pathname)) return 'page-metadata';
   if (/\/_dsm\/content\/m3\/.+\.json$/i.test(pathname)) return 'content-page';
+  if (/\/page-data\/.+\.json$/i.test(pathname)) return 'page-metadata';
   if (/\/_dsm\/data\/dsdb-m3\/.+\.json$/i.test(pathname)) return 'dsdb-resource';
   return 'unknown-json-resource';
 }
@@ -64,14 +64,24 @@ function isPageDataPayload(payload: unknown): boolean {
   return Boolean(meta.pageCanonId || meta.pathname || meta.title);
 }
 
-function isContentPagePayload(payload: unknown): boolean {
+function isContentPagePayload(url: string, payload: unknown): boolean {
+  const root = asObject(payload);
+  if (!root) return false;
   const title = firstString(payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
-  return firstArray(payload, [
+  const hasStructuredSections = hasArrayPath(payload, [
     ['sections'],
     ['content', 'sections'],
     ['page', 'sections'],
     ['data', 'sections']
-  ]).length > 0 || Boolean(title);
+  ]);
+  const hasStructuredContent = hasContentStructure(root);
+  const pathname = getUrlPathname(url);
+  if (hasStructuredSections) return true;
+  if (title && hasStructuredContent) return true;
+  if (/\/_dsm\/content\/m3\/.+\.json$/i.test(pathname) && (hasStructuredContent || Boolean(title && hasPageIdentity(root)))) {
+    return true;
+  }
+  return false;
 }
 
 function isTokenTablePayload(payload: unknown): boolean {
@@ -88,20 +98,13 @@ function isStatusTablePayload(payload: unknown): boolean {
 function isDsdbResourcePayload(payload: unknown): boolean {
   const resourceLike = asObject(payload);
   if (!resourceLike) return false;
-  if (typeof resourceLike.resourceName === 'string') return true;
-  if (typeof resourceLike.libraryModuleType === 'string') return true;
-  return walkHasResourceMarkers(payload);
-}
-
-function walkHasResourceMarkers(payload: unknown): boolean {
-  let found = false;
-  walkObjects(payload, (value) => {
-    if (found) return;
-    if (typeof value.resourceName === 'string' || typeof value.resourcePath === 'string' || typeof value.libraryModuleType === 'string') {
-      found = true;
-    }
-  });
-  return found;
+  return typeof resourceLike.resourceName === 'string'
+    || typeof resourceLike.resourcePath === 'string'
+    || typeof resourceLike.libraryModuleType === 'string'
+    || 'moduleConfigurationOverrides' in resourceLike
+    || 'resource' in resourceLike
+    || 'component' in resourceLike
+    || 'tokenSets' in resourceLike;
 }
 
 function inferResourceNameFromPayload(payload: unknown): string | null {
@@ -130,4 +133,29 @@ function getUrlPathname(url: string): string {
 function lastUrlSegment(url: string): string {
   const pathname = getUrlPathname(url);
   return pathname.split('/').filter(Boolean).at(-1) ?? pathname;
+}
+
+function hasArrayPath(payload: unknown, paths: string[][]): boolean {
+  return paths.some((path) => Array.isArray(getPath(payload, ...path)));
+}
+
+function hasContentStructure(root: Record<string, unknown>): boolean {
+  if (Array.isArray(root.contentBlocks) || Array.isArray(root.contentChunks)) return true;
+
+  let found = false;
+  walkObjects(root, (value) => {
+    if (found) return;
+    if (Array.isArray(value.contentBlocks) || Array.isArray(value.contentChunks) || Array.isArray(value.sections)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+function hasPageIdentity(root: Record<string, unknown>): boolean {
+  return typeof root.pageCanonId === 'string'
+    || typeof root.pageCanonicalId === 'string'
+    || typeof root.documentId === 'string'
+    || typeof root.slug === 'string'
+    || typeof root.pathname === 'string';
 }
