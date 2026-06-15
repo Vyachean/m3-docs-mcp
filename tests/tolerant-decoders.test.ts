@@ -888,6 +888,32 @@ describe('parseContentPage – zod boundary', () => {
     const result = parseContentPage(null);
     expect(result.sections).toEqual([]);
     expect(result.title).toBeNull();
+    expect(result.fallbackHtml).toBeNull();
+  });
+
+  it('exposes fallbackHtml from htmlValue field in decoded model', () => {
+    const result = parseContentPage({ htmlValue: '<p>Hello from htmlValue</p>' });
+    expect(result.fallbackHtml).toBe('<p>Hello from htmlValue</p>');
+  });
+
+  it('exposes fallbackHtml from body field when htmlValue is absent', () => {
+    const result = parseContentPage({ body: '<p>Hello from body</p>' });
+    expect(result.fallbackHtml).toBe('<p>Hello from body</p>');
+  });
+
+  it('exposes fallbackHtml from description field when htmlValue and body are absent', () => {
+    const result = parseContentPage({ description: 'Some description text' });
+    expect(result.fallbackHtml).toBe('Some description text');
+  });
+
+  it('prefers htmlValue over body and description', () => {
+    const result = parseContentPage({ htmlValue: 'primary', body: 'secondary', description: 'tertiary' });
+    expect(result.fallbackHtml).toBe('primary');
+  });
+
+  it('returns null fallbackHtml when none of the fallback fields are present', () => {
+    const result = parseContentPage({ title: 'T', sections: [] });
+    expect(result.fallbackHtml).toBeNull();
   });
 
   it('parses title from top-level title field', () => {
@@ -978,6 +1004,55 @@ describe('parseContentPage – zod boundary', () => {
     const alt: string | undefined = chunk.altText;
     expect(url).toBe('https://example.com/img.png');
     expect(alt).toBe('An image');
+  });
+});
+
+// ─── extractContentPageToMaterialPage – fallback text from decoded model ───────
+
+describe('extractContentPageToMaterialPage – fallback text comes from decoded model', () => {
+  const baseUrl = 'https://m3.material.io/foundations/overview';
+
+  it('uses decoded fallbackHtml when there are no sections (htmlValue field)', async () => {
+    const contentPage = { title: 'Overview', htmlValue: '<p>Decoded fallback content</p>' };
+    const result = await extractContentPageToMaterialPage({
+      url: baseUrl,
+      pageData: null,
+      contentPage,
+      fetchResource: async () => null
+    });
+    expect(result.page.markdown).toContain('Decoded fallback content');
+  });
+
+  it('uses decoded fallbackHtml from body field when no sections', async () => {
+    const contentPage = { title: 'Overview', body: '<p>Body fallback content</p>' };
+    const result = await extractContentPageToMaterialPage({
+      url: baseUrl,
+      pageData: null,
+      contentPage,
+      fetchResource: async () => null
+    });
+    expect(result.page.markdown).toContain('Body fallback content');
+  });
+
+  it('does not use fallbackHtml when sections are present', async () => {
+    const contentPage = {
+      title: 'Overview',
+      htmlValue: '<p>Should be ignored</p>',
+      sections: [{
+        name: 'Intro',
+        contentBlocks: [{
+          contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Section content</p>' }]
+        }]
+      }]
+    };
+    const result = await extractContentPageToMaterialPage({
+      url: baseUrl,
+      pageData: null,
+      contentPage,
+      fetchResource: async () => null
+    });
+    expect(result.page.markdown).toContain('Section content');
+    expect(result.page.markdown).not.toContain('Should be ignored');
   });
 });
 

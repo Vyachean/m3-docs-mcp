@@ -1,5 +1,4 @@
-import type { JsonObject } from './schemas.js';
-import { firstString, getPath } from './schemas.js';
+import { asObject, firstString, getPath } from './schemas.js';
 
 export type JsonPageMetadata = {
   title: string | null;
@@ -51,9 +50,8 @@ export function deriveCollectionSegmentFromSlug(slug: string): string | null {
 }
 
 export function fallbackPageCanonId(rawPageData: unknown): string | null {
-  const maybeObj = getPath(rawPageData, 'result', 'pageContext');
-  if (!maybeObj || typeof maybeObj !== 'object') return null;
-  const pageContext = maybeObj as JsonObject;
+  const pageContext = asObject(getPath(rawPageData, 'result', 'pageContext'));
+  if (!pageContext) return null;
   for (const key of Object.keys(pageContext)) {
     const value = pageContext[key];
     if (typeof value === 'string' && /canon|document/i.test(key)) return value;

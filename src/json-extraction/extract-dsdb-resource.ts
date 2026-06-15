@@ -1,5 +1,6 @@
 import type { ExtractionPageDiagnostic } from '../types.js';
 import {
+  asObject,
   compactJson,
   extractRequestedTokenSetsFromChunk,
   extractResourceNameFromChunk,
@@ -17,43 +18,24 @@ import {
 
 export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
 
-export function extractRequestedTokenSets(resourceChunk: Record<string, unknown>): string[] {
-  const decoded = ResourceChunkSchema.safeParse(resourceChunk);
+export function extractRequestedTokenSets(raw: unknown): string[] {
+  const decoded = ResourceChunkSchema.safeParse(raw);
   if (decoded.success) return extractRequestedTokenSetsFromChunk(decoded.data);
-  // Fallback for callers passing plain objects before schema decode
-  const values = [
-    resourceChunk['moduleConfigurationOverrides'],
-    resourceChunk['moduleConfiguration'],
-    resourceChunk['tokenSets'],
-  ];
-  for (const container of values) {
-    const arr = Array.isArray(container)
-      ? container
-      : (container && typeof container === 'object' && Array.isArray((container as Record<string, unknown>)['tokenSets']))
-        ? (container as Record<string, unknown>)['tokenSets'] as unknown[]
-        : null;
-    if (Array.isArray(arr)) {
-      const tokenSets = arr.filter(
-        (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
-      );
-      if (tokenSets.length > 0) return tokenSets;
-    }
-  }
   return [];
 }
 
-export function extractResourceName(resourceChunk: Record<string, unknown>): string | null {
-  const decoded = ResourceChunkSchema.safeParse(resourceChunk);
+export function extractResourceName(raw: unknown): string | null {
+  const decoded = ResourceChunkSchema.safeParse(raw);
   if (decoded.success) return extractResourceNameFromChunk(decoded.data);
   return null;
 }
 
 export async function renderDsdbResourceChunk(
-  resourceChunk: Record<string, unknown>,
+  raw: unknown,
   fetchResource: DsdbResourceFetcher,
   pageDiagnostic: ExtractionPageDiagnostic
 ): Promise<string> {
-  const decoded: DecodedResourceChunk = ResourceChunkSchema.catch({} as DecodedResourceChunk).parse(resourceChunk);
+  const decoded: DecodedResourceChunk = ResourceChunkSchema.catch({} as DecodedResourceChunk).parse(raw);
 
   const libraryModuleType =
     decoded.libraryModuleType ??
@@ -98,7 +80,7 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder('STATUS_TABLE', {
       reason: resource ? 'unknown-status-table-schema' : 'missing-status-table-resource',
       resource: resourceName,
-      chunk: compactJson(resourceChunk).slice(0, 280)
+      chunk: compactJson(raw).slice(0, 280)
     });
   }
 
@@ -108,7 +90,7 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder(libraryModuleType, {
       type: libraryModuleType,
       resource: extractResourceNameFromChunk(decoded),
-      chunk: compactJson(resourceChunk).slice(0, 280)
+      chunk: compactJson(raw).slice(0, 280)
     });
   }
 
@@ -181,9 +163,8 @@ function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
 function getPath(root: unknown, ...path: string[]): unknown {
   let current: unknown = root;
   for (const key of path) {
-    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
-    const obj = current as Record<string, unknown>;
-    if (!(key in obj)) return undefined;
+    const obj = asObject(current);
+    if (!obj || !(key in obj)) return undefined;
     current = obj[key];
   }
   return current;

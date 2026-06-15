@@ -82,19 +82,8 @@ export async function extractContentPageToMaterialPage({
     }
   }
 
-  if (sections.length === 0) {
-    const fallbackText =
-      (typeof (contentPage as Record<string, unknown> | null)?.['htmlValue'] === 'string'
-        ? (contentPage as Record<string, unknown>)['htmlValue']
-        : null) ??
-      (typeof (contentPage as Record<string, unknown> | null)?.['body'] === 'string'
-        ? (contentPage as Record<string, unknown>)['body']
-        : null) ??
-      (typeof (contentPage as Record<string, unknown> | null)?.['description'] === 'string'
-        ? (contentPage as Record<string, unknown>)['description']
-        : null) ??
-      null;
-    if (typeof fallbackText === 'string') bodyParts.push(fallbackText);
+  if (sections.length === 0 && decoded.fallbackHtml) {
+    bodyParts.push(decoded.fallbackHtml);
   }
 
   const page = createMaterialPageFromBody({
@@ -190,23 +179,7 @@ async function renderChunkMarkdown(
   }
 
   if (chunkType === 'RESOURCE') {
-    // Build resource chunk from decoded content chunk fields
-    const resourceChunk: Record<string, unknown> = {
-      libraryModuleType: chunk.libraryModuleType,
-      moduleType: chunk.moduleType,
-      resourceType: chunk.resourceType,
-      resourceName: chunk.resourceName,
-      resourcePath: chunk.resourcePath,
-      resourceUrl: chunk.resourceUrl,
-      moduleConfigurationOverrides: chunk.moduleConfigurationOverrides,
-      moduleConfiguration: chunk.moduleConfiguration,
-      tokenSets: chunk.tokenSets,
-    };
-    // Include any passthrough fields from the chunk
-    for (const [key, value] of Object.entries(chunk)) {
-      if (!(key in resourceChunk)) resourceChunk[key] = value;
-    }
-    return renderDsdbResourceChunk(resourceChunk, fetchResource, pageDiagnostic);
+    return renderDsdbResourceChunk(chunk, fetchResource, pageDiagnostic);
   }
 
   pageDiagnostic.unknownChunkTypes.push(chunkType);

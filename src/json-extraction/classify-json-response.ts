@@ -139,8 +139,10 @@ function hasArrayPath(payload: unknown, paths: string[][]): boolean {
   return paths.some((path) => Array.isArray(getPath(payload, ...path)));
 }
 
-function hasContentStructure(root: Record<string, unknown>): boolean {
-  if (Array.isArray(root.contentBlocks) || Array.isArray(root.contentChunks)) return true;
+function hasContentStructure(root: unknown): boolean {
+  const o = asObject(root);
+  if (!o) return false;
+  if (Array.isArray(o.contentBlocks) || Array.isArray(o.contentChunks)) return true;
 
   let found = false;
   walkObjects(root, (value) => {
@@ -152,10 +154,12 @@ function hasContentStructure(root: Record<string, unknown>): boolean {
   return found;
 }
 
-function hasPageIdentity(root: Record<string, unknown>): boolean {
-  return typeof root.pageCanonId === 'string'
-    || typeof root.pageCanonicalId === 'string'
-    || typeof root.documentId === 'string'
-    || typeof root.slug === 'string'
-    || typeof root.pathname === 'string';
+function hasPageIdentity(root: unknown): boolean {
+  const o = asObject(root);
+  if (!o) return false;
+  return typeof o.pageCanonId === 'string'
+    || typeof o.pageCanonicalId === 'string'
+    || typeof o.documentId === 'string'
+    || typeof o.slug === 'string'
+    || typeof o.pathname === 'string';
 }

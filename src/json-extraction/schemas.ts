@@ -381,12 +381,15 @@ function _parseSections(raw: unknown): DecodedContentSection[] {
 
 export type DecodedContentPage = {
   title: string | null;
+  /** First available top-level HTML text field for pages with no structured sections. */
+  fallbackHtml: string | null;
   sections: DecodedContentSection[];
 };
 
 export function parseContentPage(raw: unknown): DecodedContentPage {
   return {
     title: firstString(raw, [['title'], ['name']]),
+    fallbackHtml: firstString(raw, [['htmlValue'], ['body'], ['description']]),
     sections: _parseSections(raw),
   };
 }

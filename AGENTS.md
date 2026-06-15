@@ -25,6 +25,41 @@ Codex and similar stdio MCP clients can time out if package installation perform
 
 For Codex configuration, document `startup_timeout_sec` and `tool_timeout_sec` in README whenever the recommended MCP command changes.
 
+## Runtime validation and type safety
+
+External JSON payloads from `m3.material.io`, `_dsm`, DSDB, page-data, network captures, cache files, CLI input, and MCP tool input must enter the system as `unknown`.
+
+Rules:
+
+- Unstable external payloads must be validated with zod (`safeParse` / `parse` / `transform`).
+- TypeScript types for decoded payloads must be derived from zod schemas via `z.infer` / `z.output` — not hand-written interfaces.
+- Renderers and business logic must accept decoded internal models only.
+- `as SomeExternalType`, `as any`, broad `as Record<string, unknown>`, and `as JsonObject` casts are **forbidden** for trusting external data.
+- Private schema helper functions (`asObject`, `asArray`, etc.) may only be used inside zod preprocess/transform implementation details — not as the public external JSON boundary.
+- Malformed external structures must produce unsupported placeholders or diagnostics, not raw `TypeError`s.
+- Unavoidable local assertions must be documented and must not be used to trust external data.
+
+**Expected flow:**
+
+```ts
+// external payload → zod boundary → decoded internal model → renderer
+const raw: unknown = await fetchResource(name);
+const result = TokenTableSystemSchema.safeParse(raw);
+if (!result.success) return placeholder(diagnostics);
+renderTokenTable(result.data);   // accepts DecodedTokenTableSystem
+```
+
+**Forbidden flow:**
+
+```ts
+// do NOT do this
+const system = raw as TokenTableSystem;
+renderTokenTable(system);
+
+// do NOT do this either
+function renderTokenTable(resource: Record<string, unknown>) { ... }
+```
+
 ## Validation
 
 Before opening or updating a PR, run:
