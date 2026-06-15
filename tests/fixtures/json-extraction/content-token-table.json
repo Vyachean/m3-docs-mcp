@@ -1,0 +1,27 @@
+{
+  "title": "Button specs",
+  "sections": [
+    {
+      "name": "Tokens and specs",
+      "isVisible": true,
+      "contentBlocks": [
+        {
+          "title": "Design tokens",
+          "isHidden": false,
+          "contentChunks": [
+            {
+              "contentChunkType": "RESOURCE",
+              "libraryModuleType": "TOKEN_TABLE",
+              "resourceName": "TOKEN_TABLE.components.button.json",
+              "moduleConfigurationOverrides": {
+                "tokenSets": [
+                  "Button - Common"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

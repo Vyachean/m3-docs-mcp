@@ -11,6 +11,53 @@ export type MaterialPage = {
   publishedYear?: number;
 };
 
+export type ExtractionMethod = 'json' | 'dom';
+
+export type ExtractionFallbackReason =
+  | 'json-fetch-failed'
+  | 'json-no-sections'
+  | 'json-no-headings'
+  | 'json-short-markdown'
+  | 'json-suspicious-content';
+
+export type ExtractionPageDiagnostic = {
+  url: string;
+  path: string;
+  method: ExtractionMethod;
+  fallbackReason?: ExtractionFallbackReason;
+  unknownChunkTypes: string[];
+  unknownResourceTypes: string[];
+  tokenTables: number;
+  tokenTablesRendered: number;
+  missingRequestedTokenSets: string[];
+  suspiciousReasons: string[];
+  imageCount: number;
+  videoCount: number;
+  unresolvedResourceCount: number;
+  noSections: boolean;
+  noHeadings: boolean;
+  markdownLength: number;
+};
+
+export type ExtractionDiagnostics = {
+  totalPages: number;
+  pagesExtractedThroughJson: number;
+  pagesExtractedThroughDomFallback: number;
+  pagesWhereJsonFailed: number;
+  pagesWithUnknownChunkTypes: number;
+  pagesWithUnknownResourceTypes: number;
+  pagesWithTokenTables: number;
+  tokenTablesSuccessfullyRendered: number;
+  tokenTablesMissingRequestedTokenSets: number;
+  pagesWithSuspiciouslyShortMarkdown: number;
+  pagesWithNoSections: number;
+  pagesWithNoHeadings: number;
+  imageCount: number;
+  videoCount: number;
+  unresolvedResourceCount: number;
+  pageDiagnostics: ExtractionPageDiagnostic[];
+};
+
 export type SuspiciousCrawlPage = {
   url: string;
   path: string;
@@ -60,6 +107,7 @@ export type MaterialIndex = {
   failedPageCount: number;
   failedUrls: string[];
   qualityReport?: CrawlQualityReport;
+  extractionDiagnostics?: ExtractionDiagnostics;
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
@@ -73,6 +121,7 @@ export type CacheStatus = {
   failedUrls: string[];
   ageMs: number | null;
   isFresh: boolean;
+  extractionDiagnostics?: ExtractionDiagnostics;
 };
 
 export type CrawlProgress = {

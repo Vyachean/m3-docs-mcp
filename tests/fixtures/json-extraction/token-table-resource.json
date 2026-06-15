@@ -1,0 +1,93 @@
+{
+  "system": {
+    "tokens": [
+      {
+        "name": "designSystems/ds1/tokenSets/ts1/tokens/tok1",
+        "tokenName": "md.comp.button.container.color",
+        "displayName": "Container color",
+        "tokenValueType": "COLOR",
+        "state": "ACTIVE"
+      },
+      {
+        "name": "designSystems/ds1/tokenSets/ts1/tokens/tok2",
+        "tokenName": "md.comp.button.container.height",
+        "displayName": "Container height",
+        "tokenValueType": "DIMENSION",
+        "state": "ACTIVE"
+      }
+    ],
+    "tokenSets": [
+      {
+        "name": "designSystems/ds1/tokenSets/ts1",
+        "displayName": "Button - Common",
+        "tokenSetName": "md.comp.button"
+      }
+    ],
+    "tags": [
+      { "name": "theme/light", "displayName": "Light", "tagName": "light" },
+      { "name": "theme/dark", "displayName": "Dark", "tagName": "dark" },
+      { "name": "platform/android", "displayName": "Android", "tagName": "android" },
+      { "name": "audience/3p", "displayName": "3P", "tagName": "3p" },
+      { "name": "contrast/default", "displayName": "Default", "tagName": "default" }
+    ],
+    "contextTagGroups": [],
+    "contextualReferenceTrees": {
+      "designSystems/ds1/tokenSets/ts1/tokens/tok1": {
+        "contextualReferenceTree": [
+          {
+            "contextTags": ["theme/light", "platform/android", "audience/3p"],
+            "referenceTree": {
+              "tokenName": "md.comp.button.container.color",
+              "childNodes": [
+                {
+                  "tokenName": "md.sys.color.primary",
+                  "childNodes": [
+                    { "tokenName": "md.ref.palette.primary40" }
+                  ]
+                }
+              ]
+            },
+            "resolvedValue": {
+              "color": { "red": 0.38, "green": 0, "blue": 0.93, "alpha": 1 }
+            }
+          },
+          {
+            "contextTags": ["theme/dark", "platform/android", "audience/3p"],
+            "referenceTree": {
+              "tokenName": "md.comp.button.container.color",
+              "childNodes": [
+                {
+                  "tokenName": "md.sys.color.primary",
+                  "childNodes": [
+                    { "tokenName": "md.ref.palette.primary80" }
+                  ]
+                }
+              ]
+            },
+            "resolvedValue": {
+              "color": { "red": 0.82, "green": 0.68, "blue": 1, "alpha": 1 }
+            }
+          }
+        ]
+      },
+      "designSystems/ds1/tokenSets/ts1/tokens/tok2": {
+        "contextualReferenceTree": [
+          {
+            "contextTags": ["theme/light", "platform/android", "audience/3p"],
+            "referenceTree": {
+              "tokenName": "md.comp.button.container.height",
+              "childNodes": [
+                {
+                  "tokenName": "md.sys.shape.corner.full"
+                }
+              ]
+            },
+            "resolvedValue": {
+              "dimension": { "unit": "DIPS" }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

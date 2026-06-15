@@ -1,0 +1,25 @@
+{
+  "title": "Motion page",
+  "page": {
+    "sections": [
+      {
+        "name": "Video",
+        "isVisible": true,
+        "contentBlocks": [
+          {
+            "title": "Demo",
+            "isHidden": false,
+            "contentChunks": [
+              {
+                "contentChunkType": "VIDEO",
+                "url": "https://example.com/demo.mp4",
+                "title": "Component demo",
+                "footer": "Short walkthrough"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

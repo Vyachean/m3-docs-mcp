@@ -1,0 +1,29 @@
+{
+  "title": "Unknown content",
+  "sections": [
+    {
+      "name": "Experimental",
+      "isVisible": true,
+      "contentBlocks": [
+        {
+          "title": "Future chunk",
+          "isHidden": false,
+          "contentChunks": [
+            {
+              "contentChunkType": "CAROUSEL",
+              "cards": [
+                "one",
+                "two"
+              ]
+            },
+            {
+              "contentChunkType": "RESOURCE",
+              "libraryModuleType": "EXPERIMENTAL_GRID",
+              "resourceName": "EXPERIMENTAL_GRID.sample.json"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -84,7 +84,8 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     failedPageCount: index?.failedPageCount ?? 0,
     failedUrls: index?.failedUrls ?? [],
     ageMs,
-    isFresh: isCacheFresh(ageMs, maxAgeHours)
+    isFresh: isCacheFresh(ageMs, maxAgeHours),
+    ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {})
   };
 }
 
@@ -164,6 +165,7 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     attemptedPageCount: index.attemptedPageCount ?? index.pageCount ?? pages.length,
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
+    ...(index.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
     ...(index.qualityReport ? { qualityReport: index.qualityReport } : {}),
     pages
   };
