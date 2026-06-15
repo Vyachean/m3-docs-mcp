@@ -568,7 +568,7 @@ describe('crawlMaterialDocs', () => {
 
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogUrl];
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, includeBlog: true });
 
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith(blogUrl, expect.anything());
     expect(index.pages.find((p) => p.url === blogUrl)).toMatchObject({ title: 'Old Blog Post', path: blogPath, publishedYear: oldYear });
@@ -614,7 +614,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogUrl
     };
 
-    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, includeBlog: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
   }, 10_000);
@@ -656,7 +656,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogUrl
     };
 
-    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, includeBlog: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
   }, 10_000);
@@ -682,7 +682,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogPostUrl
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, includeBlog: true });
 
     const blogEntry = index.pages.find((p) => p.url === blogPostUrl);
     expect(blogEntry?.publishedYear).toBe(currentYear);

@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
@@ -479,11 +480,11 @@ export function materialCrawlCandidates(raw: string, baseUrl: string): string[] 
 }
 
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlPriority);
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlUrlPriority);
 }
 
 export function discoverPublicDocPathsFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort();
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialRoutePriority);
 }
 
 async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
@@ -747,6 +748,11 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
     uncrawledDiscoveredUrls: [],
     skippedBecauseMaxPagesCount: 0,
     skippedBecauseJsonCoveredCount: 0,
+    skippedByPolicyCount: 0,
+    skippedBlogCount: 0,
+    skippedByPolicyUrls: [],
+    includeBlog: false,
+    crawlPriorityPolicyVersion: CRAWL_PRIORITY_POLICY_VERSION,
     coverageVerified: false,
     coverageWarnings: [],
     coverageHealth: 'unverified'
@@ -776,6 +782,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const maxPages = options.maxPages ?? 250;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
   const signal = options.signal;
+  const includeBlog = options.includeBlog ?? false;
   const startedAt = new Date().toISOString();
   const currentUrls = new Map<number, string>();
   let lastSavedUrl: string | null = null;
@@ -805,6 +812,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const angularRoutePublicDocPaths = new Set<string>();
   const previousCacheRoutePublicDocPaths = new Set<string>();
   const acceptedPublicDocPaths = new Set<string>();
+  const policySkippedDocPaths = new Set<string>();
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
@@ -1170,18 +1178,32 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
   coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
   coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
-  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath)).sort();
+  coverageDiagnostics.includeBlog = includeBlog;
+  coverageDiagnostics.crawlPriorityPolicyVersion = CRAWL_PRIORITY_POLICY_VERSION;
+  const skippedByPolicyUrls = Array.from(policySkippedDocPaths).sort(compareMaterialRoutePriority);
+  const skippedBlogCount = skippedByPolicyUrls.filter((p) => isBlogPath(p)).length;
+  coverageDiagnostics.skippedByPolicyCount = policySkippedDocPaths.size;
+  coverageDiagnostics.skippedBlogCount = skippedBlogCount;
+  coverageDiagnostics.skippedByPolicyUrls = skippedByPolicyUrls;
+  // Uncrawled = discovered - accepted - intentionally skipped by policy
+  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath) && !policySkippedDocPaths.has(docPath)).sort();
   coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
   coverageDiagnostics.uncrawledDiscoveredUrlCount = uncrawledDiscoveredUrls.length;
   coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath) && isDsdbCoveredPath(docPath.replace(/^\/+/, ''), jsonExtractedSlugs)).length;
   coverageDiagnostics.skippedBecauseMaxPagesCount = pages.length >= maxPages ? uncrawledDiscoveredUrls.length : 0;
+  if (policySkippedDocPaths.size > 0) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-policy-skip:blog=${skippedBlogCount}:total=${policySkippedDocPaths.size}:includeBlog=${includeBlog}`);
+  }
+  // For gap/regression checks, treat policy-skipped routes as effectively covered
+  const effectiveDiscovered = coverageDiagnostics.discoveredPublicUrlCount;
+  const effectiveAccepted = coverageDiagnostics.acceptedPageCount + policySkippedDocPaths.size;
   if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
     coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
   }
   if (coverageDiagnostics.skippedBecauseMaxPagesCount > 0) {
     coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${coverageDiagnostics.skippedBecauseMaxPagesCount}`);
   }
-  if (hasSignificantCoverageGap(coverageDiagnostics.discoveredPublicUrlCount, coverageDiagnostics.acceptedPageCount)) {
+  if (hasSignificantCoverageGap(effectiveDiscovered, effectiveAccepted)) {
     coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
   }
   const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
@@ -1631,11 +1653,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   function enqueue(raw: string): void {
     const link = normalizeMaterialCrawlUrl(raw, baseUrl);
     if (!link || seen.has(link) || queued.has(link)) return;
-    const linkPath = new URL(link).pathname.replace(/^\/+|\/+$/g, '');
+    const linkPathname = new URL(link).pathname;
+    const linkPath = linkPathname.replace(/^\/+|\/+$/g, '');
+    if (!includeBlog && isBlogPath(linkPathname)) {
+      const docPath = `/${linkPath}`;
+      if (!policySkippedDocPaths.has(docPath)) {
+        policySkippedDocPaths.add(docPath);
+        console.error(`[crawl-priority] Skipping blog route by policy: ${linkPathname}`);
+      }
+      return;
+    }
     if (isDsdbCoveredPath(linkPath, jsonExtractedSlugs)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
-    queue.sort(compareMaterialCrawlPriority);
+    queue.sort(compareMaterialCrawlUrlPriority);
     queued.add(link);
     emitProgress(true);
     wakeWorkers();
@@ -1699,21 +1730,6 @@ async function extractBlogListingYears(page: Page, baseUrl: string): Promise<Arr
   }, origin);
 }
 
-function compareMaterialCrawlPriority(a: string, b: string): number {
-  return materialCrawlPriority(a) - materialCrawlPriority(b) || a.localeCompare(b);
-}
-
-function materialCrawlPriority(url: string): number {
-  const path = new URL(url).pathname;
-  if (path === '/') return 0;
-  if (path.startsWith('/get-started')) return 1;
-  if (path.startsWith('/components')) return 2;
-  if (path.startsWith('/foundations')) return 3;
-  if (path.startsWith('/styles')) return 4;
-  if (path.startsWith('/develop')) return 5;
-  if (path.startsWith('/blog')) return 6;
-  return 7;
-}
 
 function duplicateContentGroups(pages: MaterialPage[]): DuplicateContentGroup[] {
   const groups = new Map<string, MaterialPage[]>();

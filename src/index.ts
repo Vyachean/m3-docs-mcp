@@ -39,6 +39,7 @@ program.command('update')
   .option('--concurrency <number>', `Maximum concurrent Playwright pages, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
+  .option('--include-blog', 'Include blog, news, and article routes in the crawl (excluded by default)')
   .action(async (options) => {
     const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
@@ -47,7 +48,7 @@ program.command('update')
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
     const renderProgress = createCliProgressRenderer();
-    console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
+    console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}, includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir,
@@ -56,6 +57,7 @@ program.command('update')
         concurrency,
         headless: !options.headed,
         force: options.force,
+        includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
         onProgress: renderProgress
       });

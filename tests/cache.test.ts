@@ -301,6 +301,11 @@ describe('cache helpers', () => {
         uncrawledDiscoveredUrls: [],
         skippedBecauseMaxPagesCount: 0,
         skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
         coverageVerified: false,
         coverageWarnings: ['coverage-gap:accepted=10:discovered=80'],
         coverageHealth: 'failed'
@@ -324,6 +329,11 @@ describe('cache helpers', () => {
         uncrawledDiscoveredUrls: [],
         skippedBecauseMaxPagesCount: 70,
         skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
         coverageVerified: false,
         coverageWarnings: [
           'coverage-partial:max-pages-limited:70',
@@ -349,6 +359,11 @@ describe('cache helpers', () => {
         uncrawledDiscoveredUrls: [],
         skippedBecauseMaxPagesCount: 0,
         skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
         coverageVerified: false,
         coverageWarnings: ['coverage-discovery-empty:no-baseline'],
         coverageHealth: 'unverified'
@@ -370,7 +385,12 @@ describe('computeCoverageHealth', () => {
     uncrawledDiscoveredUrlCount: 0,
     uncrawledDiscoveredUrls: [],
     skippedBecauseMaxPagesCount: 0,
-    skippedBecauseJsonCoveredCount: 0
+    skippedBecauseJsonCoveredCount: 0,
+    skippedByPolicyCount: 0,
+    skippedBlogCount: 0,
+    skippedByPolicyUrls: [],
+    includeBlog: false,
+    crawlPriorityPolicyVersion: '1'
   };
 
   it('returns verified when discovery succeeded and all URLs crawled', () => {

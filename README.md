@@ -95,6 +95,7 @@ npx -y github:Vyachean/m3-docs-mcp update --min-pages 25
 npx -y github:Vyachean/m3-docs-mcp update --concurrency 2
 npx -y github:Vyachean/m3-docs-mcp update --force
 npx -y github:Vyachean/m3-docs-mcp update --headed
+npx -y github:Vyachean/m3-docs-mcp update --include-blog
 npx -y github:Vyachean/m3-docs-mcp serve
 npx -y github:Vyachean/m3-docs-mcp serve --cache-dir /path/to/cache
 npx -y github:Vyachean/m3-docs-mcp serve --max-age-hours 12
@@ -116,6 +117,18 @@ The default minimum is 10 pages, so interrupting the command or crawling fewer t
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. The default is 168 hours, or 7 days. It does not make read/search tool calls block on a refresh.
 
 `update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
+
+By default, `update` excludes blog, news, and article routes (`/blog/**`, `/articles/**`, `/news/**`) from the crawl. The MCP server is primarily intended for Material 3 component specifications, guidelines, design tokens, styles, foundations, and implementation documentation. Blog content is secondary and is excluded by default so it does not consume crawl capacity ahead of core documentation routes. Pass `--include-blog` to include blog routes in the crawl for full-site archival.
+
+The crawler uses a fixed priority order when queuing discovered routes:
+
+1. Core docs (`/components/**`, `/styles/**`, `/foundations/**`)
+2. Development / getting started (`/develop/**`, `/get-started/**`, `/designing/**`)
+3. Resources / secondary (`/resources/**`, `/templates/**`, `/case-studies/**`)
+4. Blog / news / articles (`/blog/**`, `/articles/**`, `/news/**`) — excluded by default
+5. Unknown or low-value routes
+
+When `--max-pages` is lower than the total discovered routes, the crawler fills pages in priority order: core docs first, blog last (or never, if `--include-blog` is not passed). Skipped blog routes are recorded in `coverageDiagnostics` as policy-skipped and do not cause coverage failures.
 
 Global install is optional and mainly useful for development or repeated manual diagnostics:
 

@@ -178,6 +178,11 @@ export type CoverageDiagnostics = {
   uncrawledDiscoveredUrls: string[];
   skippedBecauseMaxPagesCount: number;
   skippedBecauseJsonCoveredCount: number;
+  skippedByPolicyCount: number;
+  skippedBlogCount: number;
+  skippedByPolicyUrls: string[];
+  includeBlog: boolean;
+  crawlPriorityPolicyVersion: string;
   coverageVerified: boolean;
   coverageWarnings: string[];
   coverageHealth?: CoverageHealth;
@@ -280,6 +285,7 @@ export type CrawlOptions = {
   headless?: boolean;
   force?: boolean;
   concurrency?: number;
+  includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
 };
@@ -288,6 +294,7 @@ export type RefreshOptions = {
   maxPages?: number;
   force?: boolean;
   concurrency?: number;
+  includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
 };
