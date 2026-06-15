@@ -1,26 +1,57 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { pushPageDiagnostic, createEmptyExtractionDiagnostics } from '../src/json-extraction/diagnostics.js';
+import { pushPageDiagnostic, createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
-import { extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
+import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
+import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls } from '../src/json-extraction/fetch-json-page.js';
 
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/json-extraction', name), 'utf8'));
 
 describe('JSON-first extraction', () => {
   it('extracts page metadata from page-data JSON', () => {
-    const metadata = extractPageDataMetadata(fixture('page-data-dialogs.json'));
+    const metadata = extractPageDataMetadata(fixture('page-data-componentsm3-document.json'));
     expect(metadata).toEqual({
       title: 'Lists',
       pageCanonId: 'page-canon-lists',
-      pathname: 'components/lists/overview'
+      pathname: '/components/lists/overview'
     });
+  });
+
+  it('builds page-data candidates from DSDB route metadata', () => {
+    expect(deriveCollectionSegmentFromSlug('components/lists/overview')).toBe('ComponentsM3');
+    expect(buildPageDataCandidateUrls('https://m3.material.io', {
+      slug: 'components/lists/overview',
+      documentId: 'a7f6d95d3e6b4f18',
+      collectionName: 'ComponentsM3',
+      collectionId: '20543ce18892f7d9',
+      exportedCarbonFileId: 'page-canon-lists.json'
+    })).toEqual([
+      'https://m3.material.io/page-data/ComponentsM3/a7f6d95d3e6b4f18.json',
+      'https://m3.material.io/page-data/ComponentsM3/page-canon-lists.json',
+      'https://m3.material.io/page-data/20543ce18892f7d9/a7f6d95d3e6b4f18.json',
+      'https://m3.material.io/page-data/20543ce18892f7d9/page-canon-lists.json',
+      'https://m3.material.io/page-data/components/lists/overview/page-data.json'
+    ]);
+  });
+
+  it('builds TOKEN_TABLE and DSDB component resource candidates from real resource names', () => {
+    expect(buildDsdbResourceCandidateUrls(
+      'https://m3.material.io',
+      'cv-123',
+      'designSystems/20543ce18892f7d9/components/6c818a16475113bd',
+      'TOKEN_TABLE'
+    )).toEqual([
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/TOKEN_TABLE.6c818a16475113bd.json',
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/designSystems_20543ce18892f7d9_components_6c818a16475113bd.json',
+      'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/designSystems/20543ce18892f7d9/components/6c818a16475113bd'
+    ]);
   });
 
   it('renders text sections from structured content JSON', async () => {
     const result = await extractContentPageToMaterialPage({
       url: 'https://m3.material.io/components/lists/overview',
-      pageData: fixture('page-data-dialogs.json'),
+      pageData: fixture('page-data-componentsm3-document.json'),
       contentPage: fixture('content-overview.json'),
       fetchResource: async () => null
     });
@@ -64,7 +95,9 @@ describe('JSON-first extraction', () => {
       url: 'https://m3.material.io/components/button/specs',
       pageData: null,
       contentPage: fixture('content-token-table.json'),
-      fetchResource: async (resourceName) => resourceName === 'TOKEN_TABLE.components.button.json' ? fixture('token-table-resource.json') : null
+      fetchResource: async (resourceName, resourceType) => (
+        resourceType === 'TOKEN_TABLE' && resourceName === 'designSystems/20543ce18892f7d9/components/6c818a16475113bd'
+      ) ? fixture('token-table-resource.json') : null
     });
 
     expect(result.fallbackReason).toBeNull();
@@ -72,10 +105,36 @@ describe('JSON-first extraction', () => {
     expect(result.page.markdown).toContain('md.comp.button.container.color');
     expect(result.page.markdown).toContain('md.sys.color.primary');
     expect(result.page.markdown).toContain('md.ref.palette.primary40');
-    expect(result.page.markdown).toContain('| md.comp.button.container.height | Container height | md.sys.shape.corner.full |  |  |  |');
+    expect(result.page.markdown).toContain('| md.comp.button.container.height | Container height | md.sys.shape.corner.full |  | [unresolved] | [unresolved] |');
     expect(result.page.markdown).not.toContain('0dp');
     expect(result.pageDiagnostic.tokenTables).toBe(1);
     expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
+  });
+
+  it('renders missing token sets as explicit notes and records diagnostics', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/lists/overview',
+      pageData: fixture('page-data-componentsm3-document.json'),
+      contentPage: fixture('content-dsdb-real.json'),
+      fetchResource: async (resourceName, resourceType) => (
+        resourceType === 'TOKEN_TABLE' && resourceName === 'designSystems/20543ce18892f7d9/components/6c818a16475113bd'
+      ) ? fixture('token-table-resource.json') : null
+    });
+
+    expect(result.page.markdown).toContain('Requested token sets not found: Missing token set');
+    expect(result.pageDiagnostic.missingRequestedTokenSets).toContain('Missing token set');
+  });
+
+  it('renders STATUS_TABLE resources when the schema is understood', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/status/overview',
+      pageData: null,
+      contentPage: fixture('content-status-table.json'),
+      fetchResource: async (_resourceName, resourceType) => resourceType === 'STATUS_TABLE' ? fixture('status-table-resource.json') : null
+    });
+
+    expect(result.page.markdown).toContain('| State | Description |');
+    expect(result.page.markdown).toContain('| Enabled | Default interactive state |');
   });
 
   it('preserves unknown chunk and resource types as explicit placeholders', async () => {
@@ -122,14 +181,33 @@ describe('JSON-first extraction', () => {
       noHeadings: false,
       markdownLength: 120
     });
+    pushRouteDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/lists/overview',
+      path: 'components/lists/overview.md',
+      finalMethod: 'json',
+      jsonAttempted: true,
+      jsonSucceeded: true,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      unknownChunkTypes: ['CAROUSEL'],
+      unknownResourceTypes: ['EXPERIMENTAL_GRID'],
+      tokenTables: 1,
+      tokenTablesRendered: 1,
+      missingRequestedTokenSets: ['Missing set']
+    });
 
     expect(diagnostics).toMatchObject({
       totalPages: 1,
+      totalRoutes: 1,
       pagesExtractedThroughJson: 1,
+      jsonFallbackRoutes: 0,
       pagesWithUnknownChunkTypes: 1,
       pagesWithUnknownResourceTypes: 1,
+      unknownChunkCount: 1,
+      unknownResourceTypeCount: 1,
       pagesWithTokenTables: 1,
       tokenTablesSuccessfullyRendered: 1,
+      tokenTablesFailedToRender: 0,
       tokenTablesMissingRequestedTokenSets: 1,
       imageCount: 2,
       videoCount: 1,

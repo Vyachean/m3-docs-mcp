@@ -1,21 +1,26 @@
 {
-  "title": "Button specs",
+  "title": "Lists",
   "sections": [
     {
-      "name": "Tokens and specs",
+      "name": "Overview",
       "isVisible": true,
       "contentBlocks": [
         {
-          "title": "Design tokens",
+          "title": "Usage",
           "isHidden": false,
           "contentChunks": [
+            {
+              "contentChunkType": "TEXT",
+              "htmlValue": "<p>Lists present multiple line items in a compact column.</p>"
+            },
             {
               "contentChunkType": "RESOURCE",
               "libraryModuleType": "TOKEN_TABLE",
               "resourceName": "designSystems/20543ce18892f7d9/components/6c818a16475113bd",
               "moduleConfigurationOverrides": {
                 "tokenSets": [
-                  "Button - Common"
+                  "Button - Common",
+                  "Missing token set"
                 ]
               }
             }

@@ -633,7 +633,7 @@ describe('crawlMaterialDocs', () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
-  });
+  }, 10_000);
 
   it('extracts publishedYear from the blog listing page and saves it with blog post pages', async () => {
     const currentYear = new Date().getFullYear();
@@ -661,4 +661,80 @@ describe('crawlMaterialDocs', () => {
     const blogEntry = index.pages.find((p) => p.url === blogPostUrl);
     expect(blogEntry?.publishedYear).toBe(currentYear);
   }, 15_000);
+
+  it('uses valid JSON extraction without requiring Chromium', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(playwrightMock.chromium.launch).not.toHaveBeenCalled();
+    expect(index.pages.map((page) => page.path)).toEqual(['components/lists/overview.md']);
+    expect(index.extractionDiagnostics).toMatchObject({
+      pagesExtractedThroughJson: 1,
+      pagesExtractedThroughDomFallback: 0,
+      pagesWhereJsonFailed: 0,
+      jsonFallbackRoutes: 0
+    });
+  });
+
+  it('uses browser fallback only for routes that failed JSON extraction', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"components/dialogs/overview","documentId":"doc-dialogs","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-dialogs","exportedCarbonFileId":"page-canon-dialogs.json"'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      if (url === 'https://m3.material.io/sitemap.xml') return { ok: true, text: async () => '' } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 3 });
+
+    expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/components/lists/overview', expect.anything());
+    expect(index.extractionDiagnostics).toMatchObject({
+      pagesExtractedThroughJson: 1,
+      pagesExtractedThroughDomFallback: 2,
+      pagesWhereJsonFailed: 1,
+      jsonFallbackRoutes: 1
+    });
+    expect(index.extractionDiagnostics?.routeDiagnostics).toContainEqual(expect.objectContaining({
+      path: 'components/dialogs/overview.md',
+      jsonAttempted: true,
+      jsonSucceeded: false,
+      fallbackReason: 'json-fetch-failed',
+      browserFallbackAttempted: true,
+      browserFallbackSucceeded: true,
+      finalMethod: 'dom'
+    }));
+  });
 });

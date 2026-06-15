@@ -39,15 +39,36 @@ export type ExtractionPageDiagnostic = {
   markdownLength: number;
 };
 
+export type ExtractionRouteDiagnostic = {
+  url: string;
+  path: string;
+  finalMethod: ExtractionMethod | null;
+  jsonAttempted: boolean;
+  jsonSucceeded: boolean;
+  fallbackReason?: ExtractionFallbackReason;
+  browserFallbackAttempted: boolean;
+  browserFallbackSucceeded: boolean;
+  unknownChunkTypes: string[];
+  unknownResourceTypes: string[];
+  tokenTables: number;
+  tokenTablesRendered: number;
+  missingRequestedTokenSets: string[];
+};
+
 export type ExtractionDiagnostics = {
   totalPages: number;
+  totalRoutes: number;
   pagesExtractedThroughJson: number;
   pagesExtractedThroughDomFallback: number;
   pagesWhereJsonFailed: number;
+  jsonFallbackRoutes: number;
   pagesWithUnknownChunkTypes: number;
   pagesWithUnknownResourceTypes: number;
+  unknownChunkCount: number;
+  unknownResourceTypeCount: number;
   pagesWithTokenTables: number;
   tokenTablesSuccessfullyRendered: number;
+  tokenTablesFailedToRender: number;
   tokenTablesMissingRequestedTokenSets: number;
   pagesWithSuspiciouslyShortMarkdown: number;
   pagesWithNoSections: number;
@@ -55,6 +76,7 @@ export type ExtractionDiagnostics = {
   imageCount: number;
   videoCount: number;
   unresolvedResourceCount: number;
+  routeDiagnostics: ExtractionRouteDiagnostic[];
   pageDiagnostics: ExtractionPageDiagnostic[];
 };
 

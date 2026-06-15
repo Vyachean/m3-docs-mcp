@@ -429,7 +429,7 @@ function normalizeUnit(unit: string): string {
 }
 
 function formatUnknownStructuredValue(v: Record<string, unknown>): string {
-  return JSON.stringify(v, Object.keys(v).sort());
+  return stableStringify(v);
 }
 
 function formatValueNode(v: unknown): string {
@@ -476,11 +476,12 @@ function formatValueNode(v: unknown): string {
 
 function formatResolvedValue(rv: ResolvedTokenValue): string {
   if (!rv || rv.undefined === true) return '';
-  return Object.entries(rv)
+  const formatted = Object.entries(rv)
     .filter(([key]) => key !== 'undefined')
     .map(([, value]) => formatValueNode(value))
     .filter(Boolean)
     .join(' ');
+  return formatted || '[unresolved]';
 }
 
 function extractAliasChain(tree: ReferenceNode, selfTokenName: string): string[] {
@@ -525,7 +526,6 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
       const lightHcEntry = findContextEntry(entries, idx, 'light', { audience: '3p', contrast: 'high.contrast' }) ?? findContextEntry(entries, idx, 'light', { contrast: 'high.contrast' });
       const darkHcEntry = findContextEntry(entries, idx, 'dark', { audience: '3p', contrast: 'high.contrast' }) ?? findContextEntry(entries, idx, 'dark', { contrast: 'high.contrast' });
       if (!lightEntry && !darkEntry) continue;
-
       const activeEntry = lightEntry ?? darkEntry;
       const aliases = activeEntry ? extractAliasChain(activeEntry.referenceTree, token.tokenName) : [];
       rows.push([
@@ -533,8 +533,8 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
         token.displayName,
         aliases[0] ?? '',
         aliases[1] ?? '',
-        formatResolvedValue((lightEntry ?? darkEntry)!.resolvedValue),
-        formatResolvedValue((darkEntry ?? lightEntry)!.resolvedValue),
+        lightEntry ? formatResolvedValue(lightEntry.resolvedValue) : '[unresolved]',
+        darkEntry ? formatResolvedValue(darkEntry.resolvedValue) : '[unresolved]',
         lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '',
         darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : ''
       ]);
@@ -547,6 +547,13 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
   }
 
   return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
+}
+
+export function renderStatusTableMarkdown(resource: unknown): string {
+  const headers = readStatusTableHeaders(resource);
+  const rows = readStatusTableRows(resource);
+  if (headers.length === 0 || rows.length === 0) return '';
+  return markdownTable([headers, ...rows]);
 }
 
 export function preferLargeImageUrl(url: string): string {
@@ -725,4 +732,42 @@ function hasAncestorMatching(node: Element, boundary: Element, selector: string)
     parent = parent.parentElement;
   }
   return false;
+}
+
+function readStatusTableHeaders(resource: unknown): string[] {
+  if (!resource || typeof resource !== 'object') return [];
+  const obj = resource as Record<string, unknown>;
+  const directHeaders = Array.isArray(obj.headers) ? obj.headers : Array.isArray(obj.columns) ? obj.columns : null;
+  if (directHeaders) return directHeaders.map((value) => typeof value === 'string' ? value : typeof value === 'object' && value && 'label' in value ? String((value as Record<string, unknown>).label ?? '') : '').filter(Boolean);
+
+  const payload = obj.payload;
+  if (payload && typeof payload === 'object') return readStatusTableHeaders(payload);
+  return [];
+}
+
+function readStatusTableRows(resource: unknown): string[][] {
+  if (!resource || typeof resource !== 'object') return [];
+  const obj = resource as Record<string, unknown>;
+  const rawRows = Array.isArray(obj.rows) ? obj.rows : Array.isArray(obj.statuses) ? obj.statuses : null;
+  if (rawRows) {
+    return rawRows.map((row) => {
+      if (Array.isArray(row)) return row.map((value) => typeof value === 'string' ? value : stableStringify(value));
+      if (row && typeof row === 'object') return Object.values(row as Record<string, unknown>).map((value) => typeof value === 'string' ? value : stableStringify(value));
+      return [String(row ?? '')];
+    }).filter((row) => row.some(Boolean));
+  }
+
+  const payload = obj.payload;
+  if (payload && typeof payload === 'object') return readStatusTableRows(payload);
+  return [];
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+
+  const obj = value as Record<string, unknown>;
+  const entries = Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
+  return `{${entries.join(',')}}`;
 }

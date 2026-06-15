@@ -1,8 +1,8 @@
 import type { ExtractionPageDiagnostic } from '../types.js';
 import { compactJson, getPath, readString, walkObjects } from './schemas.js';
-import { renderResourcePlaceholder, tokenTableToMarkdown, type TokenTableSystem } from './render-markdown.js';
+import { renderResourcePlaceholder, renderStatusTableMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './render-markdown.js';
 
-export type DsdbResourceFetcher = (resourceName: string) => Promise<unknown | null>;
+export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
 
 export function extractRequestedTokenSets(resourceChunk: Record<string, unknown>): string[] {
   const values = [
@@ -52,6 +52,21 @@ export async function renderDsdbResourceChunk(
     ?? readString(resourceChunk.resourceType)
     ?? 'UNKNOWN_RESOURCE';
 
+  if (libraryModuleType === 'STATUS_TABLE') {
+    const resourceName = extractResourceName(resourceChunk);
+    const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
+    const rendered = renderStatusTableMarkdown(resource);
+    if (rendered) return rendered;
+
+    pageDiagnostic.unknownResourceTypes.push(libraryModuleType);
+    pageDiagnostic.unresolvedResourceCount += 1;
+    return renderResourcePlaceholder('STATUS_TABLE', {
+      reason: resource ? 'unknown-status-table-schema' : 'missing-status-table-resource',
+      resource: resourceName,
+      chunk: compactJson(resourceChunk).slice(0, 280)
+    });
+  }
+
   if (libraryModuleType !== 'TOKEN_TABLE') {
     if (libraryModuleType !== 'UNKNOWN_RESOURCE') pageDiagnostic.unknownResourceTypes.push(libraryModuleType);
     pageDiagnostic.unresolvedResourceCount += 1;
@@ -71,7 +86,7 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-resource-name', tokenSets: requestedTokenSets });
   }
 
-  const resource = await fetchResource(resourceName);
+  const resource = await fetchResource(resourceName, libraryModuleType);
   const system = extractTokenTableSystem(resource);
   if (!system) {
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
@@ -80,14 +95,22 @@ export async function renderDsdbResourceChunk(
   }
 
   const rendered = tokenTableToMarkdown(system, requestedTokenSets);
+  const missingRequestedTokenSets = requestedTokenSets.filter((tokenSet) => !matchesRequestedTokenSet(system, tokenSet));
+  if (missingRequestedTokenSets.length > 0) pageDiagnostic.missingRequestedTokenSets.push(...missingRequestedTokenSets);
+  const missingTokenSetNote = missingRequestedTokenSets.length > 0
+    ? `> Requested token sets not found: ${missingRequestedTokenSets.join(', ')}`
+    : '';
   if (!rendered.trim()) {
-    pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
+    if (missingTokenSetNote) {
+      pageDiagnostic.tokenTablesRendered += 1;
+      return missingTokenSetNote;
+    }
     pageDiagnostic.unresolvedResourceCount += 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-requested-token-sets', resource: resourceName, tokenSets: requestedTokenSets });
   }
 
   pageDiagnostic.tokenTablesRendered += 1;
-  return rendered.replace(/^\n*## Design Tokens\n\n/, '');
+  return `${rendered.replace(/^\n*## Design Tokens\n\n/, '')}${missingTokenSetNote ? `\n\n${missingTokenSetNote}` : ''}`;
 }
 
 function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
@@ -96,4 +119,8 @@ function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
   const nested = getPath(resource, 'payload', 'system');
   if (nested && typeof nested === 'object') return nested as TokenTableSystem;
   return null;
+}
+
+function matchesRequestedTokenSet(system: TokenTableSystem, requestedTokenSet: string): boolean {
+  return system.tokenSets.some((tokenSet) => tokenSet.displayName === requestedTokenSet || tokenSet.tokenSetName === requestedTokenSet);
 }

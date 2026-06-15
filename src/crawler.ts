@@ -7,11 +7,11 @@ import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
-import { createEmptyExtractionDiagnostics, pushPageDiagnostic } from './json-extraction/diagnostics.js';
+import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -50,6 +50,8 @@ type DsdbRoute = {
   documentId: string;
   collectionId: string;
   exportedCarbonFileId: string;
+  collectionName?: string;
+  pageCanonId?: string;
 };
 
 type DsdbSiteConfig = {
@@ -575,11 +577,19 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
     if (!cvMatch?.[1]) throw new Error('carbonVersion not found in Angular bundle');
     const carbonVersion = cvMatch[1];
 
-    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)","exportedCarbonFileId":"([a-f0-9-]+\.json)"/g;
+    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)"([^]*?)"exportedCarbonFileId":"([^"]+\.json)"/g;
     const routes: DsdbRoute[] = [];
     let m;
     while ((m = routePattern.exec(mainJs)) !== null) {
-      routes.push({ slug: m[1], documentId: m[2], collectionId: m[3], exportedCarbonFileId: m[4] });
+      const extraFields = m[4] ?? '';
+      routes.push({
+        slug: m[1],
+        documentId: m[2],
+        collectionId: m[3],
+        exportedCarbonFileId: m[5],
+        collectionName: extraFields.match(/"collectionName":"([^"]+)"/)?.[1],
+        pageCanonId: extraFields.match(/"pageCanon(?:ical)?Id":"([^"]+)"/)?.[1]
+      });
     }
 
     if (routes.length === 0) throw new Error('No DSDB routes found in Angular bundle');
@@ -640,10 +650,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const failedUrls: string[] = [];
   const suspiciousPages: SuspiciousCrawlPage[] = [];
   const jsonFallbackRoutes = new Map<string, ExtractionFallbackReason>();
+  const routeDiagnosticsByPath = new Map<string, ExtractionRouteDiagnostic>();
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
   let dsdbAttemptedCount = 0;
+  const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
     const completedAt = running ? null : new Date().toISOString();
@@ -666,6 +678,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     };
     options.onProgress?.(progress);
   };
+
+  const recordRouteDiagnostic = (diagnostic: ExtractionRouteDiagnostic): void => {
+    routeDiagnosticsByPath.set(diagnostic.path, diagnostic);
+  };
+
+  const routePathFromSlug = (slug: string): string => materialPagePath(new URL(`/${slug}`, baseUrl).toString());
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
   const jsonExtractedSlugs = new Set<string>();
@@ -693,10 +711,30 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             throwIfAborted(signal);
             const bundle = await fetchJsonPageBundle(baseUrl, dsdbConfig!.carbonVersion, {
               slug: route.slug,
-              documentId: route.documentId
+              documentId: route.documentId,
+              collectionId: route.collectionId,
+              collectionName: route.collectionName,
+              exportedCarbonFileId: route.exportedCarbonFileId,
+              pageCanonId: route.pageCanonId
             }, signal);
+            const routePath = routePathFromSlug(route.slug);
             if (!bundle.pageData && !bundle.contentPage) {
               jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+              recordRouteDiagnostic({
+                url: new URL(`/${route.slug}`, baseUrl).toString(),
+                path: routePath,
+                finalMethod: null,
+                jsonAttempted: true,
+                jsonSucceeded: false,
+                fallbackReason: 'json-fetch-failed',
+                browserFallbackAttempted: false,
+                browserFallbackSucceeded: false,
+                unknownChunkTypes: [],
+                unknownResourceTypes: [],
+                tokenTables: 0,
+                tokenTablesRendered: 0,
+                missingRequestedTokenSets: []
+              });
               return;
             }
             const extraction = await extractContentPageToMaterialPage({
@@ -708,12 +746,41 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             });
             if (extraction.fallbackReason) {
               jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
+              recordRouteDiagnostic({
+                url: extraction.page.url,
+                path: extraction.page.path,
+                finalMethod: null,
+                jsonAttempted: true,
+                jsonSucceeded: false,
+                fallbackReason: extraction.fallbackReason,
+                browserFallbackAttempted: false,
+                browserFallbackSucceeded: false,
+                unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+                unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+                tokenTables: extraction.pageDiagnostic.tokenTables,
+                tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
+              });
               return;
             }
             const materialPage = extraction.page;
             if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
               pages.push(materialPage);
               pushPageDiagnostic(extractionDiagnostics, extraction.pageDiagnostic);
+              recordRouteDiagnostic({
+                url: materialPage.url,
+                path: materialPage.path,
+                finalMethod: 'json',
+                jsonAttempted: true,
+                jsonSucceeded: true,
+                browserFallbackAttempted: false,
+                browserFallbackSucceeded: false,
+                unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+                unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+                tokenTables: extraction.pageDiagnostic.tokenTables,
+                tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
+              });
               writtenPaths.add(materialPage.path);
               jsonExtractedSlugs.add(route.slug);
               lastSavedUrl = materialPage.url;
@@ -723,6 +790,21 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           } catch (err) {
             if (signal?.aborted) return;
             jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+            recordRouteDiagnostic({
+              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              path: routePathFromSlug(route.slug),
+              finalMethod: null,
+              jsonAttempted: true,
+              jsonSucceeded: false,
+              fallbackReason: 'json-fetch-failed',
+              browserFallbackAttempted: false,
+              browserFallbackSucceeded: false,
+              unknownChunkTypes: [],
+              unknownResourceTypes: [],
+              tokenTables: 0,
+              tokenTablesRendered: 0,
+              missingRequestedTokenSets: []
+            });
             console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }));
@@ -731,8 +813,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   }
 
-  // ── Phase 2: Browser crawl for non-DSDB pages (blog posts, landing pages) ──
-  if (pages.length < maxPages && !signal?.aborted) {
+  // ── Phase 2: Browser crawl for JSON misses and uncovered routes ───────────
+  const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
+  if (pages.length < maxPages && !signal?.aborted && !jsonExtractionSatisfiedMinimum) {
     const browser = await launchChromium(options.headless ?? true);
     browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
 
@@ -763,6 +846,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   }
 
   const capturedAt = new Date().toISOString();
+  for (const diagnostic of routeDiagnosticsByPath.values()) pushRouteDiagnostic(extractionDiagnostics, diagnostic);
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
   const index: MaterialIndex = {
     source: baseUrl,
@@ -839,11 +923,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
             const materialPage: MaterialPage = { ...cached, text, markdown };
             pages.push(materialPage);
+            const fallbackReason = jsonFallbackRoutes.get(materialPage.path.replace(/\/overview\.md$/, '').replace(/\.md$/, ''));
             pushPageDiagnostic(extractionDiagnostics, {
               url: materialPage.url,
               path: materialPage.path,
               method: 'dom',
-              fallbackReason: jsonFallbackRoutes.get(materialPage.path.replace(/\/overview\.md$/, '').replace(/\.md$/, '')),
+              ...(fallbackReason ? { fallbackReason } : {}),
               unknownChunkTypes: [],
               unknownResourceTypes: [],
               tokenTables: 0,
@@ -856,6 +941,23 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               noSections: false,
               noHeadings: materialPage.headings.length === 0,
               markdownLength: materialPage.markdown.length
+            });
+            recordRouteDiagnostic({
+              ...(routeDiagnosticsByPath.get(materialPage.path) ?? {
+                url: materialPage.url,
+                path: materialPage.path,
+                jsonAttempted: Boolean(fallbackReason),
+                jsonSucceeded: false,
+                unknownChunkTypes: [],
+                unknownResourceTypes: [],
+                tokenTables: 0,
+                tokenTablesRendered: 0,
+                missingRequestedTokenSets: []
+              }),
+              finalMethod: 'dom',
+              ...(fallbackReason ? { fallbackReason } : {}),
+              browserFallbackAttempted: false,
+              browserFallbackSucceeded: false
             });
             writtenPaths.add(materialPage.path);
             lastSavedUrl = url;
@@ -906,11 +1008,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
       const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
       pages.push(pageToSave);
+      const fallbackReason = jsonFallbackRoutes.get(pageToSave.path.replace(/\/overview\.md$/, '').replace(/\.md$/, ''));
       pushPageDiagnostic(extractionDiagnostics, {
         url: pageToSave.url,
         path: pageToSave.path,
         method: 'dom',
-        ...(jsonFallbackRoutes.get(pageToSave.path.replace(/\/overview\.md$/, '').replace(/\.md$/, '')) ? { fallbackReason: jsonFallbackRoutes.get(pageToSave.path.replace(/\/overview\.md$/, '').replace(/\.md$/, '')) } : {}),
+        ...(fallbackReason ? { fallbackReason } : {}),
         unknownChunkTypes: [],
         unknownResourceTypes: [],
         tokenTables: 0,
@@ -923,6 +1026,23 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         noSections: false,
         noHeadings: pageToSave.headings.length === 0,
         markdownLength: pageToSave.markdown.length
+      });
+      recordRouteDiagnostic({
+        ...(routeDiagnosticsByPath.get(pageToSave.path) ?? {
+          url: pageToSave.url,
+          path: pageToSave.path,
+          jsonAttempted: Boolean(fallbackReason),
+          jsonSucceeded: false,
+          unknownChunkTypes: [],
+          unknownResourceTypes: [],
+          tokenTables: 0,
+          tokenTablesRendered: 0,
+          missingRequestedTokenSets: []
+        }),
+        finalMethod: 'dom',
+        ...(fallbackReason ? { fallbackReason } : {}),
+        browserFallbackAttempted: true,
+        browserFallbackSucceeded: true
       });
       lastSavedUrl = finalUrl;
       writtenPaths.add(pageToSave.path);
