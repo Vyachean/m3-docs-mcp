@@ -671,14 +671,14 @@ describe('JSON-first extraction', () => {
       contextualReferenceTrees: {
         'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
           ]
         },
         'designSystems/ds1/tokenSets/ts2/tokens/tok2': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.shape', childNodes: [] }, resolvedValue: { shape: { family: 'ROUNDED' } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.shape', childNodes: [] }, resolvedValue: { shape: { family: 'ROUNDED' } } }
           ]
         }
       }
@@ -714,8 +714,8 @@ describe('JSON-first extraction', () => {
       contextualReferenceTrees: {
         'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
           ]
         }
       }
@@ -953,7 +953,7 @@ describe('No-raw-TypeError guard: malformed external JSON must not crash extract
     { label: 'system is a string', payload: { system: 'unexpected' } },
     { label: 'tokens is null', payload: { system: { tokens: null, tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }] } } },
     { label: 'tokenSets is null', payload: { system: { tokens: [], tokenSets: null } } },
-    { label: 'contextTags missing on entry', payload: { system: { tokens: [{ name: 'ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }], tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }], contextualReferenceTrees: { 'ts/tok': { contextualReferenceTree: [{ referenceTree: { tokenName: 'md.tok' }, resolvedValue: { color: { red: 0.5, green: 0.5, blue: 0.5 } } }] } } } } },
+    { label: 'contextTags missing on entry', payload: { system: { tokens: [{ name: 'ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }], tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }], contextualReferenceTrees: { 'ts/tok': { contextualReferenceTree: [{ referenceTree: { tokenName: 'md.tok', childNodes: [] }, resolvedValue: { color: { red: 0.5, green: 0.5, blue: 0.5 } } }] } } } } },
     { label: 'contextualReferenceTree is not an array', payload: { system: { tokens: [{ name: 'ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }], tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }], contextualReferenceTrees: { 'ts/tok': { contextualReferenceTree: null } } } } }
   ];
 

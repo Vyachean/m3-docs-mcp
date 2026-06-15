@@ -694,6 +694,293 @@ describe('normalizeTokenSetItem – empty and missing names', () => {
   });
 });
 
+// ─── parseTokenTableSystem – zod boundary smoke tests ────────────────────────
+
+import { parseTokenTableSystem, parseStatusTable, parseContentPage } from '../src/json-extraction/schemas.js';
+
+describe('parseTokenTableSystem – zod boundary', () => {
+  it('returns null for null/undefined', () => {
+    expect(parseTokenTableSystem(null)).toBeNull();
+    expect(parseTokenTableSystem(undefined)).toBeNull();
+  });
+
+  it('returns null for primitives', () => {
+    expect(parseTokenTableSystem(42)).toBeNull();
+    expect(parseTokenTableSystem('string')).toBeNull();
+    expect(parseTokenTableSystem(true)).toBeNull();
+  });
+
+  it('returns null for arrays', () => {
+    expect(parseTokenTableSystem([])).toBeNull();
+  });
+
+  it('returns null when both tokens and tokenSets are empty after normalization', () => {
+    expect(parseTokenTableSystem({ tokens: [], tokenSets: [] })).toBeNull();
+    expect(parseTokenTableSystem({ tokens: null, tokenSets: null })).toBeNull();
+  });
+
+  it('rejects token set with null name', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: null, displayName: 'Null Name', tokenSetName: 'md.null' }]
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('rejects token set with empty-string name', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: '', displayName: 'Empty', tokenSetName: 'md.empty' }]
+    });
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('rejects token set with whitespace-only name', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: '   ', displayName: 'WS', tokenSetName: 'md.ws' }]
+    });
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('rejects token entry with null name – avoids undefined.startsWith crash', () => {
+    const result = parseTokenTableSystem({
+      tokens: [
+        { name: null, tokenName: 'md.a', displayName: 'A', tokenValueType: 'COLOR', state: 'ACTIVE' },
+        { name: 'ds/tok', tokenName: 'md.b', displayName: 'B', tokenValueType: 'COLOR', state: 'ACTIVE' }
+      ],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }]
+    });
+    expect(result!.tokens).toHaveLength(1);
+    expect(result!.tokens[0]!.name).toBe('ds/tok');
+  });
+
+  it('normalizes malformed tokens field (non-array) to empty array', () => {
+    const result = parseTokenTableSystem({
+      tokens: 'bad',
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }]
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tokens).toEqual([]);
+  });
+
+  it('normalizes malformed tokenSets field (non-array) to empty array', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: 42
+    });
+    expect(result!.tokenSets).toEqual([]);
+  });
+
+  it('normalizes malformed contextualReferenceTrees (non-object) to empty object', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+      contextualReferenceTrees: 'invalid'
+    });
+    expect(result!.contextualReferenceTrees).toEqual({});
+  });
+
+  it('normalizes malformed contextual tree node children to empty array', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+      contextualReferenceTrees: {
+        'ds/tok': {
+          contextualReferenceTree: [
+            { contextTags: [], referenceTree: { tokenName: 'md.tok', childNodes: 'bad' }, resolvedValue: {} }
+          ]
+        }
+      }
+    });
+    const refTree = result!.contextualReferenceTrees['ds/tok']!.contextualReferenceTree[0]!.referenceTree;
+    expect(refTree.childNodes).toEqual([]);
+  });
+
+  it('does not expose undefined.slice class failure from referenceTree traversal', () => {
+    const result = parseTokenTableSystem({
+      tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+      contextualReferenceTrees: {
+        'ds/ts/tok': {
+          contextualReferenceTree: [
+            {
+              contextTags: [],
+              referenceTree: null,  // would cause undefined.slice without normalization
+              resolvedValue: {}
+            }
+          ]
+        }
+      }
+    });
+    expect(result).not.toBeNull();
+    expect(() => {
+      const tree = result!.contextualReferenceTrees['ds/ts/tok']!;
+      const entry = tree.contextualReferenceTree[0]!;
+      // This must not throw – childNodes must always be an array
+      void entry.referenceTree.childNodes.slice();
+    }).not.toThrow();
+  });
+});
+
+// ─── parseStatusTable – zod boundary ─────────────────────────────────────────
+
+describe('parseStatusTable – zod boundary', () => {
+  it('returns null for null/non-object', () => {
+    expect(parseStatusTable(null)).toBeNull();
+    expect(parseStatusTable(42)).toBeNull();
+    expect(parseStatusTable('string')).toBeNull();
+  });
+
+  it('returns null when headers and rows are missing', () => {
+    expect(parseStatusTable({ other: true })).toBeNull();
+  });
+
+  it('returns null when rows are empty', () => {
+    expect(parseStatusTable({ headers: ['A', 'B'], rows: [] })).toBeNull();
+  });
+
+  it('returns null when headers are empty', () => {
+    expect(parseStatusTable({ headers: [], rows: [['a', 'b']] })).toBeNull();
+  });
+
+  it('returns decoded status table for valid shape', () => {
+    const decoded = parseStatusTable({ headers: ['Status', 'Notes'], rows: [['Active', 'OK']] });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.headers).toEqual(['Status', 'Notes']);
+    expect(decoded!.rows).toEqual([['Active', 'OK']]);
+  });
+
+  it('reads headers from payload when missing at top level', () => {
+    const decoded = parseStatusTable({
+      payload: { headers: ['A', 'B'], rows: [['x', 'y']] }
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.headers).toEqual(['A', 'B']);
+  });
+
+  it('handles rows with non-string values without throwing', () => {
+    const decoded = parseStatusTable({
+      headers: ['A', 'B'],
+      rows: [[null, undefined], [{ obj: true }, [1, 2]]]
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.rows.length).toBeGreaterThan(0);
+  });
+
+  it('inferred type has headers: string[] and rows: string[][]', () => {
+    const decoded = parseStatusTable({ headers: ['H'], rows: [['v']] });
+    // TypeScript compile-time check: access typed fields without assertion
+    if (decoded) {
+      const h: string[] = decoded.headers;
+      const r: string[][] = decoded.rows;
+      expect(h).toBeDefined();
+      expect(r).toBeDefined();
+    }
+  });
+});
+
+// ─── parseContentPage – zod boundary ─────────────────────────────────────────
+
+describe('parseContentPage – zod boundary', () => {
+  it('returns empty sections for null input', () => {
+    const result = parseContentPage(null);
+    expect(result.sections).toEqual([]);
+    expect(result.title).toBeNull();
+  });
+
+  it('parses title from top-level title field', () => {
+    const result = parseContentPage({ title: 'My Page', sections: [] });
+    expect(result.title).toBe('My Page');
+  });
+
+  it('parses sections with contentBlocks and contentChunks', () => {
+    const result = parseContentPage({
+      title: 'Test',
+      sections: [{
+        name: 'Section 1',
+        contentBlocks: [{
+          contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Hello</p>' }]
+        }]
+      }]
+    });
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0]!.title).toBe('Section 1');
+    expect(result.sections[0]!.blocks[0]!.chunks[0]!.contentChunkType).toBe('TEXT');
+    expect(result.sections[0]!.blocks[0]!.chunks[0]!.htmlValue).toBe('<p>Hello</p>');
+  });
+
+  it('drops hidden blocks', () => {
+    const result = parseContentPage({
+      title: 'Test',
+      sections: [{
+        name: 'S',
+        contentBlocks: [
+          { isHidden: true, contentChunks: [{ contentChunkType: 'TEXT', htmlValue: 'hidden' }] },
+          { contentChunks: [{ contentChunkType: 'TEXT', htmlValue: 'visible' }] }
+        ]
+      }]
+    });
+    expect(result.sections[0]!.blocks).toHaveLength(1);
+    expect(result.sections[0]!.blocks[0]!.chunks[0]!.htmlValue).toBe('visible');
+  });
+
+  it('drops invisible sections', () => {
+    const result = parseContentPage({
+      sections: [
+        { name: 'Invisible', isVisible: false, contentBlocks: [] },
+        { name: 'Visible', contentBlocks: [] }
+      ]
+    });
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0]!.title).toBe('Visible');
+  });
+
+  it('returns empty sections for malformed sections field', () => {
+    const result = parseContentPage({ title: 'T', sections: 'not-an-array' });
+    expect(result.sections).toEqual([]);
+  });
+
+  it('handles malformed content chunk without throwing', () => {
+    const result = parseContentPage({
+      title: 'T',
+      sections: [{
+        name: 'S',
+        contentBlocks: [{
+          contentChunks: [null, undefined, 42, { contentChunkType: 'TEXT', htmlValue: 'ok' }]
+        }]
+      }]
+    });
+    // Only valid chunks make it through; null/undefined/42 are dropped
+    const chunks = result.sections[0]!.blocks[0]!.chunks;
+    expect(chunks.some((c) => c.contentChunkType === 'TEXT')).toBe(true);
+  });
+
+  it('decoded chunk fields have correct optional types (no raw external casts needed)', () => {
+    const result = parseContentPage({
+      title: 'T',
+      sections: [{
+        name: 'S',
+        contentBlocks: [{
+          contentChunks: [{
+            contentChunkType: 'IMAGE',
+            imageUrl: 'https://example.com/img.png',
+            altText: 'An image',
+            footer: 'Caption'
+          }]
+        }]
+      }]
+    });
+    const chunk = result.sections[0]!.blocks[0]!.chunks[0]!;
+    // TypeScript: these are typed as string | undefined, not unknown
+    const url: string | undefined = chunk.imageUrl;
+    const alt: string | undefined = chunk.altText;
+    expect(url).toBe('https://example.com/img.png');
+    expect(alt).toBe('An image');
+  });
+});
+
 // ─── Content page extraction with malformed resources ─────────────────────────
 
 describe('extractContentPageToMaterialPage – malformed token/status resources', () => {

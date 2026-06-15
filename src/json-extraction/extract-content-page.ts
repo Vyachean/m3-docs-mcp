@@ -1,21 +1,17 @@
 import type { ExtractionFallbackReason, ExtractionPageDiagnostic, MaterialPage } from '../types.js';
 import { renderDsdbResourceChunk, type DsdbResourceFetcher } from './extract-dsdb-resource.js';
 import { extractPageDataMetadata } from './extract-page-data.js';
-import { asArray, asObject, compactJson, firstArray, firstString, getPath, readBoolean, readString, walkObjects } from './schemas.js';
-import { createMaterialPageFromBody, renderHtmlToMarkdown, renderImageMarkdown, renderVideoMarkdown } from './render-markdown.js';
+import { compactJson, parseContentPage, type DecodedContentChunk } from './schemas.js';
+import {
+  createMaterialPageFromBody,
+  renderHtmlToMarkdown,
+  renderImageMarkdown,
+  renderVideoMarkdown,
+  renderResourcePlaceholder
+} from './render-markdown.js';
 
 const MIN_REASONABLE_MARKDOWN_LENGTH = 80;
 const MIN_ACCEPTABLE_QUALITY_SCORE = 4;
-
-type ParsedSection = {
-  title: string;
-  blocks: ParsedBlock[];
-};
-
-type ParsedBlock = {
-  title: string | null;
-  chunks: Record<string, unknown>[];
-};
 
 export type JsonExtractionResult = {
   page: MaterialPage;
@@ -36,11 +32,14 @@ export async function extractContentPageToMaterialPage({
   capturedAt?: string;
   fetchResource: DsdbResourceFetcher;
 }): Promise<JsonExtractionResult> {
+  const decoded = parseContentPage(contentPage);
   const pageDataMeta = extractPageDataMetadata(pageData);
-  const discoveredTitle = pageDataMeta.title ?? firstString(contentPage, [['title'], ['name']]);
+  const discoveredTitle = pageDataMeta.title ?? decoded.title;
   const title = discoveredTitle ?? 'Material 3 page';
-  const sections = extractSections(contentPage);
-  const headings = [discoveredTitle, ...sections.map((section) => section.title).filter(Boolean)].filter((value): value is string => Boolean(value));
+  const sections = decoded.sections;
+  const headings = [discoveredTitle, ...sections.map((s) => s.title).filter(Boolean)].filter(
+    (v): v is string => Boolean(v)
+  );
   const routeTitlePathMismatch = hasRouteTitlePathMismatch(url, title);
   const pageDiagnostic: ExtractionPageDiagnostic = {
     url,
@@ -84,8 +83,18 @@ export async function extractContentPageToMaterialPage({
   }
 
   if (sections.length === 0) {
-    const fallbackText = firstString(contentPage, [['htmlValue'], ['body'], ['description']]);
-    if (fallbackText) bodyParts.push(fallbackText);
+    const fallbackText =
+      (typeof (contentPage as Record<string, unknown> | null)?.['htmlValue'] === 'string'
+        ? (contentPage as Record<string, unknown>)['htmlValue']
+        : null) ??
+      (typeof (contentPage as Record<string, unknown> | null)?.['body'] === 'string'
+        ? (contentPage as Record<string, unknown>)['body']
+        : null) ??
+      (typeof (contentPage as Record<string, unknown> | null)?.['description'] === 'string'
+        ? (contentPage as Record<string, unknown>)['description']
+        : null) ??
+      null;
+    if (typeof fallbackText === 'string') bodyParts.push(fallbackText);
   }
 
   const page = createMaterialPageFromBody({
@@ -146,98 +155,58 @@ function hasRouteTitlePathMismatch(url: string, title: string): boolean {
   return expectedWords.some((word) => !normalizedTitle.includes(word));
 }
 
-function extractSections(contentPage: unknown): ParsedSection[] {
-  const sections = firstArray(contentPage, [
-    ['sections'],
-    ['content', 'sections'],
-    ['page', 'sections'],
-    ['data', 'sections']
-  ]);
-  if (sections.length > 0) return sections.map(parseSection).filter((section): section is ParsedSection => Boolean(section));
-
-  const discovered: ParsedSection[] = [];
-  walkObjects(contentPage, (value) => {
-    if (discovered.length > 0) return;
-    const maybeSections = Object.values(value).find((entry) => Array.isArray(entry) && entry.some((item) => isSectionLike(item)));
-    if (Array.isArray(maybeSections)) {
-      discovered.push(...maybeSections.map(parseSection).filter((section): section is ParsedSection => Boolean(section)));
-    }
-  });
-  return discovered;
-}
-
-function isSectionLike(value: unknown): boolean {
-  const obj = asObject(value);
-  if (!obj) return false;
-  return Array.isArray(obj.contentBlocks) || Array.isArray(obj.blocks) || Array.isArray(obj.contentChunks) || Array.isArray(obj.chunks);
-}
-
-function parseSection(rawSection: unknown): ParsedSection | null {
-  const section = asObject(rawSection);
-  if (!section) return null;
-  if (readBoolean(section.isVisible) === false || readBoolean(section.visible) === false) return null;
-  const blocks = firstArray(section, [['contentBlocks'], ['blocks'], ['content'], ['items']])
-    .map(parseBlock)
-    .filter((block): block is ParsedBlock => Boolean(block));
-  return {
-    title: readString(section.name) ?? readString(section.title) ?? readString(section.heading) ?? 'Section',
-    blocks
-  };
-}
-
-function parseBlock(rawBlock: unknown): ParsedBlock | null {
-  const block = asObject(rawBlock);
-  if (!block) return null;
-  if (readBoolean(block.isHidden) === true || readBoolean(block.hidden) === true) return null;
-  const chunks = firstArray(block, [['contentChunks'], ['chunks'], ['content'], ['items']])
-    .map(asObject)
-    .filter((chunk): chunk is Record<string, unknown> => Boolean(chunk));
-  return {
-    title: readString(block.title) ?? readString(block.name) ?? readString(block.heading),
-    chunks
-  };
-}
-
 async function renderChunkMarkdown(
-  chunk: Record<string, unknown>,
+  chunk: DecodedContentChunk,
   fetchResource: DsdbResourceFetcher,
   pageDiagnostic: ExtractionPageDiagnostic
 ): Promise<string> {
-  const chunkType = readString(chunk.contentChunkType)
-    ?? readString(chunk.type)
-    ?? readString(chunk.kind)
+  const chunkType = chunk.contentChunkType
+    ?? chunk.type
+    ?? chunk.kind
     ?? inferChunkType(chunk);
 
   if (chunkType === 'TEXT') {
-    const htmlValue = readString(chunk.htmlValue)
-      ?? readString(chunk.html)
-      ?? readString(chunk.value)
-      ?? readString(chunk.body)
-      ?? '';
+    const htmlValue = chunk.htmlValue ?? chunk.html ?? chunk.value ?? chunk.body ?? '';
     return renderHtmlToMarkdown(htmlValue);
   }
 
   if (chunkType === 'IMAGE') {
     pageDiagnostic.imageCount += 1;
     return renderImageMarkdown(
-      readString(chunk.imageUrl) ?? readString(chunk.url) ?? readString(chunk.src),
-      readString(chunk.altText) ?? readString(chunk.alt) ?? readString(chunk.title),
-      readString(chunk.footer) ?? readString(chunk.caption) ?? readString(chunk.captionText)
+      chunk.imageUrl ?? chunk.url ?? chunk.src ?? null,
+      chunk.altText ?? chunk.alt ?? chunk.title ?? null,
+      chunk.footer ?? chunk.caption ?? chunk.captionText ?? null
     );
   }
 
   if (chunkType === 'VIDEO') {
     pageDiagnostic.videoCount += 1;
     return renderVideoMarkdown({
-      url: readString(chunk.url) ?? readString(chunk.videoUrl) ?? readString(chunk.embedUrl),
-      title: readString(chunk.title),
-      altText: readString(chunk.altText) ?? readString(chunk.alt),
-      footer: readString(chunk.footer) ?? readString(chunk.caption) ?? readString(chunk.description)
+      url: chunk.url ?? chunk.videoUrl ?? chunk.embedUrl ?? null,
+      title: chunk.title ?? null,
+      altText: chunk.altText ?? chunk.alt ?? null,
+      footer: chunk.footer ?? chunk.caption ?? chunk.description ?? null
     });
   }
 
   if (chunkType === 'RESOURCE') {
-    return renderDsdbResourceChunk(chunk, fetchResource, pageDiagnostic);
+    // Build resource chunk from decoded content chunk fields
+    const resourceChunk: Record<string, unknown> = {
+      libraryModuleType: chunk.libraryModuleType,
+      moduleType: chunk.moduleType,
+      resourceType: chunk.resourceType,
+      resourceName: chunk.resourceName,
+      resourcePath: chunk.resourcePath,
+      resourceUrl: chunk.resourceUrl,
+      moduleConfigurationOverrides: chunk.moduleConfigurationOverrides,
+      moduleConfiguration: chunk.moduleConfiguration,
+      tokenSets: chunk.tokenSets,
+    };
+    // Include any passthrough fields from the chunk
+    for (const [key, value] of Object.entries(chunk)) {
+      if (!(key in resourceChunk)) resourceChunk[key] = value;
+    }
+    return renderDsdbResourceChunk(resourceChunk, fetchResource, pageDiagnostic);
   }
 
   pageDiagnostic.unknownChunkTypes.push(chunkType);
@@ -248,15 +217,15 @@ async function renderChunkMarkdown(
   ].join('\n');
 }
 
-function inferChunkType(chunk: Record<string, unknown>): string {
-  if (typeof chunk.htmlValue === 'string' || typeof chunk.html === 'string') return 'TEXT';
-  if (typeof chunk.imageUrl === 'string' || typeof chunk.src === 'string') return 'IMAGE';
-  if (typeof chunk.videoUrl === 'string' || typeof chunk.embedUrl === 'string') return 'VIDEO';
-  if (chunk.libraryModuleType || chunk.resourceName || chunk.resourcePath) return 'RESOURCE';
+function inferChunkType(chunk: DecodedContentChunk): string {
+  if (chunk.htmlValue !== undefined || chunk.html !== undefined) return 'TEXT';
+  if (chunk.imageUrl !== undefined || chunk.src !== undefined) return 'IMAGE';
+  if (chunk.videoUrl !== undefined || chunk.embedUrl !== undefined) return 'VIDEO';
+  if (chunk.libraryModuleType ?? chunk.resourceName ?? chunk.resourcePath) return 'RESOURCE';
   return 'UNKNOWN_CHUNK';
 }
 
-function summarizeUnknownChunk(chunk: Record<string, unknown>): Record<string, unknown> {
+function summarizeUnknownChunk(chunk: DecodedContentChunk): Record<string, unknown> {
   return {
     contentChunkType: chunk.contentChunkType,
     type: chunk.type,

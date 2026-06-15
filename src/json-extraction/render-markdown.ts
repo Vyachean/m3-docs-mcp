@@ -1,7 +1,19 @@
 import TurndownService from 'turndown';
 import { materialPageId, materialPagePath, sectionFromPagePath } from '../crawler-utils.js';
 import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
-import { asArray, asObject, readString } from './schemas.js';
+import type { DecodedContentSection } from './schemas.js';
+import {
+  compactJson,
+  parseStatusTable,
+  parseTokenTableSystem,
+  type DecodedContextTreeEntry,
+  type DecodedReferenceNode,
+  type DecodedStatusTable,
+  type DecodedTokenTableSystem,
+} from './schemas.js';
+
+// Re-export for consumers that previously imported from here
+export type { DecodedTokenTableSystem as TokenTableSystem };
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -48,44 +60,6 @@ const TOKEN_VIEWER_CELL_SELECTORS = [
   '[class*="token"]'
 ].join(',');
 
-export type TokenTableSystem = {
-  tokens: Array<{ name: string; tokenName: string; displayName: string; tokenValueType: string; state: string }>;
-  tokenSets: Array<{ name: string; displayName: string; tokenSetName: string }>;
-  tags: Array<{ name: string; displayName: string; tagName: string }>;
-  contextTagGroups: Array<{ name: string; displayName: string; defaultTag: string }>;
-  contextualReferenceTrees: Record<string, { contextualReferenceTree: ContextTreeEntry[] } | undefined>;
-};
-
-type ContextTreeEntry = {
-  contextTags: string[];
-  referenceTree: ReferenceNode;
-  resolvedValue: ResolvedTokenValue;
-};
-
-type ReferenceNode = {
-  tokenName: string;
-  childNodes?: ReferenceNode[];
-};
-
-type ResolvedTokenValue = {
-  color?: { red: number; green: number; blue: number; alpha?: number };
-  dimension?: { value?: number; unit?: string };
-  length?: { value?: number; unit?: string };
-  measurement?: { value?: number; unit?: string };
-  shape?: { family?: string; defaultSize?: { value?: number; unit?: string }; corners?: Array<{ value?: number; unit?: string }> };
-  fontSize?: { value?: number; unit?: string };
-  lineHeight?: { value?: number; unit?: string };
-  fontTracking?: { value?: number; unit?: string };
-  fontNames?: { values?: string[] };
-  elevation?: { value?: number; unit?: string };
-  type?: { fontNames?: { values?: string[] }; fontWeight?: number; fontSize?: { value?: number; unit?: string }; lineHeight?: { value?: number; unit?: string } };
-  opacity?: number;
-  fontWeight?: number;
-  number?: number;
-  undefined?: boolean;
-  [key: string]: unknown;
-};
-
 type TagIndex = {
   idByTagName: Map<string, string>;
 };
@@ -95,7 +69,7 @@ export function extractMaterialPageFromHtml(
   url: string,
   capturedAt = new Date().toISOString(),
   metadata?: Partial<Pick<MaterialPage, 'title' | 'headings'>>,
-  tokenSystem?: TokenTableSystem
+  tokenSystem?: DecodedTokenTableSystem
 ): MaterialPage {
   const relPath = materialPagePath(url);
   const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
@@ -135,7 +109,7 @@ export function createMaterialPageFromBody({
   };
 }
 
-export function renderHtmlToMarkdown(html: string, tokenSystem?: TokenTableSystem): string {
+export function renderHtmlToMarkdown(html: string, tokenSystem?: DecodedTokenTableSystem): string {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   addMaterialMarkdownRules(turndown, tokenSystem);
   const rawBody = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
@@ -175,7 +149,7 @@ export function renderResourcePlaceholder(label: string, details: Record<string,
   ].join('\n');
 }
 
-function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem): string[] {
+function resolveDisplayTokenSets(viewer: Element, tokenSystem: DecodedTokenTableSystem): string[] {
   const setsAttr = viewer.getAttribute('display-token-sets');
   if (setsAttr) {
     try {
@@ -205,7 +179,7 @@ function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem)
   return discovered;
 }
 
-function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
+function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: DecodedTokenTableSystem): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
     replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
@@ -359,18 +333,18 @@ function elementToTableCellMarkdown(turndown: TurndownService, element: Element)
   return escapeMarkdownTableCell(normalizeInlineText(markdown));
 }
 
-function buildTagIndex(sys: TokenTableSystem): TagIndex {
+function buildTagIndex(sys: DecodedTokenTableSystem): TagIndex {
   const idByTagName = new Map<string, string>();
   for (const tag of sys.tags) idByTagName.set(tag.tagName, tag.name);
   return { idByTagName };
 }
 
 function findContextEntry(
-  entries: ContextTreeEntry[],
+  entries: DecodedContextTreeEntry[],
   idx: TagIndex,
   theme: 'light' | 'dark',
   opts: { audience?: string; contrast?: string } = {}
-): ContextTreeEntry | undefined {
+): DecodedContextTreeEntry | undefined {
   const { audience = '3p', contrast = 'default' } = opts;
   const themeId = idx.idByTagName.get(theme);
   const antiThemeId = idx.idByTagName.get(theme === 'light' ? 'dark' : 'light');
@@ -386,7 +360,7 @@ function findContextEntry(
   const nonAndroidPlatforms = [iosId, webId, composeId].filter(Boolean) as string[];
 
   const candidates = entries.filter((entry) => {
-    if (entry.resolvedValue?.undefined === true) return false;
+    if (entry.resolvedValue['undefined'] === true) return false;
     const tags = entry.contextTags;
     if (!tags) return contrast !== 'high.contrast';
     if (elevatedId && tags.includes(elevatedId)) return false;
@@ -409,7 +383,7 @@ function findContextEntry(
   if (candidates.length === 0) return undefined;
 
   return candidates.sort((a, b) => {
-    const score = (e: ContextTreeEntry) => {
+    const score = (e: DecodedContextTreeEntry) => {
       const t = e.contextTags;
       if (!t) return -1;
       let s = 0;
@@ -475,8 +449,8 @@ function formatValueNode(v: unknown): string {
   return formatUnknownStructuredValue(obj);
 }
 
-function formatResolvedValue(rv: ResolvedTokenValue): string {
-  if (!rv || rv.undefined === true) return '';
+function formatResolvedValue(rv: Record<string, unknown>): string {
+  if (!rv || rv['undefined'] === true) return '';
   const formatted = Object.entries(rv)
     .filter(([key]) => key !== 'undefined')
     .map(([, value]) => formatValueNode(value))
@@ -485,12 +459,12 @@ function formatResolvedValue(rv: ResolvedTokenValue): string {
   return formatted || '[unresolved]';
 }
 
-function extractAliasChain(tree: ReferenceNode, selfTokenName: string): string[] {
+function extractAliasChain(tree: DecodedReferenceNode, selfTokenName: string): string[] {
   const aliases: string[] = [];
-  let node: ReferenceNode | undefined = tree.childNodes?.[0];
+  let node: DecodedReferenceNode | undefined = (tree.childNodes ?? [])[0];
   while (node) {
     if (node.tokenName && node.tokenName !== selfTokenName) aliases.push(node.tokenName);
-    node = node.childNodes?.[0];
+    node = (node.childNodes ?? [])[0];
   }
   return aliases;
 }
@@ -507,7 +481,7 @@ export function extractDisplayTokenSets(html: string): string[] {
 }
 
 export function renderTokenTableWithDiagnostics(
-  system: TokenTableSystem,
+  system: DecodedTokenTableSystem,
   displayTokenSets: string[]
 ): { markdown: string; diagnostics: TokenContextDiagnostic[] } {
   const idx = buildTagIndex(system);
@@ -533,7 +507,7 @@ export function renderTokenTableWithDiagnostics(
       const treeData = system.contextualReferenceTrees[token.name];
       if (!treeData?.contextualReferenceTree?.length) continue;
       const entries = treeData.contextualReferenceTree;
-      const entryContextKeys = entries.map((entry) => asArray<string>(entry.contextTags).slice().sort().join('|')).filter(Boolean);
+      const entryContextKeys = entries.map((entry) => entry.contextTags.slice().sort().join('|')).filter(Boolean);
       for (const key of entryContextKeys) availableContextKeys.add(key);
       if (new Set(entryContextKeys).size > 1) multipleContextVariantsAvailable = true;
       const lightEntry = findContextEntry(entries, idx, 'light', { audience: '3p' }) ?? findContextEntry(entries, idx, 'light', { audience: '1p.baseline' }) ?? findContextEntry(entries, idx, 'light');
@@ -554,7 +528,7 @@ export function renderTokenTableWithDiagnostics(
       ];
       if (renderedValues[0] === '[unresolved]' || renderedValues[1] === '[unresolved]') unresolvedTokenCount += 1;
       for (const entry of [lightEntry, darkEntry, lightHcEntry, darkHcEntry]) {
-        const key = entry ? asArray<string>(entry.contextTags).slice().sort().join('|') : '';
+        const key = entry ? entry.contextTags.slice().sort().join('|') : '';
         if (key) selectedContextKeys.add(key);
       }
       rows.push([
@@ -570,7 +544,6 @@ export function renderTokenTableWithDiagnostics(
     const hasHcData = rows.slice(1).some((row) => row[6] || row[7]);
     const finalRows = hasHcData ? rows : rows.map((row) => row.slice(0, 6));
     sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
-    // Only the names from displayTokenSets that match THIS token set — not all requested sets.
     const requestedTokenSetsForSection = displayTokenSets.filter((name) => name === ts.displayName || name === ts.tokenSetName);
     const renderedTokenSets = [ts.displayName, ts.tokenSetName].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
     const availableKeys = Array.from(availableContextKeys).sort();
@@ -595,111 +568,35 @@ export function renderTokenTableWithDiagnostics(
   };
 }
 
-export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
+export function tokenTableToMarkdown(system: DecodedTokenTableSystem, displayTokenSets: string[]): string {
   return renderTokenTableWithDiagnostics(system, displayTokenSets).markdown;
 }
 
-export function normalizeTokenTableSystem(raw: unknown): TokenTableSystem | null {
-  const obj = asObject(raw);
-  if (!obj) return null;
-  const tokens = asArray(obj.tokens).map(normalizeTokenItem).filter((t): t is TokenTableSystem['tokens'][number] => t !== null);
-  const tokenSets = asArray(obj.tokenSets).map(normalizeTokenSetItem).filter((ts): ts is TokenTableSystem['tokenSets'][number] => ts !== null);
-  if (tokens.length === 0 && tokenSets.length === 0) return null;
-  return {
-    tokens,
-    tokenSets,
-    tags: asArray(obj.tags).map(normalizeTagItem).filter((t): t is TokenTableSystem['tags'][number] => t !== null),
-    contextTagGroups: asArray(obj.contextTagGroups).map(normalizeContextTagGroupItem).filter((g): g is TokenTableSystem['contextTagGroups'][number] => g !== null),
-    contextualReferenceTrees: normalizeContextualRefTrees(obj.contextualReferenceTrees)
-  };
-}
-
-function normalizeTokenItem(raw: unknown): TokenTableSystem['tokens'][number] | null {
-  const obj = asObject(raw);
-  if (!obj) return null;
-  const name = readString(obj.name);
-  if (!name) return null;
-  return {
-    name,
-    tokenName: readString(obj.tokenName) ?? '',
-    displayName: readString(obj.displayName) ?? '',
-    tokenValueType: readString(obj.tokenValueType) ?? '',
-    state: readString(obj.state) ?? ''
-  };
-}
-
-function normalizeTokenSetItem(raw: unknown): TokenTableSystem['tokenSets'][number] | null {
-  const obj = asObject(raw);
-  if (!obj) return null;
-  const name = readString(obj.name);
-  if (!name) return null;
-  return {
-    name,
-    displayName: readString(obj.displayName) ?? '',
-    tokenSetName: readString(obj.tokenSetName) ?? ''
-  };
-}
-
-function normalizeTagItem(raw: unknown): TokenTableSystem['tags'][number] | null {
-  const obj = asObject(raw);
-  if (!obj) return null;
-  return {
-    name: readString(obj.name) ?? '',
-    displayName: readString(obj.displayName) ?? '',
-    tagName: readString(obj.tagName) ?? ''
-  };
-}
-
-function normalizeContextTagGroupItem(raw: unknown): TokenTableSystem['contextTagGroups'][number] | null {
-  const obj = asObject(raw);
-  if (!obj) return null;
-  return {
-    name: readString(obj.name) ?? '',
-    displayName: readString(obj.displayName) ?? '',
-    defaultTag: readString(obj.defaultTag) ?? ''
-  };
-}
-
-function normalizeContextualRefTrees(raw: unknown): TokenTableSystem['contextualReferenceTrees'] {
-  const obj = asObject(raw);
-  if (!obj) return {};
-  const result: TokenTableSystem['contextualReferenceTrees'] = {};
-  for (const [key, value] of Object.entries(obj)) {
-    const treeObj = asObject(value);
-    if (!treeObj) { result[key] = undefined; continue; }
-    result[key] = {
-      contextualReferenceTree: asArray(treeObj.contextualReferenceTree).map(normalizeContextTreeEntry)
-    };
-  }
-  return result;
-}
-
-function normalizeReferenceNode(raw: unknown): ReferenceNode {
-  const obj = asObject(raw) ?? {};
-  return {
-    tokenName: readString(obj.tokenName) ?? '',
-    childNodes: asArray(obj.childNodes).map(normalizeReferenceNode)
-  };
-}
-
-function normalizeResolvedValue(raw: unknown): ResolvedTokenValue {
-  return (asObject(raw) ?? {}) as ResolvedTokenValue;
-}
-
-function normalizeContextTreeEntry(raw: unknown): ContextTreeEntry {
-  const e = asObject(raw) ?? {};
-  return {
-    contextTags: asArray(e.contextTags).filter((t): t is string => typeof t === 'string'),
-    referenceTree: normalizeReferenceNode(e.referenceTree),
-    resolvedValue: normalizeResolvedValue(e.resolvedValue)
-  };
+export function normalizeTokenTableSystem(raw: unknown): DecodedTokenTableSystem | null {
+  return parseTokenTableSystem(raw);
 }
 
 export function renderStatusTableMarkdown(resource: unknown): string {
-  const headers = readStatusTableHeaders(resource);
-  const rows = readStatusTableRows(resource);
-  if (headers.length === 0 || rows.length === 0) return '';
-  return markdownTable([headers, ...rows]);
+  const decoded: DecodedStatusTable | null = parseStatusTable(resource);
+  if (!decoded) return '';
+  return markdownTable([decoded.headers, ...decoded.rows]);
+}
+
+export function renderDecodedSections(
+  sections: DecodedContentSection[],
+  renderChunk: (chunk: import('./schemas.js').DecodedContentChunk) => Promise<string>
+): Promise<string[]> {
+  const parts: Promise<string>[] = [];
+  for (const section of sections) {
+    if (section.title.trim()) parts.push(Promise.resolve(`## ${section.title.trim()}`));
+    for (const block of section.blocks) {
+      if (block.title?.trim()) parts.push(Promise.resolve(`### ${block.title.trim()}`));
+      for (const chunk of block.chunks) {
+        parts.push(renderChunk(chunk).then((r) => r.trim()));
+      }
+    }
+  }
+  return Promise.all(parts);
 }
 
 export function preferLargeImageUrl(url: string): string {
@@ -758,7 +655,7 @@ function postProcessMarkdown(markdown: string): string {
   const lines = markdown
     .replace(/\r\n/g, '\n')
     .replace(/[^\S\n]+$/gm, '')
-    .replace(/\u200b/g, '')
+    .replace(/​/g, '')
     .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)\s*!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
     .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)\s*!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
     .split('\n');
@@ -851,7 +748,7 @@ function escapeMarkdownListText(value: string): string {
 }
 
 function normalizeInlineText(value: string): string {
-  return value.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+  return value.replace(/​/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function visibleTextLines(value: string): string[] {
@@ -880,34 +777,6 @@ function hasAncestorMatching(node: Element, boundary: Element, selector: string)
   return false;
 }
 
-function readStatusTableHeaders(resource: unknown): string[] {
-  if (!resource || typeof resource !== 'object') return [];
-  const obj = resource as Record<string, unknown>;
-  const directHeaders = Array.isArray(obj.headers) ? obj.headers : Array.isArray(obj.columns) ? obj.columns : null;
-  if (directHeaders) return directHeaders.map((value) => typeof value === 'string' ? value : typeof value === 'object' && value && 'label' in value ? String((value as Record<string, unknown>).label ?? '') : '').filter(Boolean);
-
-  const payload = obj.payload;
-  if (payload && typeof payload === 'object') return readStatusTableHeaders(payload);
-  return [];
-}
-
-function readStatusTableRows(resource: unknown): string[][] {
-  if (!resource || typeof resource !== 'object') return [];
-  const obj = resource as Record<string, unknown>;
-  const rawRows = Array.isArray(obj.rows) ? obj.rows : Array.isArray(obj.statuses) ? obj.statuses : null;
-  if (rawRows) {
-    return rawRows.map((row) => {
-      if (Array.isArray(row)) return row.map((value) => typeof value === 'string' ? value : stableStringify(value));
-      if (row && typeof row === 'object') return Object.values(row as Record<string, unknown>).map((value) => typeof value === 'string' ? value : stableStringify(value));
-      return [String(row ?? '')];
-    }).filter((row) => row.some(Boolean));
-  }
-
-  const payload = obj.payload;
-  if (payload && typeof payload === 'object') return readStatusTableRows(payload);
-  return [];
-}
-
 function stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
@@ -919,11 +788,11 @@ function stableStringify(value: unknown): string {
 }
 
 function entryMatchesContext(
-  entry: ContextTreeEntry,
+  entry: DecodedContextTreeEntry,
   idx: TagIndex,
   expected: { audience?: string; contrast?: string }
 ): boolean {
-  const contextNames = new Set(asArray<string>(entry.contextTags).map((tag) => idx.idByTagName.get(tag) ?? tag));
+  const contextNames = new Set(entry.contextTags.map((tag) => idx.idByTagName.get(tag) ?? tag));
   if (expected.audience && !contextNames.has(expected.audience)) return false;
   if (expected.contrast && !contextNames.has(expected.contrast)) return false;
   return true;
