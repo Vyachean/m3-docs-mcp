@@ -7,6 +7,7 @@ import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
 const playwrightMock = vi.hoisted(() => {
   let currentUrl = '';
+  const responseListeners = new Set<(response: { url: () => string; ok: () => boolean; json: () => Promise<unknown> }) => void | Promise<void>>();
   const pagesByUrl: Record<string, { html: string; title: string; headings: string[]; links: string[]; finalUrl?: string; routeAfterExpansion?: string }> = {
     'https://m3.material.io': {
       html: '<h1>Material 3</h1><p>Material 3 documentation landing page with enough text for crawler validation and indexing.</p>',
@@ -26,6 +27,7 @@ const playwrightMock = vi.hoisted(() => {
       finalUrl: 'https://m3.material.io/components/dialogs/overview'
     }
   };
+  const networkResponsesByUrl: Record<string, Array<{ url: string; payload: unknown }>> = {};
 
   const htmlText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const normalize = (value: string) => value.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -73,8 +75,26 @@ const playwrightMock = vi.hoisted(() => {
   };
 
   const page = {
-    goto: vi.fn(async (url: string) => { currentUrl = url; }),
+    goto: vi.fn(async (url: string) => {
+      currentUrl = url;
+      const responses = networkResponsesByUrl[url] ?? networkResponsesByUrl[pagesByUrl[url]?.finalUrl ?? ''] ?? [];
+      for (const entry of responses) {
+        for (const listener of responseListeners) {
+          await listener({
+            url: () => entry.url,
+            ok: () => true,
+            json: async () => entry.payload
+          });
+        }
+      }
+    }),
     url: vi.fn(() => pagesByUrl[currentUrl]?.finalUrl ?? currentUrl),
+    on: vi.fn((event: string, listener: (response: { url: () => string; ok: () => boolean; json: () => Promise<unknown> }) => void | Promise<void>) => {
+      if (event === 'response') responseListeners.add(listener);
+    }),
+    off: vi.fn((event: string, listener: (response: { url: () => string; ok: () => boolean; json: () => Promise<unknown> }) => void | Promise<void>) => {
+      if (event === 'response') responseListeners.delete(listener);
+    }),
     waitForSelector: vi.fn(async () => undefined),
     waitForFunction: vi.fn(async (_fn: unknown, arg?: {
       minPageTextLength?: number;
@@ -141,7 +161,9 @@ const playwrightMock = vi.hoisted(() => {
     chromium: { launch: vi.fn(async () => browser) },
     browser,
     page,
-    pagesByUrl
+    pagesByUrl,
+    networkResponsesByUrl,
+    responseListeners
   };
 });
 
@@ -181,6 +203,8 @@ describe('crawlMaterialDocs', () => {
     playwrightMock.browser.close.mockClear();
     playwrightMock.page.goto.mockClear();
     playwrightMock.page.url.mockClear();
+    playwrightMock.page.on.mockClear();
+    playwrightMock.page.off.mockClear();
     playwrightMock.page.waitForSelector.mockClear();
     playwrightMock.page.waitForFunction.mockClear();
     playwrightMock.page.close.mockClear();
@@ -192,6 +216,8 @@ describe('crawlMaterialDocs', () => {
     delete playwrightMock.pagesByUrl['https://m3.material.io/foundations/layout-overview/adaptive-design'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/dialogs'];
     delete playwrightMock.pagesByUrl['https://m3.material.io/components/buttons'];
+    for (const key of Object.keys(playwrightMock.networkResponsesByUrl)) delete playwrightMock.networkResponsesByUrl[key];
+    playwrightMock.responseListeners.clear();
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [
       'https://m3.material.io/components/dialogs?tab=usage#actions',
       'https://example.com/external',
@@ -591,7 +617,7 @@ describe('crawlMaterialDocs', () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
-  });
+  }, 10_000);
 
   it('re-crawls blog posts with no publishedYear in the previous index', async () => {
     const capturedAt = new Date().toISOString();
@@ -633,7 +659,7 @@ describe('crawlMaterialDocs', () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
-  });
+  }, 10_000);
 
   it('extracts publishedYear from the blog listing page and saves it with blog post pages', async () => {
     const currentYear = new Date().getFullYear();
@@ -661,4 +687,211 @@ describe('crawlMaterialDocs', () => {
     const blogEntry = index.pages.find((p) => p.url === blogPostUrl);
     expect(blogEntry?.publishedYear).toBe(currentYear);
   }, 15_000);
+
+  it('runs first-cache coverage discovery even when direct JSON extraction succeeds', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(index.pages.map((page) => page.path).sort()).toEqual([
+      'components/dialogs/overview.md',
+      'components/lists/overview.md',
+      'index.md'
+    ]);
+    expect(index.extractionDiagnostics).toMatchObject({
+      pagesExtractedThroughJson: 1,
+      pagesExtractedThroughDomFallback: 2,
+      pagesWhereJsonFailed: 0,
+      jsonFallbackRoutes: 0
+    });
+    expect(index.coverageDiagnostics).toMatchObject({
+      renderedNavUrlCount: 1,
+      angularRouteHintCount: 1,
+      acceptedPageCount: 3,
+      coverageVerified: false
+    });
+  }, 10_000);
+
+  it('uses browser fallback only for routes that failed JSON extraction', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"components/dialogs/overview","documentId":"doc-dialogs","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-dialogs","exportedCarbonFileId":"page-canon-dialogs.json"'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      if (url === 'https://m3.material.io/sitemap.xml') return { ok: true, text: async () => '' } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 3 });
+
+    expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/dialogs/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/components/lists/overview', expect.anything());
+    expect(index.extractionDiagnostics).toMatchObject({
+      pagesExtractedThroughJson: 1,
+      pagesExtractedThroughDomFallback: 2,
+      pagesWhereJsonFailed: 1,
+      jsonFallbackRoutes: 1
+    });
+    expect(index.extractionDiagnostics?.routeDiagnostics).toContainEqual(expect.objectContaining({
+      path: 'components/dialogs/overview.md',
+      jsonAttempted: true,
+      jsonSucceeded: false,
+      fallbackReason: 'json-fetch-failed',
+      browserFallbackAttempted: true,
+      browserFallbackSucceeded: true,
+      finalMethod: 'dom'
+    }));
+  }, 10_000);
+
+  it('uses network-captured JSON when direct JSON fails', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"components/dialogs/overview","documentId":"doc-dialogs","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-dialogs","exportedCarbonFileId":"page-canon-dialogs.json"'
+    ].join(',');
+    const listsPageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const listsContentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+    const dialogsPageData = { result: { pageContext: { title: 'Dialogs', documentId: 'doc-dialogs', pageCanonId: 'page-canon-dialogs', slug: 'components/dialogs/overview' } } };
+    const dialogsContentPage = {
+      title: 'Dialogs',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Dialogs use modals to focus people on a decision with enough text for validation.</p>' }] }] }]
+    };
+
+    playwrightMock.networkResponsesByUrl['https://m3.material.io/components/dialogs/overview'] = [
+      { url: 'https://m3.material.io/page-data/components/dialogs/overview/page-data.json', payload: dialogsPageData },
+      { url: 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-dialogs.json', payload: dialogsContentPage }
+    ];
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => listsPageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => listsContentPage } as Response;
+      if (url === 'https://m3.material.io/sitemap.xml') return { ok: true, text: async () => '' } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 3 });
+
+    expect(index.extractionDiagnostics).toMatchObject({
+      pagesAcceptedFromDirectJson: 1,
+      pagesAcceptedFromNetworkJson: 1,
+      pagesAcceptedFromDomFallback: 1
+    });
+    expect(index.extractionDiagnostics?.routeDiagnostics).toContainEqual(expect.objectContaining({
+      path: 'components/dialogs/overview.md',
+      sourceUsed: 'network-json',
+      finalMethod: 'json',
+      directJsonAttempted: true,
+      directJsonSucceeded: false,
+      networkJsonAttempted: true,
+      networkJsonSucceeded: true
+    }));
+    await expect(readFile(path.join(cacheDir, 'raw/components/dialogs/overview/page-data.json'), 'utf8')).resolves.toContain('"type": "page-metadata"');
+  });
+
+  it('records fallback skip reasons when Playwright is unavailable but direct JSON already produced a valid cache', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"components/dialogs/overview","documentId":"doc-dialogs","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-dialogs","exportedCarbonFileId":"page-canon-dialogs.json"'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    playwrightMock.chromium.launch.mockRejectedValueOnce(new Error('missing browser'));
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    expect(index.pageCount).toBe(1);
+    expect(index.coverageDiagnostics).toMatchObject({
+      coverageVerified: false,
+      coverageWarnings: expect.arrayContaining(['coverage-unverified:playwright-unavailable'])
+    });
+    expect(index.extractionDiagnostics?.routeDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: 'components/lists/overview.md',
+        fallbackSkippedReasons: expect.arrayContaining(['json-quality-accepted', 'playwright-unavailable'])
+      }),
+      expect.objectContaining({
+        path: 'components/dialogs/overview.md',
+        fallbackSkippedReasons: expect.arrayContaining(['playwright-unavailable'])
+      })
+    ]));
+  });
+
+  it('allows max-pages partial crawls but marks coverage as partial', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => '<urlset><url><loc>https://m3.material.io/components/buttons</loc></url><url><loc>https://m3.material.io/components/dialogs</loc></url></urlset>'
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons', 'https://m3.material.io/components/dialogs'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Buttons</h1><p>Buttons prompt actions with enough body text for crawler validation.</p>',
+      title: 'Buttons',
+      headings: ['Buttons'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 1 });
+
+    expect(index.pageCount).toBe(1);
+    expect(index.coverageDiagnostics).toMatchObject({
+      acceptedPageCount: 1,
+      coverageVerified: false
+    });
+    expect(index.coverageDiagnostics?.coverageWarnings).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^coverage-partial:max-pages-limited:/)
+    ]));
+  }, 10_000);
 });

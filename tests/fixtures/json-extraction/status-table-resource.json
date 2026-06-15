@@ -1,0 +1,7 @@
+{
+  "headers": ["State", "Description"],
+  "rows": [
+    ["Enabled", "Default interactive state"],
+    ["Disabled", "Unavailable while an action is blocked"]
+  ]
+}

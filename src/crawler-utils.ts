@@ -2,6 +2,15 @@ import crypto from 'node:crypto';
 
 const SKIP_EXTENSIONS = /\.(png|jpg|jpeg|gif|webp|svg|ico|pdf|zip|xml|json|txt)$/i;
 const ABSOLUTE_OR_ROOT_RELATIVE_URL = /^[a-z][a-z\d+.-]*:|^\/|^[?#]/i;
+const NON_DOC_PATH_PREFIXES = [
+  'assets/',
+  'static/',
+  '_dsm/',
+  'favicon',
+  'manifest',
+  'robots.txt',
+  'sitemap'
+];
 
 export function normalizeMaterialUrl(raw: string, baseUrl: string): string | null {
   try {
@@ -16,6 +25,16 @@ export function normalizeMaterialUrl(raw: string, baseUrl: string): string | nul
   } catch {
     return null;
   }
+}
+
+export function normalizeMaterialPublicDocPath(raw: string, baseUrl: string): string | null {
+  const normalizedUrl = normalizeMaterialUrl(raw, baseUrl);
+  if (!normalizedUrl) return null;
+  const pathname = new URL(normalizedUrl).pathname.replace(/\/+/g, '/');
+  const normalizedPath = pathname === '/' ? '/' : pathname.replace(/\/$/, '');
+  const pathWithoutLeadingSlash = normalizedPath.replace(/^\/+/, '');
+  if (NON_DOC_PATH_PREFIXES.some((prefix) => pathWithoutLeadingSlash === prefix || pathWithoutLeadingSlash.startsWith(prefix))) return null;
+  return normalizedPath;
 }
 
 export function materialPagePath(url: string): string {

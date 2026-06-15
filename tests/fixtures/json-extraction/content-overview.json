@@ -1,0 +1,21 @@
+{
+  "title": "Lists",
+  "sections": [
+    {
+      "name": "Overview",
+      "isVisible": true,
+      "contentBlocks": [
+        {
+          "title": "Usage",
+          "isHidden": false,
+          "contentChunks": [
+            {
+              "contentChunkType": "TEXT",
+              "htmlValue": "<p>Lists present multiple line items in a compact column.</p><ul><li>One line</li><li>Two line</li></ul>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

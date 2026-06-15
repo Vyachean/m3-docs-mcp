@@ -5,11 +5,15 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import TurndownService from 'turndown';
-import { z } from 'zod';
-import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
-import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
+import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
+import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
+import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
+import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
+import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
+import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -17,7 +21,6 @@ const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
 const BLOG_POST_REUSE_YEAR_LAG = 1;
-const DSDB_FETCH_TIMEOUT_MS = 15_000;
 const DSDB_CONFIG_TIMEOUT_MS = 30_000;
 const DSDB_DEFAULT_CONCURRENCY = 8;
 const MIN_PAGE_TEXT_LENGTH = 80;
@@ -28,8 +31,9 @@ const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
-const MIN_EMBEDDED_IMAGE_WIDTH = 800;
-const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
+const COVERAGE_REGRESSION_RATIO = 0.8;
+const COVERAGE_WARNING_GAP_RATIO = 0.2;
+const COVERAGE_WARNING_GAP_MIN = 5;
 const NOT_FOUND_TITLE_PATTERNS = [
   /\bpage cannot be found\b/i,
   /\bthis page cannot be found\b/i,
@@ -46,94 +50,20 @@ const NOT_FOUND_BODY_PATTERNS = [
   /\bhead back to the homepage\b/i
 ];
 
-const NOISE_ONLY_MARKDOWN_LINES = new Set([
-  'close',
-  'link',
-  'pause',
-  'search',
-  'resources',
-  'folderenabled',
-  'keyboard_arrow_down',
-  'visibilitygrid_viewexpand_all',
-  'copy linklink copied',
-  'on this page',
-  'token'
-]);
-
-const TOKEN_BROWSER_NOISE_PATTERNS = [
-  /arrowdropdown/i,
-  /keyboardarrowdown/i,
-  /gridview/i,
-  /folderenabled/i,
-  /^visibility$/i,
-  /^expand_all$/i,
-  /^folder$/i,
-];
-
-const TOKEN_VIEWER_ROW_SELECTORS = [
-  'tr',
-  '[role="row"]',
-  '[class*="token-row"]',
-  '[class*="tokenRow"]',
-  '[class*="table-row"]',
-  '[class*="row"]',
-  'token'
-].join(',');
-
-const TOKEN_VIEWER_CELL_SELECTORS = [
-  'th',
-  'td',
-  '[role="columnheader"]',
-  '[role="cell"]',
-  '[class*="cell"]',
-  '[class*="column"]',
-  '[class*="name"]',
-  '[class*="value"]',
-  '[class*="token"]'
-].join(',');
-
 type DsdbRoute = {
   slug: string;
-  documentId: string;
-  collectionId: string;
-  exportedCarbonFileId: string;
+  documentId?: string;
+  collectionId?: string;
+  exportedCarbonFileId?: string;
+  collectionName?: string;
+  pageCanonId?: string;
+  metadataWarnings?: string[];
 };
 
 type DsdbSiteConfig = {
   carbonVersion: string;
   routes: DsdbRoute[];
 };
-
-const DsdbChunkSchema = z.object({
-  contentChunkType: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'RESOURCE']),
-  htmlValue: z.string().nullish(),
-  imageUrl: z.string().nullish(),
-  altText: z.string().nullish(),
-  footer: z.string().nullish(),
-});
-
-const DsdbBlockSchema = z.object({
-  title: z.string().nullish(),
-  isHidden: z.boolean(),
-  contentChunks: z.array(DsdbChunkSchema),
-});
-
-const DsdbSectionSchema = z.object({
-  name: z.string(),
-  isVisible: z.boolean(),
-  contentBlocks: z.array(DsdbBlockSchema),
-});
-
-const DsdbPageDataSchema = z.object({
-  title: z.string(),
-  updatedTimestamp: z.string(),
-  sections: z.array(DsdbSectionSchema),
-});
-
-type DsdbChunk = z.infer<typeof DsdbChunkSchema>;
-type DsdbBlock = z.infer<typeof DsdbBlockSchema>;
-type DsdbSection = z.infer<typeof DsdbSectionSchema>;
-type DsdbPageData = z.infer<typeof DsdbPageDataSchema>;
 
 type ExtractedContent = {
   html: string;
@@ -432,573 +362,10 @@ function abortError(signal: AbortSignal): Error {
 }
 
 export function extractMaterialPageFromHtml(html: string, url: string, capturedAt = new Date().toISOString(), metadata?: Partial<Pick<ExtractedContent, 'title' | 'headings'>>, tokenSystem?: TokenTableSystem): MaterialPage {
-  const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
-  addMaterialMarkdownRules(turndown, tokenSystem);
-
-  const relPath = materialPagePath(url);
-  const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
-  const title = metadata?.title?.trim() || titleFromHtml(sanitizedHtml) || 'Material 3 page';
-  const headings = metadata?.headings?.map((heading) => heading.trim()).filter(Boolean) ?? headingsFromHtml(sanitizedHtml);
-  const rawBody = turndown.turndown(sanitizedHtml)
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  const body = postProcessMarkdown(rawBody);
-  const text = stripMarkdown(body).replace(/\s+/g, ' ').trim();
-  const markdown = `---\ntitle: ${JSON.stringify(title)}\nsourceUrl: ${url}\nsection: ${sectionFromPagePath(relPath)}\ncapturedAt: ${capturedAt}\n---\n\n${body}\n`;
-  return {
-    id: materialPageId(url),
-    title,
-    url,
-    path: relPath,
-    section: sectionFromPagePath(relPath),
-    headings,
-    text,
-    markdown,
-    capturedAt
-  };
+  return extractMaterialPageFromHtmlFromModule(html, url, capturedAt, metadata, tokenSystem);
 }
 
-function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem): string[] {
-  // Priority 1: explicit display-token-sets attribute with values
-  const setsAttr = viewer.getAttribute('display-token-sets');
-  if (setsAttr) {
-    try {
-      const parsed: unknown = JSON.parse(setsAttr);
-      if (Array.isArray(parsed)) {
-        const sets = parsed.filter((s): s is string => typeof s === 'string');
-        if (sets.length > 0) return sets;
-      }
-    } catch {
-      // fall through
-    }
-  }
-
-  // Priority 2: discover set names from token-set picker buttons
-  // When display-token-sets="[]", the page shows a picker UI with buttons labelled by token set name.
-  // Strip Material icon words (visibility, expand_all, folder) that are concatenated with set names.
-  const knownNames = new Set([
-    ...tokenSystem.tokenSets.map((ts) => ts.displayName),
-    ...tokenSystem.tokenSets.map((ts) => ts.tokenSetName),
-  ]);
-  const discovered: string[] = [];
-  for (const btn of Array.from(viewer.querySelectorAll('button'))) {
-    const candidate = normalizeInlineText(btn.textContent ?? '')
-      .split(/\s+/)
-      .filter((word) => !isTokenViewerNoise(word))
-      .join(' ')
-      .trim();
-    if (candidate && knownNames.has(candidate) && !discovered.includes(candidate)) {
-      discovered.push(candidate);
-    }
-  }
-  return discovered;
-}
-
-function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
-  turndown.addRule('materialTables', {
-    filter: (node) => isElementNode(node) && nodeName(node) === 'table',
-    replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
-  });
-
-  turndown.addRule('materialTokenViewer', {
-    filter: (node) => isElementNode(node) && nodeName(node) === 'token-viewer',
-    replacement: (_content, node) => {
-      if (!isElementNode(node)) return '';
-      if (tokenSystem) {
-        const displayTokenSets = resolveDisplayTokenSets(node as Element, tokenSystem);
-        if (displayTokenSets.length > 0) {
-          const full = tokenTableToMarkdown(tokenSystem, displayTokenSets);
-          // Strip the top-level section header — the page's own <h2> already provides it
-          return full.replace(/^\n*## Design Tokens\n\n/, '\n\n');
-        }
-      }
-      return tokenViewerElementToMarkdown(turndown, node as Element);
-    }
-  });
-
-  turndown.addRule('materialBackgroundImage', {
-    filter: (node) => isElementNode(node) && Boolean(node.getAttribute('data-background-image')),
-    replacement: (content, node) => {
-      if (!isElementNode(node)) return content;
-      const imageUrl = node.getAttribute('data-background-image')?.trim();
-      if (!imageUrl) return content;
-      const alt = normalizeInlineText(content || node.textContent || '').slice(0, 120);
-      return `\n\n![${escapeMarkdownAttribute(alt)}](${preferLargeImageUrl(imageUrl)})\n\n`;
-    }
-  });
-}
-
-function tableElementToMarkdown(turndown: TurndownService, table: Element): string {
-  const rows = Array.from(table.querySelectorAll('tr'))
-    .filter((row) => row.closest('table') === table);
-  const markdownRows = rows
-    .map((row) => cellsFromRow(turndown, row))
-    .filter((cells) => cells.some(Boolean));
-  return markdownTable(markdownRows);
-}
-
-function cellsFromRow(turndown: TurndownService, row: Element): string[] {
-  return Array.from(row.querySelectorAll('th, td'))
-    .filter((cell) => cell.closest('tr') === row)
-    .map((cell) => elementToTableCellMarkdown(turndown, cell));
-}
-
-function tokenViewerElementToMarkdown(turndown: TurndownService, viewer: Element): string {
-  const nestedTable = viewer.querySelector('table');
-  if (nestedTable) return tableElementToMarkdown(turndown, nestedTable);
-
-  const rowCandidates = Array.from(viewer.querySelectorAll(TOKEN_VIEWER_ROW_SELECTORS))
-    .filter((row) => row !== viewer && !hasAncestorMatching(row, viewer, TOKEN_VIEWER_ROW_SELECTORS));
-  const rows = rowCandidates
-    .map((row) => tokenViewerCellsFromRow(turndown, row))
-    .filter((cells) => cells.length > 0 && cells.some(Boolean));
-
-  if (rows.length > 0) {
-    const isTokenElementRows = rowCandidates.length > 0 && nodeName(rowCandidates[0]) === 'token';
-    if (isTokenElementRows) {
-      const maxColumns = Math.max(...rows.map((r) => r.length));
-      return tokenRowsToMarkdown([['Name', 'Token', 'Value'].slice(0, maxColumns), ...rows]);
-    }
-    return tokenRowsToMarkdown(rows);
-  }
-
-  // If the viewer contains buttons, it's the token-set picker UI (no token set selected yet) —
-  // not actual token data. Buttons appear when the page shows the set-selector dropdown,
-  // not the expanded token table.
-  if (viewer.querySelector('button')) return '';
-
-  const lines = tokenViewerFallbackLines(viewer).filter((line) => !isTokenViewerNoise(line));
-  if (lines.length >= 4 && lines.length % 2 === 0) {
-    const pairs: string[][] = [];
-    for (let i = 0; i < lines.length; i += 2) pairs.push([lines[i] ?? '', lines[i + 1] ?? '']);
-    return markdownTable([['Name', 'Value'], ...pairs]);
-  }
-  return lines.length ? `\n\n${lines.map((line) => `- ${escapeMarkdownListText(line)}`).join('\n')}\n\n` : '';
-}
-
-function tokenViewerCellsFromRow(turndown: TurndownService, row: Element): string[] {
-  if (nodeName(row) === 'token') {
-    const displayName = normalizeInlineText(row.querySelector('.display-name__text')?.textContent ?? '');
-    const tokenId = normalizeInlineText(row.querySelector('.text-value')?.textContent ?? '');
-    const value = normalizeInlineText(row.querySelector('.token-value-container')?.textContent ?? '');
-    return [displayName, tokenId, value].filter(Boolean);
-  }
-
-  const explicitCells = Array.from(row.querySelectorAll(TOKEN_VIEWER_CELL_SELECTORS))
-    .filter((cell) => cell !== row && !hasAncestorMatching(cell, row, TOKEN_VIEWER_CELL_SELECTORS));
-  if (explicitCells.length > 1) {
-    return explicitCells.map((cell) => elementToTableCellMarkdown(turndown, cell)).filter((cell) => cell && !isTokenViewerNoise(cell));
-  }
-
-  const childCells = Array.from(row.children)
-    .filter((child) => normalizeInlineText(child.textContent ?? '') && !isTokenViewerNoise(child.textContent ?? ''))
-    .map((child) => elementToTableCellMarkdown(turndown, child));
-  if (childCells.length > 1) return childCells;
-
-  const lines = visibleTextLines(row.textContent ?? '').filter((line) => !isTokenViewerNoise(line));
-  return lines.length > 1 ? lines.map(escapeMarkdownTableCell) : [];
-}
-
-function tokenViewerFallbackLines(viewer: Element): string[] {
-  const childNodeLines = Array.from(viewer.childNodes).flatMap((node) => {
-    if (node.nodeType === 3) return visibleTextLines(node.textContent ?? '');
-    if (isElementNode(node)) return visibleTextLines(node.textContent ?? '');
-    return [];
-  });
-  if (childNodeLines.length > 1) return childNodeLines;
-
-  const htmlLines = visibleTextLines(viewer.innerHTML
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(?:p|div|span|li|tr|th|td|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, ' '));
-  if (htmlLines.length > childNodeLines.length) return htmlLines;
-
-  return childNodeLines.length ? childNodeLines : visibleTextLines(viewer.textContent ?? '');
-}
-
-function tokenRowsToMarkdown(rows: string[][]): string {
-  const maxColumns = Math.max(...rows.map((row) => row.length));
-  if (maxColumns <= 1) return `\n\n${rows.flat().map((line) => `- ${escapeMarkdownListText(line)}`).join('\n')}\n\n`;
-
-  const firstRow = rows[0] ?? [];
-  const firstRowLooksLikeHeader = firstRow.some((cell) => /^(element|attribute|token|value|default|property|name|description)$/i.test(normalizeInlineText(cell)));
-  const fallbackHeaders = ['Name', 'Value', 'Description', 'State', 'Notes'].slice(0, maxColumns);
-  const tableRows = firstRowLooksLikeHeader ? rows : [fallbackHeaders, ...rows];
-  return markdownTable(tableRows.map((row) => padRow(row, maxColumns)));
-}
-
-function markdownTable(rows: string[][]): string {
-  if (rows.length === 0) return '';
-  const width = Math.max(...rows.map((row) => row.length));
-  if (width === 0) return '';
-
-  const header = padRow(rows[0] ?? [], width).map((cell, index) => cell || `Column ${index + 1}`);
-  const body = rows.slice(1).map((row) => padRow(row, width));
-  const lines = [
-    `| ${header.join(' | ')} |`,
-    `| ${header.map(() => '---').join(' | ')} |`,
-    ...body.map((row) => `| ${row.join(' | ')} |`)
-  ];
-  return `\n\n${lines.join('\n')}\n\n`;
-}
-
-function padRow(row: string[], width: number): string[] {
-  return Array.from({ length: width }, (_, index) => row[index] ?? '');
-}
-
-function elementToTableCellMarkdown(turndown: TurndownService, element: Element): string {
-  const clone = element.cloneNode(true) as Element;
-  for (const nestedTable of Array.from(clone.querySelectorAll('table'))) nestedTable.remove();
-
-  const html = clone.innerHTML || clone.textContent || '';
-  const markdown = turndown.turndown(html).replace(/\n{2,}/g, '<br>').replace(/\n/g, '<br>');
-  return escapeMarkdownTableCell(normalizeInlineText(markdown));
-}
-
-function escapeMarkdownTableCell(value: string): string {
-  return value.replace(/\|/g, '\\|').trim();
-}
-
-function escapeMarkdownAttribute(value: string): string {
-  return value.replace(/[\[\]\\]/g, '\\$&').trim();
-}
-
-function escapeMarkdownListText(value: string): string {
-  return value.replace(/^([-*+]\s+)/, '\\$1').trim();
-}
-
-function normalizeInlineText(value: string): string {
-  return value.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
-}
-
-function visibleTextLines(value: string): string[] {
-  return value.split(/\r?\n|\t/).map(normalizeInlineText).filter(Boolean);
-}
-
-function isTokenViewerNoise(value: string): boolean {
-  const normalized = normalizeNoiseText(value);
-  return NOISE_ONLY_MARKDOWN_LINES.has(normalized) || TOKEN_BROWSER_NOISE_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-function isElementNode(node: unknown): node is Element {
-  return Boolean(node && (node as Node).nodeType === 1);
-}
-
-function nodeName(node: Element): string {
-  return node.nodeName.toLowerCase();
-}
-
-function hasAncestorMatching(node: Element, boundary: Element, selector: string): boolean {
-  let parent = node.parentElement;
-  while (parent && parent !== boundary) {
-    if (parent.matches(selector)) return true;
-    parent = parent.parentElement;
-  }
-  return false;
-}
-
-function preferLargeImageUrl(url: string): string {
-  return url
-    .replace(/=w(\d+)(?!\d)/g, (match, width: string) => Number(width) < MIN_EMBEDDED_IMAGE_WIDTH ? `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}` : match)
-    .replace(/=s0(?!\d)/g, `=w${PREFERRED_EMBEDDED_IMAGE_WIDTH}`);
-}
-
-function normalizeMarkdownImageUrls(markdown: string): string {
-  return markdown.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt: string, imageUrl: string) => `![${alt}](${preferLargeImageUrl(imageUrl)})`);
-}
-
-function preserveBackgroundImageAttributes(html: string): string {
-  return html.replace(/<([a-z][\w:-]*)([^>]*)>/gi, (match, tagName: string, attributes: string) => {
-    if (/\sdata-background-image\s*=/i.test(attributes)) return match;
-    const style = attributes.match(/\sstyle=(['"])([\s\S]*?)\1/i)?.[2];
-    if (!style) return match;
-
-    const imageUrl = backgroundImageUrlFromStyle(style);
-    if (!imageUrl) return match;
-
-    return `<${tagName}${attributes} data-background-image="${escapeHtmlAttribute(imageUrl)}">`;
-  });
-}
-
-function backgroundImageUrlFromStyle(style: string): string | null {
-  const match = style.match(/background-image\s*:\s*url\(\s*(['"]?)(.*?)\1\s*\)/i);
-  return match?.[2]?.trim() || null;
-}
-
-function escapeHtmlAttribute(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function stripUnsafeHtml(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
-}
-
-function preserveTokenViewerTextLines(html: string): string {
-  return html.replace(/<token-viewer\b([^>]*)>([\s\S]*?)<\/token-viewer>/gi, (match, attributes: string, body: string) => {
-    if (/<(?:table|thead|tbody|tfoot|tr|th|td)\b/i.test(body)) return match;
-    if (/\b(?:role|class)\s*=/i.test(body)) return match;
-    if (/<button\b/i.test(body)) return match;
-
-    const lines = visibleTextLines(stripHtml(body));
-    if (lines.length <= 1) return match;
-    return `<token-viewer${attributes}>${lines.map(escapeHtmlText).join('<br>')}</token-viewer>`;
-  });
-}
-
-function escapeHtmlText(value: string): string {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-// ─── TOKEN_TABLE extraction ───────────────────────────────────────────────────
-
-type TokenTableSystem = {
-  tokens: Array<{ name: string; tokenName: string; displayName: string; tokenValueType: string; state: string }>;
-  tokenSets: Array<{ name: string; displayName: string; tokenSetName: string }>;
-  tags: Array<{ name: string; displayName: string; tagName: string }>;
-  contextTagGroups: Array<{ name: string; displayName: string; defaultTag: string }>;
-  contextualReferenceTrees: Record<string, { contextualReferenceTree: ContextTreeEntry[] } | undefined>;
-};
-
-type ContextTreeEntry = {
-  contextTags: string[];
-  referenceTree: ReferenceNode;
-  resolvedValue: ResolvedTokenValue;
-};
-
-type ReferenceNode = {
-  tokenName: string;
-  childNodes?: ReferenceNode[];
-};
-
-type ResolvedTokenValue = {
-  color?: { red: number; green: number; blue: number; alpha?: number };
-  dimension?: { value: number; unit: string };
-  length?: { value?: number; unit?: string };
-  shape?: { family?: string; defaultSize?: { value?: number; unit?: string } };
-  fontSize?: { value?: number; unit?: string };
-  lineHeight?: { value?: number; unit?: string };
-  fontTracking?: { value?: number; unit?: string };
-  fontNames?: { values?: string[] };
-  elevation?: { value?: number; unit?: string };
-  type?: { fontNames?: { values?: string[] }; fontWeight?: number; fontSize?: { value?: number; unit?: string }; lineHeight?: { value?: number; unit?: string } };
-  opacity?: number;
-  fontWeight?: number;
-  number?: number;
-  undefined?: boolean;
-  [key: string]: unknown;
-};
-
-type TagIndex = {
-  idByTagName: Map<string, string>;
-};
-
-function buildTagIndex(sys: TokenTableSystem): TagIndex {
-  const idByTagName = new Map<string, string>();
-  for (const tag of sys.tags) idByTagName.set(tag.tagName, tag.name);
-  return { idByTagName };
-}
-
-function findContextEntry(
-  entries: ContextTreeEntry[],
-  idx: TagIndex,
-  theme: 'light' | 'dark',
-  opts: { audience?: string; contrast?: string } = {}
-): ContextTreeEntry | undefined {
-  const { audience = '3p', contrast = 'default' } = opts;
-  const themeId = idx.idByTagName.get(theme);
-  const antiThemeId = idx.idByTagName.get(theme === 'light' ? 'dark' : 'light');
-  const androidId = idx.idByTagName.get('android');
-  const audienceId = idx.idByTagName.get(audience);
-  const contrastId = idx.idByTagName.get(contrast);
-  const mediumId = idx.idByTagName.get('medium.contrast');
-  const highId = idx.idByTagName.get('high.contrast');
-  const iosId = idx.idByTagName.get('ios');
-  const webId = idx.idByTagName.get('web');
-  const composeId = idx.idByTagName.get('compose');
-  const elevatedId = idx.idByTagName.get('elevated');
-  const nonAndroidPlatforms = [iosId, webId, composeId].filter(Boolean) as string[];
-
-  const candidates = entries.filter((entry) => {
-    if (entry.resolvedValue?.undefined === true) return false;
-    const tags = entry.contextTags;
-    // No contextTags → universal default, valid for any non-HC query
-    if (!tags) return contrast !== 'high.contrast';
-    // Platform exclusion (before theme check so iOS-only entries are dropped)
-    if (elevatedId && tags.includes(elevatedId)) return false;
-    if (tags.some((t) => nonAndroidPlatforms.includes(t))) return false;
-    // If entry has an explicit theme tag, it must match the requested theme
-    const hasThemeTag = (themeId != null && tags.includes(themeId)) || (antiThemeId != null && tags.includes(antiThemeId));
-    if (hasThemeTag) {
-      if (themeId && !tags.includes(themeId)) return false;
-      if (antiThemeId && tags.includes(antiThemeId)) return false;
-    }
-    // Entries with no theme tag are theme-neutral (typography, etc.) — pass theme check
-    // HC contrast check: theme-neutral entries have no HC variant, exclude them from HC queries
-    if (contrast === 'high.contrast') {
-      if (mediumId && tags.includes(mediumId)) return false;
-      if (!highId || !tags.includes(highId)) return false;
-    } else {
-      if (mediumId && tags.includes(mediumId)) return false;
-      if (highId && tags.includes(highId)) return false;
-    }
-    return true;
-  });
-
-  if (candidates.length === 0) return undefined;
-
-  return candidates.sort((a, b) => {
-    const score = (e: ContextTreeEntry) => {
-      const t = e.contextTags;
-      if (!t) return -1; // universal entries lowest priority
-      let s = 0;
-      if (themeId && t.includes(themeId)) s += 8; // explicit theme match wins over theme-neutral
-      if (audienceId && t.includes(audienceId)) s += 4;
-      if (androidId && t.includes(androidId)) s += 2;
-      if (contrastId && t.includes(contrastId)) s += 1;
-      return s;
-    };
-    return score(b) - score(a);
-  })[0];
-}
-
-function normalizeUnit(unit: string): string {
-  if (unit === 'DIPS') return 'dp';
-  if (unit === 'POINTS' || unit === 'SP') return 'sp';
-  return unit.toLowerCase();
-}
-
-// Generic structural traversal — no key-name dictionary, detects shape by structure.
-function formatValueNode(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  if (typeof v !== 'object') return String(v);
-  if (Array.isArray(v)) return v.map(formatValueNode).filter(Boolean).join(', ');
-
-  const obj = v as Record<string, unknown>;
-
-  // Color: {red, green, blue[, alpha]}
-  if ('red' in obj && 'green' in obj && 'blue' in obj) {
-    const red = Number(obj.red), green = Number(obj.green), blue = Number(obj.blue);
-    const alpha = obj.alpha != null ? Number(obj.alpha) : 1;
-    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
-    const r = Math.round(red * 255).toString(16).padStart(2, '0');
-    const g = Math.round(green * 255).toString(16).padStart(2, '0');
-    const b = Math.round(blue * 255).toString(16).padStart(2, '0');
-    if (Number.isFinite(alpha) && alpha < 0.9999)
-      return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
-    return `#${r}${g}${b}`;
-  }
-
-  // Measurement: {unit, value?}
-  if ('unit' in obj && typeof obj.unit === 'string') {
-    const value = typeof obj.value === 'number' ? obj.value : 0;
-    return `${value}${normalizeUnit(obj.unit)}`;
-  }
-
-  // Named list: {values: [...]}
-  if ('values' in obj && Array.isArray(obj.values)) {
-    return obj.values.map(formatValueNode).filter(Boolean).join(', ');
-  }
-
-  // Generic: recurse into all child values
-  return Object.values(obj).map(formatValueNode).filter(Boolean).join(' ');
-}
-
-function formatResolvedValue(rv: ResolvedTokenValue): string {
-  if (!rv || rv.undefined === true) return '';
-  return Object.entries(rv)
-    .filter(([k]) => k !== 'undefined')
-    .map(([, v]) => formatValueNode(v))
-    .filter(Boolean)
-    .join(' ');
-}
-
-function extractAliasChain(tree: ReferenceNode, selfTokenName: string): string[] {
-  const aliases: string[] = [];
-  let node: ReferenceNode | undefined = tree.childNodes?.[0];
-  while (node) {
-    if (node.tokenName && node.tokenName !== selfTokenName) aliases.push(node.tokenName);
-    node = node.childNodes?.[0];
-  }
-  return aliases;
-}
-
-export function extractDisplayTokenSets(html: string): string[] {
-  const match = html.match(/display-token-sets="([^"]+)"/i);
-  if (!match) return [];
-  try {
-    const sets: unknown = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
-    return Array.isArray(sets) ? sets.filter((s): s is string => typeof s === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
-  const idx = buildTagIndex(system);
-  const displaySetNames = new Set(displayTokenSets);
-  const relevantSets = system.tokenSets.filter((ts) => displaySetNames.has(ts.displayName) || displaySetNames.has(ts.tokenSetName));
-  if (relevantSets.length === 0) return '';
-
-  const sections: string[] = [];
-
-  for (const ts of relevantSets) {
-    const tokens = system.tokens.filter((t) => t.name.startsWith(ts.name) && t.state === 'ACTIVE');
-    if (tokens.length === 0) continue;
-
-    const rows: string[][] = [['Token', 'Name', 'sys alias', 'ref alias', 'Light', 'Dark', 'Light (High contrast)', 'Dark (High contrast)']];
-
-    for (const token of tokens) {
-      const treeData = system.contextualReferenceTrees[token.name];
-      if (!treeData?.contextualReferenceTree?.length) continue;
-      const entries = treeData.contextualReferenceTree;
-
-      const lightEntry = findContextEntry(entries, idx, 'light', { audience: '3p' })
-        ?? findContextEntry(entries, idx, 'light', { audience: '1p.baseline' })
-        ?? findContextEntry(entries, idx, 'light');
-      const darkEntry = findContextEntry(entries, idx, 'dark', { audience: '3p' })
-        ?? findContextEntry(entries, idx, 'dark', { audience: '1p.baseline' })
-        ?? findContextEntry(entries, idx, 'dark');
-      const lightHcEntry = findContextEntry(entries, idx, 'light', { audience: '3p', contrast: 'high.contrast' })
-        ?? findContextEntry(entries, idx, 'light', { contrast: 'high.contrast' });
-      const darkHcEntry = findContextEntry(entries, idx, 'dark', { audience: '3p', contrast: 'high.contrast' })
-        ?? findContextEntry(entries, idx, 'dark', { contrast: 'high.contrast' });
-
-      if (!lightEntry && !darkEntry) continue;
-
-      const lightValue = formatResolvedValue((lightEntry ?? darkEntry)!.resolvedValue);
-      const darkValue = formatResolvedValue((darkEntry ?? lightEntry)!.resolvedValue);
-      const lightHcValue = lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '';
-      const darkHcValue = darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : '';
-
-      const refTree = (lightEntry ?? darkEntry)!.referenceTree;
-      const aliases = extractAliasChain(refTree, token.tokenName);
-
-      rows.push([
-        token.tokenName,
-        token.displayName,
-        aliases[0] ?? '',
-        aliases[1] ?? '',
-        lightValue,
-        darkValue,
-        lightHcValue,
-        darkHcValue,
-      ]);
-    }
-
-    if (rows.length <= 1) continue;
-
-    // Drop HC columns if they're all empty
-    const hasHcData = rows.slice(1).some((r) => r[6] || r[7]);
-    const finalRows = hasHcData ? rows : rows.map((r) => r.slice(0, 6));
-
-    sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
-  }
-
-  return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
-}
+export { extractDisplayTokenSets, tokenTableToMarkdown };
 
 async function extractTokenSystem(page: Page, html: string): Promise<TokenTableSystem | undefined> {
   if (!html.includes('token-viewer') && !html.includes('TOKEN-VIEWER')) return undefined;
@@ -1092,76 +459,6 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
   return extractMaterialPageFromHtml(content.html, url, undefined, { title: content.title, headings: content.headings }, tokenSystem);
 }
 
-function postProcessMarkdown(markdown: string): string {
-  const lines = markdown
-    .replace(/\r\n/g, '\n')
-    .replace(/[^\S\n]+$/gm, '')
-    .replace(/\u200b/g, '')
-    .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)\s*!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
-    .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)\s*!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
-    .split('\n');
-
-  const cleaned: string[] = [];
-  let inFencedCodeBlock = false;
-  for (let i = 0; i < lines.length; i += 1) {
-    const rawLine = lines[i] ?? '';
-    const isFence = /^\s*```/.test(rawLine);
-    const line = inFencedCodeBlock ? rawLine.replace(/[^\S\n]+$/g, '') : cleanMarkdownLine(rawLine);
-    if (!inFencedCodeBlock && shouldDropMarkdownLine(line)) continue;
-
-    const previous = cleaned[cleaned.length - 1] ?? '';
-    if (!line && !previous) continue;
-    cleaned.push(line);
-
-    if (isFence) inFencedCodeBlock = !inFencedCodeBlock;
-  }
-
-  return collapseBlankLines(cleaned).join('\n').trim();
-}
-
-function cleanMarkdownLine(line: string): string {
-  const trailingTrimmed = line.replace(/[^\S\n]+$/g, '');
-  const leadingWhitespace = trailingTrimmed.match(/^\s*/)?.[0] ?? '';
-  const content = trailingTrimmed.slice(leadingWhitespace.length).trim();
-  if (/^check\s+do$/i.test(content)) return `${leadingWhitespace}Do`;
-  if (/^close\s+don['’]?t$/i.test(content)) return `${leadingWhitespace}Don't`;
-  const cleanedContent = content
-    .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/\s{2,}/g, ' ');
-  return `${leadingWhitespace}${normalizeMarkdownImageUrls(cleanedContent)}`;
-}
-
-function shouldDropMarkdownLine(line: string): boolean {
-  if (!line) return false;
-
-  const normalized = normalizeNoiseText(line);
-  if (NOISE_ONLY_MARKDOWN_LINES.has(normalized)) return true;
-  if (/^resources[a-z0-9+]+$/i.test(normalized)) return true;
-  if (/^\[(infooverview|stylespecs|design_servicesguidelines|head_mounted_devicexr|accessibility_newaccessibility)/i.test(line)) return true;
-  if (TOKEN_BROWSER_NOISE_PATTERNS.some((pattern) => pattern.test(normalized)) && normalized.length < 80) return true;
-  return false;
-}
-
-function collapseBlankLines(lines: string[]): string[] {
-  return lines.filter((line, index, arr) => {
-    if (line) return true;
-    return (arr[index - 1] ?? '') !== '' && (arr[index + 1] ?? '') !== '';
-  });
-}
-
-function normalizeNoiseText(value: string): string {
-  return value.toLowerCase().replace(/[`*_~[\]()]|\\/g, '').replace(/\s+/g, ' ').trim();
-}
-
-function stripMarkdown(markdown: string): string {
-  return markdown
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/[*_`~]/g, '')
-    .replace(/\n{2,}/g, '\n');
-}
-
 export function normalizeMaterialCrawlUrl(raw: string, baseUrl: string): string | null {
   return normalizeMaterialUrl(raw, baseUrl);
 }
@@ -1185,7 +482,15 @@ export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string)
   return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlPriority);
 }
 
+export function discoverPublicDocPathsFromHrefs(hrefs: string[], baseUrl: string): string[] {
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort();
+}
+
 async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
+  return (await discoverSitemapDocPaths(baseUrl)).map((docPath) => new URL(docPath, baseUrl).toString().replace(/\/$/, ''));
+}
+
+async function discoverSitemapDocPaths(baseUrl: string): Promise<string[]> {
   if (typeof fetch !== 'function') return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SITEMAP_FETCH_TIMEOUT_MS);
@@ -1196,7 +501,7 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
     const body = await response.text();
     const locUrls = Array.from(body.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/g)).map((match) => match[1]).filter((url): url is string => Boolean(url));
     const urls = locUrls.length > 0 ? locUrls : Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
-    return discoverMaterialLinksFromHrefs(urls, baseUrl);
+    return discoverPublicDocPathsFromHrefs(urls, baseUrl);
   } catch {
     return [];
   } finally {
@@ -1207,6 +512,16 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
   return discoverMaterialLinksFromHrefs(links, baseUrl);
+}
+
+async function discoverRenderedNavDocPaths(page: Page, baseUrl: string): Promise<string[]> {
+  const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
+  return discoverPublicDocPathsFromHrefs(links, baseUrl);
+}
+
+function discoverPublicDocPathsFromHtml(html: string, baseUrl: string): string[] {
+  const hrefs = Array.from(html.matchAll(/href=(?:"([^"]+)"|'([^']+)')/gi)).map((match) => match[1] ?? match[2] ?? '').filter(Boolean);
+  return discoverPublicDocPathsFromHrefs(hrefs, baseUrl);
 }
 
 async function assertMaterialRouteUnchanged(page: Page, expectedUrl: string, baseUrl: string, phase: string): Promise<void> {
@@ -1286,12 +601,7 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
     if (!cvMatch?.[1]) throw new Error('carbonVersion not found in Angular bundle');
     const carbonVersion = cvMatch[1];
 
-    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)","exportedCarbonFileId":"([a-f0-9-]+\.json)"/g;
-    const routes: DsdbRoute[] = [];
-    let m;
-    while ((m = routePattern.exec(mainJs)) !== null) {
-      routes.push({ slug: m[1], documentId: m[2], collectionId: m[3], exportedCarbonFileId: m[4] });
-    }
+    const routes = extractDsdbRoutesFromBundle(mainJs);
 
     if (routes.length === 0) throw new Error('No DSDB routes found in Angular bundle');
     return { carbonVersion, routes };
@@ -1301,54 +611,99 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
   }
 }
 
-export async function fetchDsdbPage(baseUrl: string, carbonVersion: string, uuid: string, signal?: AbortSignal): Promise<DsdbPageData> {
-  throwIfAborted(signal);
-  const url = `${baseUrl}/_dsm/data/dsdb-m3/${carbonVersion}/${uuid}`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DSDB_FETCH_TIMEOUT_MS);
-  const onAbort = () => controller.abort();
-  signal?.addEventListener('abort', onAbort, { once: true });
-  try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`DSDB fetch failed (${res.status}) for ${uuid}`);
-    return DsdbPageDataSchema.parse(await res.json());
-  } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener('abort', onAbort);
+export function extractDsdbRoutesFromBundle(mainJs: string): DsdbRoute[] {
+  const routes: DsdbRoute[] = [];
+  const seen = new Set<string>();
+  const fragments = findRouteObjectFragments(mainJs);
+  const candidates = fragments.length > 0 ? fragments : findLooseRouteFragments(mainJs);
+
+  for (const fragment of candidates) {
+    const route = parseDsdbRouteFragment(fragment);
+    if (!route?.slug) continue;
+    const routeKey = [
+      route.slug,
+      route.documentId ?? '',
+      route.pageCanonId ?? '',
+      route.exportedCarbonFileId ?? ''
+    ].join('|');
+    if (seen.has(routeKey)) continue;
+    seen.add(routeKey);
+    routes.push(route);
   }
+
+  return routes;
 }
 
-function assembleDsdbHtml(data: DsdbPageData): string {
-  const parts: string[] = [`<h1>${escapeHtmlText(data.title)}</h1>`];
-  for (const section of data.sections) {
-    if (!section.isVisible) continue;
-    parts.push(`<h2>${escapeHtmlText(section.name)}</h2>`);
-    for (const block of section.contentBlocks) {
-      if (block.isHidden) continue;
-      if (block.title) parts.push(`<h3>${escapeHtmlText(block.title)}</h3>`);
-      for (const chunk of block.contentChunks) {
-        if (chunk.contentChunkType === 'TEXT' && chunk.htmlValue) {
-          parts.push(chunk.htmlValue);
-        } else if (chunk.contentChunkType === 'IMAGE' && chunk.imageUrl) {
-          const src = preferLargeImageUrl(chunk.imageUrl);
-          const alt = chunk.altText ?? '';
-          if (chunk.footer) {
-            parts.push(`<figure><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"><figcaption>${chunk.footer}</figcaption></figure>`);
-          } else {
-            parts.push(`<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}">`);
-          }
-        }
-        // VIDEO and RESOURCE chunks have no text content
+function findRouteObjectFragments(source: string): string[] {
+  const fragments: string[] = [];
+  const slugPattern = /"slug":"[^"]+"/g;
+  let match: RegExpExecArray | null;
+  while ((match = slugPattern.exec(source)) !== null) {
+    const fragment = extractBalancedObject(source, match.index);
+    if (fragment && fragment.includes('"slug"')) fragments.push(fragment);
+  }
+  return fragments;
+}
+
+function findLooseRouteFragments(source: string): string[] {
+  const matches = Array.from(source.matchAll(/"slug":"[^"]+"/g));
+  return matches.map((match, index) => {
+    const start = match.index ?? 0;
+    const end = matches[index + 1]?.index ?? source.length;
+    return source.slice(start, end);
+  });
+}
+
+function extractBalancedObject(source: string, slugIndex: number): string | null {
+  let start = slugIndex;
+  let depth = 0;
+  let foundStart = false;
+  for (let i = slugIndex; i >= 0; i -= 1) {
+    const char = source[i];
+    if (char === '}') depth += 1;
+    if (char === '{') {
+      if (depth === 0) {
+        start = i;
+        foundStart = true;
+        break;
       }
+      depth -= 1;
     }
   }
-  return parts.join('\n');
+  if (!foundStart) return null;
+
+  depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
-function dsdbRouteToMaterialPage(data: DsdbPageData, route: DsdbRoute, baseUrl: string, capturedAt: string): MaterialPage {
-  const url = new URL(`/${route.slug}`, baseUrl).toString();
-  const html = assembleDsdbHtml(data);
-  return extractMaterialPageFromHtml(html, url, capturedAt);
+function parseDsdbRouteFragment(fragment: string): DsdbRoute | null {
+  const readField = (field: string): string | undefined => fragment.match(new RegExp(`"${field}":"([^"]+)"`))?.[1];
+  const slug = readField('slug');
+  if (!slug) return null;
+
+  const route: DsdbRoute = {
+    slug,
+    documentId: readField('documentId'),
+    collectionId: readField('collectionId'),
+    collectionName: readField('collectionName'),
+    exportedCarbonFileId: readField('exportedCarbonFileId'),
+    pageCanonId: readField('pageCanonId') ?? readField('pageCanonicalId')
+  };
+
+  const warnings: string[] = [];
+  if (!route.documentId && !route.pageCanonId && !route.exportedCarbonFileId) warnings.push('missing-document-identifiers');
+  if (!route.collectionId && !route.collectionName) warnings.push('missing-collection-metadata');
+  if (!route.exportedCarbonFileId) warnings.push('missing-exported-carbon-file-id');
+  if (warnings.length > 0) route.metadataWarnings = warnings;
+  return route;
 }
 
 function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
@@ -1357,6 +712,47 @@ function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
   const lastSlash = path.lastIndexOf('/');
   return lastSlash > 0 && dsdbSlugs.has(path.slice(0, lastSlash));
 }
+
+function publicDocPathFromPagePath(pagePath: string): string {
+  const trimmed = `/${pagePath.replace(/\.md$/, '').replace(/^\/+/, '')}`;
+  return trimmed === '/index' ? '/' : trimmed.replace(/\/+/g, '/');
+}
+
+function publicDocPathFromUrl(url: string, baseUrl: string): string | null {
+  return normalizeMaterialPublicDocPath(url, baseUrl);
+}
+
+function hasSignificantCoverageGap(discoveredCount: number, acceptedCount: number): boolean {
+  if (discoveredCount <= 0 || acceptedCount >= discoveredCount) return false;
+  const missing = discoveredCount - acceptedCount;
+  return missing >= Math.max(COVERAGE_WARNING_GAP_MIN, Math.ceil(discoveredCount * COVERAGE_WARNING_GAP_RATIO));
+}
+
+function shouldAttemptBrowserCoverageCheck(previousIndex: MaterialIndex | null, discoveredCount: number, acceptedCount: number): boolean {
+  if (!previousIndex) return true;
+  if (hasSignificantCoverageGap(discoveredCount, acceptedCount)) return true;
+  const previousDiscovered = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
+  return discoveredCount > 0 && discoveredCount < Math.floor(previousDiscovered * COVERAGE_REGRESSION_RATIO);
+}
+
+function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
+  return {
+    discoveredPublicUrlCount: 0,
+    sitemapUrlCount: 0,
+    renderedNavUrlCount: 0,
+    angularRouteHintCount: 0,
+    previousCacheRouteHintCount: 0,
+    acceptedPageCount: 0,
+    uncrawledDiscoveredUrlCount: 0,
+    uncrawledDiscoveredUrls: [],
+    skippedBecauseMaxPagesCount: 0,
+    skippedBecauseJsonCoveredCount: 0,
+    coverageVerified: false,
+    coverageWarnings: [],
+    coverageHealth: 'unverified'
+  };
+}
+
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
@@ -1392,6 +788,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   // Declared here so the nested worker() function can close over it
   let browserContext: BrowserContext | undefined;
 
+  const extractionDiagnostics = createEmptyExtractionDiagnostics();
+  const coverageDiagnostics = createEmptyCoverageDiagnostics();
   const queue: string[] = [];
   const queued = new Set<string>();
   const seen = new Set<string>();
@@ -1399,10 +797,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const pages: MaterialPage[] = [];
   const failedUrls: string[] = [];
   const suspiciousPages: SuspiciousCrawlPage[] = [];
+  const jsonFallbackRoutes = new Map<string, ExtractionFallbackReason>();
+  const routeDiagnosticsByPath = new Map<string, ExtractionRouteDiagnostic>();
+  const discoveredPublicDocPaths = new Set<string>();
+  const sitemapPublicDocPaths = new Set<string>();
+  const renderedNavPublicDocPaths = new Set<string>();
+  const angularRoutePublicDocPaths = new Set<string>();
+  const previousCacheRoutePublicDocPaths = new Set<string>();
+  const acceptedPublicDocPaths = new Set<string>();
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
   let dsdbAttemptedCount = 0;
+  const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
     const completedAt = running ? null : new Date().toISOString();
@@ -1426,9 +833,139 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     options.onProgress?.(progress);
   };
 
+  const recordRouteDiagnostic = (diagnostic: ExtractionRouteDiagnostic): void => {
+    routeDiagnosticsByPath.set(diagnostic.path, diagnostic);
+  };
+
+  const routePathFromSlug = (slug: string): string => materialPagePath(new URL(`/${slug}`, baseUrl).toString());
+  const routeSlugFromPath = (pagePath: string): string => pagePath.replace(/\/overview\.md$/, '').replace(/\.md$/, '');
+  const addDiscoveredPaths = (paths: Iterable<string>, bucket?: Set<string>): void => {
+    for (const docPath of paths) {
+      const normalized = docPath === '/' ? '/' : `/${docPath.replace(/^\/+/, '').replace(/\/$/, '')}`;
+      discoveredPublicDocPaths.add(normalized);
+      bucket?.add(normalized);
+    }
+  };
+  const markAcceptedPage = (pagePath: string): void => {
+    acceptedPublicDocPaths.add(publicDocPathFromPagePath(pagePath));
+  };
+
+  if (previousIndex) {
+    addDiscoveredPaths(previousIndex.pages.map((page) => publicDocPathFromPagePath(page.path)), previousCacheRoutePublicDocPaths);
+  }
+
+  const createRouteDiagnostic = ({
+    url,
+    path,
+    sourceUsed,
+    finalMethod,
+    directJsonAttempted = false,
+    directJsonSucceeded = false,
+    networkJsonAttempted = false,
+    networkJsonSucceeded = false,
+    domFallbackAttempted = false,
+    domFallbackSucceeded = false,
+    fallbackReasons = [],
+    fallbackSkippedReasons = [],
+    unknownChunkTypes = [],
+    unknownResourceTypes = [],
+    tokenTables = 0,
+    tokenTablesRendered = 0,
+    tokenTablesRequested = tokenTables,
+    tokenContextDiagnostics = [],
+    statusTablesRequested = 0,
+    statusTablesResolved = 0,
+    statusTablesRenderedAsPlaceholder = 0,
+    unsupportedStatusTableSchemaCount = 0,
+    statusTableDiagnostics = [],
+    missingRequestedTokenSets = [],
+    unknownJsonResourceCount = 0,
+    capturedJsonResponseCounts = {},
+    rawJsonDebugFilesWritten = 0
+    ,
+    routeMetadataWarnings = [],
+    candidateSelectionReasons = []
+  }: {
+    url: string;
+    path: string;
+    sourceUsed: ExtractionSource;
+    finalMethod: ExtractionRouteDiagnostic['finalMethod'];
+    directJsonAttempted?: boolean;
+    directJsonSucceeded?: boolean;
+    networkJsonAttempted?: boolean;
+    networkJsonSucceeded?: boolean;
+    domFallbackAttempted?: boolean;
+    domFallbackSucceeded?: boolean;
+    fallbackReasons?: ExtractionFallbackReason[];
+    fallbackSkippedReasons?: ExtractionFallbackReason[];
+    unknownChunkTypes?: string[];
+    unknownResourceTypes?: string[];
+    tokenTables?: number;
+    tokenTablesRendered?: number;
+    tokenTablesRequested?: number;
+    tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
+    statusTablesRequested?: number;
+    statusTablesResolved?: number;
+    statusTablesRenderedAsPlaceholder?: number;
+    unsupportedStatusTableSchemaCount?: number;
+    statusTableDiagnostics?: ExtractionRouteDiagnostic['statusTableDiagnostics'];
+    missingRequestedTokenSets?: string[];
+    unknownJsonResourceCount?: number;
+    capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
+    rawJsonDebugFilesWritten?: number;
+    routeMetadataWarnings?: string[];
+    candidateSelectionReasons?: string[];
+  }): ExtractionRouteDiagnostic => ({
+    url,
+    path,
+    sourceUsed,
+    finalMethod,
+    jsonAttempted: directJsonAttempted || networkJsonAttempted,
+    jsonSucceeded: directJsonSucceeded || networkJsonSucceeded,
+    ...(fallbackReasons[0] ? { fallbackReason: fallbackReasons[0] } : {}),
+    ...(fallbackReasons.length > 0 ? { fallbackReasons } : {}),
+    ...(fallbackSkippedReasons.length > 0 ? { fallbackSkippedReasons } : {}),
+    browserFallbackAttempted: domFallbackAttempted,
+    browserFallbackSucceeded: domFallbackSucceeded,
+    directJsonAttempted,
+    directJsonSucceeded,
+    networkJsonAttempted,
+    networkJsonSucceeded,
+    domFallbackAttempted,
+    domFallbackSucceeded,
+    unknownChunkTypes,
+    unknownResourceTypes,
+    tokenTables,
+    tokenTablesRendered,
+    tokenTablesRequested,
+    tokenContextDiagnostics,
+    statusTablesRequested,
+    statusTablesResolved,
+    statusTablesRenderedAsPlaceholder,
+    unsupportedStatusTableSchemaCount,
+    statusTableDiagnostics,
+    missingRequestedTokenSets,
+    unknownJsonResourceCount,
+    capturedJsonResponseCounts,
+    rawJsonDebugFilesWritten,
+    ...(routeMetadataWarnings.length > 0 ? { routeMetadataWarnings } : {}),
+    ...(candidateSelectionReasons.length > 0 ? { candidateSelectionReasons } : {})
+  });
+
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
-  const dsdbSlugs = new Set<string>();
+  const jsonExtractedSlugs = new Set<string>();
   {
+    if (typeof fetch === 'function') {
+      try {
+        const shellResponse = await fetch(baseUrl, { signal });
+        if (shellResponse.ok) addDiscoveredPaths(discoverPublicDocPathsFromHtml(await shellResponse.text(), baseUrl), renderedNavPublicDocPaths);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+      }
+    }
+
+    addDiscoveredPaths(await discoverSitemapDocPaths(baseUrl), sitemapPublicDocPaths);
+
     let dsdbConfig: DsdbSiteConfig | null = null;
     try {
       throwIfAborted(signal);
@@ -1439,9 +976,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
 
     if (dsdbConfig) {
+      addDiscoveredPaths(dsdbConfig.routes.map((route) => normalizeMaterialPublicDocPath(`/${route.slug}`, baseUrl)).filter((value): value is string => Boolean(value)), angularRoutePublicDocPaths);
       const capturedAt = new Date().toISOString();
-      for (const route of dsdbConfig.routes) dsdbSlugs.add(route.slug);
-
       const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
       const routes = dsdbConfig.routes;
       for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += dsdbBatchSize) {
@@ -1452,23 +988,107 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           dsdbAttemptedCount += 1;
           try {
             throwIfAborted(signal);
-            const data = await fetchDsdbPage(baseUrl, dsdbConfig!.carbonVersion, route.exportedCarbonFileId, signal);
-            throwIfAborted(signal);
-            const materialPage = dsdbRouteToMaterialPage(data, route, baseUrl, capturedAt);
+            const bundle = await fetchJsonPageBundle(baseUrl, dsdbConfig!.carbonVersion, {
+              slug: route.slug,
+              documentId: route.documentId,
+              collectionId: route.collectionId,
+              collectionName: route.collectionName,
+              exportedCarbonFileId: route.exportedCarbonFileId,
+              pageCanonId: route.pageCanonId
+            }, signal);
+            const routePath = routePathFromSlug(route.slug);
+            if (!bundle.pageData && !bundle.contentPage) {
+              jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+              recordRouteDiagnostic(createRouteDiagnostic({
+                url: new URL(`/${route.slug}`, baseUrl).toString(),
+                path: routePath,
+                sourceUsed: 'failed',
+                finalMethod: null,
+                directJsonAttempted: true,
+                fallbackReasons: ['json-fetch-failed']
+              }));
+              return;
+            }
+            const extraction = await extractContentPageToMaterialPage({
+              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              pageData: bundle.pageData,
+              contentPage: bundle.contentPage,
+              capturedAt,
+              fetchResource: bundle.fetchResource
+            });
+            if (extraction.fallbackReason) {
+              jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
+              recordRouteDiagnostic(createRouteDiagnostic({
+                url: extraction.page.url,
+                path: extraction.page.path,
+                sourceUsed: 'failed',
+                finalMethod: null,
+                directJsonAttempted: true,
+                fallbackReasons: [extraction.fallbackReason],
+                unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+                unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+                tokenTables: extraction.pageDiagnostic.tokenTables,
+                tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+                tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+                statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
+                statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+                unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+                statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
+                ,
+                routeMetadataWarnings: route.metadataWarnings ?? []
+              }));
+              return;
+            }
+            const materialPage = extraction.page;
             if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+              const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, materialPage.path, bundle.responses);
               pages.push(materialPage);
-              writtenPaths.add(materialPage.path);
+              markAcceptedPage(materialPage.path);
+              pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
+              recordRouteDiagnostic(createRouteDiagnostic({
+                url: materialPage.url,
+                path: materialPage.path,
+                sourceUsed: 'direct-json',
+                finalMethod: 'json',
+                directJsonAttempted: true,
+                directJsonSucceeded: true,
+                unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+                unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+                tokenTables: extraction.pageDiagnostic.tokenTables,
+                tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+                tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+                statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
+                statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+                unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+                statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+                rawJsonDebugFilesWritten,
+                routeMetadataWarnings: route.metadataWarnings ?? [],
+                candidateSelectionReasons: bundle.selectionReasons
+            }));
+            writtenPaths.add(materialPage.path);
+            jsonExtractedSlugs.add(route.slug);
               lastSavedUrl = materialPage.url;
               await writePage(materialPage, cacheDir);
               emitProgress(true);
             }
           } catch (err) {
             if (signal?.aborted) return;
-            const failUrl = new URL(`/${route.slug}`, baseUrl).toString();
-            failedUrls.push(failUrl);
-            lastFailedUrl = failUrl;
-            console.error(`DSDB fetch failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
-            emitProgress(true);
+            jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+            recordRouteDiagnostic(createRouteDiagnostic({
+              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              path: routePathFromSlug(route.slug),
+              sourceUsed: 'failed',
+              finalMethod: null,
+              directJsonAttempted: true,
+              fallbackReasons: ['json-fetch-failed']
+            }));
+            console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }));
       }
@@ -1476,9 +1096,41 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   }
 
-  // ── Phase 2: Browser crawl for non-DSDB pages (blog posts, landing pages) ──
-  if (pages.length < maxPages && !signal?.aborted) {
-    const browser = await launchChromium(options.headless ?? true);
+  // ── Phase 2: Browser crawl for JSON misses and uncovered routes ───────────
+  for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
+    if (routeDiagnostic.sourceUsed === 'direct-json') {
+      routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), 'json-quality-accepted' as ExtractionFallbackReason];
+    }
+  }
+  coverageDiagnostics.sitemapUrlCount = sitemapPublicDocPaths.size;
+  coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
+  coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
+  coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
+  coverageDiagnostics.discoveredPublicUrlCount = discoveredPublicDocPaths.size;
+  coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath)).length;
+
+  const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
+  const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
+  const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
+  if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+    let browser: Browser | null = null;
+    try {
+      browser = await launchChromium(options.headless ?? true);
+    } catch (error) {
+      if (jsonExtractionSatisfiedMinimum) {
+        emitProgress(true);
+        const fallbackReason: ExtractionFallbackReason = 'playwright-unavailable';
+        for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
+          routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), fallbackReason];
+        }
+        coverageDiagnostics.coverageWarnings.push('coverage-unverified:playwright-unavailable');
+      } else {
+        throw error;
+      }
+    }
+    if (!browser) {
+      // Direct JSON already produced an acceptable cache; keep it and record the skip.
+    } else {
     browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
 
     const onAbort = () => {
@@ -1489,25 +1141,59 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     enqueue(baseUrl);
+    for (const slug of jsonFallbackRoutes.keys()) enqueue(new URL(`/${slug}`, baseUrl).toString());
+    for (const docPath of discoveredPublicDocPaths) enqueue(new URL(docPath, baseUrl).toString());
     for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
     emitProgress(true);
 
-    try {
-      await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
-    } catch (error) {
-      emitProgress(false, error instanceof Error ? error.message : String(error));
-      throw error;
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-      wakeWorkers();
-      await browser.close();
-    }
+      try {
+        await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
+      } catch (error) {
+        emitProgress(false, error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+        wakeWorkers();
+        await browser.close();
+      }
 
-    throwIfAborted(signal);
+      throwIfAborted(signal);
+    }
   }
 
   const capturedAt = new Date().toISOString();
+  for (const diagnostic of routeDiagnosticsByPath.values()) pushRouteDiagnostic(extractionDiagnostics, diagnostic);
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
+  coverageDiagnostics.acceptedPageCount = pages.length;
+  coverageDiagnostics.discoveredPublicUrlCount = discoveredPublicDocPaths.size;
+  coverageDiagnostics.sitemapUrlCount = sitemapPublicDocPaths.size;
+  coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
+  coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
+  coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
+  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath)).sort();
+  coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
+  coverageDiagnostics.uncrawledDiscoveredUrlCount = uncrawledDiscoveredUrls.length;
+  coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath) && isDsdbCoveredPath(docPath.replace(/^\/+/, ''), jsonExtractedSlugs)).length;
+  coverageDiagnostics.skippedBecauseMaxPagesCount = pages.length >= maxPages ? uncrawledDiscoveredUrls.length : 0;
+  if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
+    coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
+  }
+  if (coverageDiagnostics.skippedBecauseMaxPagesCount > 0) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${coverageDiagnostics.skippedBecauseMaxPagesCount}`);
+  }
+  if (hasSignificantCoverageGap(coverageDiagnostics.discoveredPublicUrlCount, coverageDiagnostics.acceptedPageCount)) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
+  }
+  const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
+  if (previousDiscoveredCount > 0 && coverageDiagnostics.discoveredPublicUrlCount > 0 && coverageDiagnostics.discoveredPublicUrlCount < Math.floor(previousDiscoveredCount * COVERAGE_REGRESSION_RATIO)) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-regression:previous=${previousDiscoveredCount}:current=${coverageDiagnostics.discoveredPublicUrlCount}`);
+  }
+  coverageDiagnostics.coverageVerified = coverageDiagnostics.discoveredPublicUrlCount > 0
+    && coverageDiagnostics.uncrawledDiscoveredUrlCount === 0
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
+  coverageDiagnostics.coverageHealth = computeCoverageHealth(coverageDiagnostics);
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,
@@ -1516,6 +1202,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     failedPageCount: failedUrls.length,
     failedUrls,
     qualityReport,
+    extractionDiagnostics,
+    coverageDiagnostics,
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
@@ -1582,6 +1270,63 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
             const materialPage: MaterialPage = { ...cached, text, markdown };
             pages.push(materialPage);
+            markAcceptedPage(materialPage.path);
+            const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(materialPage.path));
+            pushPageDiagnostic(extractionDiagnostics, {
+              url: materialPage.url,
+              path: materialPage.path,
+              method: 'dom',
+              source: 'dom-fallback',
+              ...(fallbackReason ? { fallbackReason } : {}),
+              unknownChunkTypes: [],
+              unknownResourceTypes: [],
+              tokenTables: 0,
+              tokenTablesRendered: 0,
+              tokenContextDiagnostics: [],
+              statusTablesRequested: 0,
+              statusTablesResolved: 0,
+              statusTablesRenderedAsPlaceholder: 0,
+              unsupportedStatusTableSchemaCount: 0,
+              statusTableDiagnostics: [],
+              missingRequestedTokenSets: [],
+              suspiciousReasons: [],
+              imageCount: 0,
+              videoCount: 0,
+              unresolvedResourceCount: 0,
+              noSections: false,
+              noHeadings: materialPage.headings.length === 0,
+              markdownLength: materialPage.markdown.length
+            });
+            const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+            recordRouteDiagnostic(createRouteDiagnostic({
+              url: materialPage.url,
+              path: materialPage.path,
+              sourceUsed: 'dom-fallback',
+              finalMethod: 'dom',
+              directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? Boolean(fallbackReason),
+              directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+              networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? false,
+              networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+              domFallbackAttempted: false,
+              domFallbackSucceeded: false,
+              fallbackReasons: previousDiagnostic?.fallbackReasons ?? (fallbackReason ? [fallbackReason] : []),
+              fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+              capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? {},
+              unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+              unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+              tokenTables: previousDiagnostic?.tokenTables ?? 0,
+              tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+              tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+              tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+              statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
+              statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+              statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+              unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+              statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
+              missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+              unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? 0,
+              rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+            }));
             writtenPaths.add(materialPage.path);
             lastSavedUrl = url;
             await writePage(materialPage, cacheDir);
@@ -1594,10 +1339,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
     }
 
+    const networkCapture = createNetworkJsonCapture(page);
     let finalUrl: string;
     try {
       finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
     } catch (error) {
+      networkCapture.stop();
       if (error instanceof RequestedRouteRejectedError) {
         suspiciousPages.push(error.rejectedRoute);
         failedUrls.push(url);
@@ -1617,9 +1364,154 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'lazy-load scrolling');
     await waitForStableMaterialSnapshot(page, signal);
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'stabilization');
+    await networkCapture.stopAndDrain();
+
+    const capturedBundle = networkCapture.buildBundle({
+      requestedUrl: url,
+      finalUrl,
+      slug: routeSlugFromPath(materialPagePath(finalUrl)),
+      routeMetadata: {
+        slug: routeSlugFromPath(materialPagePath(finalUrl))
+      }
+    });
+    const capturedJsonResponseCounts = countCapturedResponseTypes(capturedBundle.responses);
+    const unknownJsonResourceCount = capturedBundle.responses.filter((response) => response.type === 'unknown-json-resource').length;
+
+    if (capturedBundle.pageData || capturedBundle.contentPage) {
+      const networkExtraction = await extractContentPageToMaterialPage({
+        url: finalUrl,
+        pageData: capturedBundle.pageData,
+        contentPage: capturedBundle.contentPage,
+        fetchResource: capturedBundle.fetchResource
+      });
+      if (!networkExtraction.fallbackReason && networkExtraction.page.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(networkExtraction.page.path)) {
+        const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, networkExtraction.page.path, capturedBundle.responses);
+        pages.push(networkExtraction.page);
+        markAcceptedPage(networkExtraction.page.path);
+        pushPageDiagnostic(extractionDiagnostics, { ...networkExtraction.pageDiagnostic, source: 'network-json' });
+        recordRouteDiagnostic(createRouteDiagnostic({
+          url: networkExtraction.page.url,
+          path: networkExtraction.page.path,
+          sourceUsed: 'network-json',
+          finalMethod: 'json',
+          directJsonAttempted: routeDiagnosticsByPath.get(networkExtraction.page.path)?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(networkExtraction.page.path)),
+          directJsonSucceeded: routeDiagnosticsByPath.get(networkExtraction.page.path)?.directJsonSucceeded ?? false,
+          networkJsonAttempted: true,
+          networkJsonSucceeded: true,
+          fallbackReasons: routeDiagnosticsByPath.get(networkExtraction.page.path)?.fallbackReasons ?? [],
+          fallbackSkippedReasons: routeDiagnosticsByPath.get(networkExtraction.page.path)?.fallbackSkippedReasons ?? [],
+          unknownChunkTypes: networkExtraction.pageDiagnostic.unknownChunkTypes,
+          unknownResourceTypes: networkExtraction.pageDiagnostic.unknownResourceTypes,
+          tokenTables: networkExtraction.pageDiagnostic.tokenTables,
+          tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
+          tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+          tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
+          statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
+          statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+          statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+          unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+          statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
+          missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
+          unknownJsonResourceCount,
+          capturedJsonResponseCounts,
+          rawJsonDebugFilesWritten,
+          candidateSelectionReasons: capturedBundle.selectionReasons
+        }));
+        lastSavedUrl = finalUrl;
+        writtenPaths.add(networkExtraction.page.path);
+        await writePage(networkExtraction.page, cacheDir);
+        emitProgress(true);
+        await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
+        if (isBlogListingUrl(finalUrl, baseUrl)) {
+          const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
+          for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
+        }
+        const discoveredLinks = await discoverLinks(page, baseUrl);
+        if (finalUrl === baseUrl) addDiscoveredPaths(await discoverRenderedNavDocPaths(page, baseUrl), renderedNavPublicDocPaths);
+        for (const link of discoveredLinks) enqueue(link);
+        emitProgress(true);
+        return;
+      }
+
+      const previousDiagnostic = routeDiagnosticsByPath.get(networkExtraction.page.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: networkExtraction.page.url,
+        path: networkExtraction.page.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(networkExtraction.page.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: true,
+        networkJsonSucceeded: false,
+        fallbackReasons: [...(previousDiagnostic?.fallbackReasons ?? []), networkExtraction.fallbackReason ?? 'network-json-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        unknownChunkTypes: networkExtraction.pageDiagnostic.unknownChunkTypes,
+        unknownResourceTypes: networkExtraction.pageDiagnostic.unknownResourceTypes,
+        tokenTables: networkExtraction.pageDiagnostic.tokenTables,
+        tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
+        tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+        tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
+        statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
+        statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
+        missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
+        unknownJsonResourceCount,
+        capturedJsonResponseCounts,
+        candidateSelectionReasons: capturedBundle.selectionReasons
+      }));
+    } else {
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: finalUrl,
+        path: materialPagePath(finalUrl),
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPagePath(finalUrl))),
+        directJsonSucceeded: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.directJsonSucceeded ?? false,
+        networkJsonAttempted: true,
+        networkJsonSucceeded: false,
+        fallbackReasons: [...(routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackReasons ?? []), 'network-json-failed'],
+        fallbackSkippedReasons: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackSkippedReasons ?? [],
+        unknownJsonResourceCount,
+        capturedJsonResponseCounts,
+        candidateSelectionReasons: capturedBundle.selectionReasons
+      }));
+    }
+
     const materialPage = await extract(page, finalUrl);
     const suspiciousResult = validateCrawledPage(materialPage);
     if (suspiciousResult) {
+      const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: materialPage.url,
+        path: materialPage.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPage.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: false,
+        fallbackReasons: previousDiagnostic?.fallbackReasons ?? ['dom-fallback-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
       suspiciousPages.push(suspiciousResult);
       failedUrls.push(url);
       lastFailedUrl = url;
@@ -1631,10 +1523,98 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
       const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
       pages.push(pageToSave);
+      markAcceptedPage(pageToSave.path);
+      const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(pageToSave.path));
+      pushPageDiagnostic(extractionDiagnostics, {
+        url: pageToSave.url,
+        path: pageToSave.path,
+        method: 'dom',
+        source: 'dom-fallback',
+        ...(fallbackReason ? { fallbackReason } : {}),
+        unknownChunkTypes: [],
+        unknownResourceTypes: [],
+        tokenTables: 0,
+        tokenTablesRendered: 0,
+        tokenContextDiagnostics: [],
+        statusTablesRequested: 0,
+        statusTablesResolved: 0,
+        statusTablesRenderedAsPlaceholder: 0,
+        unsupportedStatusTableSchemaCount: 0,
+        statusTableDiagnostics: [],
+        missingRequestedTokenSets: [],
+        suspiciousReasons: [],
+        imageCount: 0,
+        videoCount: 0,
+        unresolvedResourceCount: 0,
+        noSections: false,
+        noHeadings: pageToSave.headings.length === 0,
+        markdownLength: pageToSave.markdown.length
+      });
+      const previousDiagnostic = routeDiagnosticsByPath.get(pageToSave.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: pageToSave.url,
+        path: pageToSave.path,
+        sourceUsed: 'dom-fallback',
+        finalMethod: 'dom',
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? Boolean(fallbackReason),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: true,
+        fallbackReasons: previousDiagnostic?.fallbackReasons ?? (fallbackReason ? [fallbackReason] : ['network-json-failed']),
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
       lastSavedUrl = finalUrl;
       writtenPaths.add(pageToSave.path);
       await writePage(pageToSave, cacheDir);
       emitProgress(true);
+    } else {
+      const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: materialPage.url,
+        path: materialPage.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPage.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: false,
+        fallbackReasons: [...(previousDiagnostic?.fallbackReasons ?? []), 'dom-fallback-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
     }
 
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
@@ -1642,7 +1622,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
       for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
     }
-    for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+    const discoveredLinks = await discoverLinks(page, baseUrl);
+    if (finalUrl === baseUrl) addDiscoveredPaths(await discoverRenderedNavDocPaths(page, baseUrl), renderedNavPublicDocPaths);
+    for (const link of discoveredLinks) enqueue(link);
     emitProgress(true);
   }
 
@@ -1650,7 +1632,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const link = normalizeMaterialCrawlUrl(raw, baseUrl);
     if (!link || seen.has(link) || queued.has(link)) return;
     const linkPath = new URL(link).pathname.replace(/^\/+|\/+$/g, '');
-    if (isDsdbCoveredPath(linkPath, dsdbSlugs)) return;
+    if (isDsdbCoveredPath(linkPath, jsonExtractedSlugs)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
     queue.sort(compareMaterialCrawlPriority);

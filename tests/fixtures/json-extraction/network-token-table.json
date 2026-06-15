@@ -1,0 +1,15 @@
+{
+  "system": {
+    "tokens": [],
+    "tokenSets": [
+      {
+        "name": "designSystems/ds1/tokenSets/ts1",
+        "displayName": "Button - Common",
+        "tokenSetName": "md.comp.button"
+      }
+    ],
+    "tags": [],
+    "contextTagGroups": [],
+    "contextualReferenceTrees": {}
+  }
+}

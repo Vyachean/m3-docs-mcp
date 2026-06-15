@@ -67,7 +67,9 @@ program.command('update')
         pageCount: index.pageCount,
         attemptedPageCount: index.attemptedPageCount,
         failedPageCount: index.failedPageCount,
-        failedUrls: index.failedUrls
+        failedUrls: index.failedUrls,
+        extractionDiagnostics: index.extractionDiagnostics,
+        coverageDiagnostics: index.coverageDiagnostics
       }, null, 2));
     } catch (error) {
       renderProgress(null);

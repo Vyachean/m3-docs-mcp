@@ -1,0 +1,25 @@
+{
+  "title": "Image-rich page",
+  "content": {
+    "sections": [
+      {
+        "title": "Imagery",
+        "visible": true,
+        "blocks": [
+          {
+            "title": "Hero",
+            "hidden": false,
+            "chunks": [
+              {
+                "type": "IMAGE",
+                "imageUrl": "https://example.com/material-hero=w200",
+                "altText": "Material hero",
+                "footer": "Hero caption"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

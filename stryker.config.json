@@ -9,6 +9,7 @@
     "src/options.ts",
     "src/store.ts",
     "src/mcp-server.ts",
+    "src/json-extraction/**/*.ts",
     "!src/index.ts",
     "!src/crawler.ts"
   ],

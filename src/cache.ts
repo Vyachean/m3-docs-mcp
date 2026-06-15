@@ -2,11 +2,37 @@ import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/p
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
-import type { CacheStatus, MaterialIndex, MaterialPage } from './types.js';
+import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
 
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
 const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
+
+export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {
+  const warnings = diag.coverageWarnings;
+  const hasRegression = warnings.some((w) => w.startsWith('coverage-regression:'));
+  const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
+  const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
+  // Regression always means failed regardless of partial flag
+  if (hasRegression) return 'failed';
+  // An unexpected coverage gap (no max-pages explanation) is a failure
+  if (hasGap && !hasPartial) return 'failed';
+  if (diag.coverageVerified) return 'verified';
+  if (hasPartial) return 'partial';
+  return 'unverified';
+}
+
+function firstCacheCoveragePolicy(nextIndex: MaterialIndex): void {
+  const diag = nextIndex.coverageDiagnostics;
+  if (!diag) return;
+  const warnings = diag.coverageWarnings;
+  const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
+  const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
+  if (hasGap && !hasPartial) {
+    const gapWarning = warnings.find((w) => w.startsWith('coverage-gap:')) ?? 'coverage-gap';
+    throw new Error(`Material 3 cache has a significant coverage gap (${gapWarning}) without an intentional --max-pages limit. Discovery found more public URLs than were accepted. Use --force to promote anyway.`);
+  }
+}
 
 type CachePromotionSafetyOptions = {
   force?: boolean;
@@ -75,6 +101,7 @@ export function isCacheFresh(ageMs: number | null, maxAgeHours: number): boolean
 export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours = DEFAULT_CACHE_MAX_AGE_HOURS): Promise<CacheStatus> {
   const index = await readIndex(cacheDir);
   const ageMs = await cacheAgeMs(cacheDir);
+  const coverageHealth = index?.coverageDiagnostics?.coverageHealth;
   return {
     cacheDir,
     hasCache: Boolean(index),
@@ -84,7 +111,10 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     failedPageCount: index?.failedPageCount ?? 0,
     failedUrls: index?.failedUrls ?? [],
     ageMs,
-    isFresh: isCacheFresh(ageMs, maxAgeHours)
+    isFresh: isCacheFresh(ageMs, maxAgeHours),
+    ...(coverageHealth !== undefined ? { coverageHealth } : {}),
+    ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
+    ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {})
   };
 }
 
@@ -146,7 +176,21 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     }
   }
 
+  // First-cache coverage policy: even without a previous index, an unexpected
+  // coverage gap must not silently produce a cache that appears complete.
+  firstCacheCoveragePolicy(nextIndex);
+
   if (!previousIndex || previousIndex.pageCount <= 0) return;
+
+  const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
+  const nextDiscoveredCount = nextIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? nextIndex.pageCount;
+  const intentionalPartial = nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false;
+  if (!intentionalPartial && previousDiscoveredCount > 0 && nextDiscoveredCount > 0) {
+    const minDiscoveredPages = Math.ceil(previousDiscoveredCount * DEFAULT_MIN_RETAINED_PAGE_RATIO);
+    if (nextDiscoveredCount < minDiscoveredPages) {
+      throw new Error(`Material 3 crawl discovered only ${nextDiscoveredCount} public documentation URLs, below ${formatPercent(DEFAULT_MIN_RETAINED_PAGE_RATIO)} of the previous cache coverage (${previousDiscoveredCount}). Keeping the existing cache. Use --force to replace it anyway.`);
+    }
+  }
 
   const minRetainedPageRatio = options.minRetainedPageRatio ?? DEFAULT_MIN_RETAINED_PAGE_RATIO;
   const minAcceptedPages = Math.ceil(previousIndex.pageCount * minRetainedPageRatio);
@@ -164,6 +208,8 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     attemptedPageCount: index.attemptedPageCount ?? index.pageCount ?? pages.length,
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
+    ...(index.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
+    ...(index.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
     ...(index.qualityReport ? { qualityReport: index.qualityReport } : {}),
     pages
   };

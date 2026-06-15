@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, extractMaterialPageFromHtml, materialCrawlCandidates, normalizeMaterialCrawlUrl, resolvePlaywrightCliPath, validateCrawledPage } from '../src/crawler.js';
+import { createCrawlQualityReport, discoverMaterialLinksFromHrefs, discoverPublicDocPathsFromHrefs, extractMaterialPageFromHtml, materialCrawlCandidates, normalizeMaterialCrawlUrl, resolvePlaywrightCliPath, validateCrawledPage } from '../src/crawler.js';
 
 describe('extractMaterialPageFromHtml', () => {
   it('extracts metadata, readable text, and markdown from a Material documentation fixture', () => {
@@ -186,6 +186,25 @@ describe('discoverMaterialLinksFromHrefs', () => {
       'https://m3.material.io/components/buttons',
       'https://m3.material.io/components/dialogs',
       'https://m3.material.io/foundations/layout/canonical-layouts'
+    ]);
+  });
+});
+
+describe('discoverPublicDocPathsFromHrefs', () => {
+  it('normalizes public documentation paths and filters assets and service URLs', () => {
+    expect(discoverPublicDocPathsFromHrefs([
+      'https://m3.material.io/components/dialogs?tab=usage#actions',
+      '/components/dialogs/',
+      '/styles/color',
+      '/foundations/accessibility',
+      '/assets/logo.svg',
+      '/static/angular/main.abcdef12.js',
+      'https://m3.material.io/_dsm/content/m3/cv-123/page.json',
+      'https://example.com/components/dialogs'
+    ], 'https://m3.material.io')).toEqual([
+      '/components/dialogs',
+      '/foundations/accessibility',
+      '/styles/color'
     ]);
   });
 });

@@ -1,0 +1,21 @@
+{
+  "title": "Status docs",
+  "sections": [
+    {
+      "name": "States",
+      "isVisible": true,
+      "contentBlocks": [
+        {
+          "title": "Availability",
+          "contentChunks": [
+            {
+              "contentChunkType": "RESOURCE",
+              "libraryModuleType": "STATUS_TABLE",
+              "resourceName": "designSystems/20543ce18892f7d9/components/31a0fe91b6f4e8d2"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
