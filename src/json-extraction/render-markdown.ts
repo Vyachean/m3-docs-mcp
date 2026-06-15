@@ -680,12 +680,16 @@ function normalizeReferenceNode(raw: unknown): ReferenceNode {
   };
 }
 
+function normalizeResolvedValue(raw: unknown): ResolvedTokenValue {
+  return (asObject(raw) ?? {}) as ResolvedTokenValue;
+}
+
 function normalizeContextTreeEntry(raw: unknown): ContextTreeEntry {
   const e = asObject(raw) ?? {};
   return {
     contextTags: asArray(e.contextTags).filter((t): t is string => typeof t === 'string'),
     referenceTree: normalizeReferenceNode(e.referenceTree),
-    resolvedValue: (e.resolvedValue as ResolvedTokenValue | undefined) ?? {}
+    resolvedValue: normalizeResolvedValue(e.resolvedValue)
   };
 }
 

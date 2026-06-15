@@ -113,18 +113,24 @@ async function fetchJsonOrNull(
   fetchImpl: FetchLike,
   responses: JsonCapturedResponse[]
 ): Promise<unknown | null> {
+  let response: Response;
   try {
-    const response = await fetchImpl(url, { signal });
-    if (!response.ok) return null;
-    const payload = await response.json();
-    const classified = classifyJsonResponse({ url, payload });
-    if (!responses.some((entry) => entry.url === classified.url && entry.type === classified.type && JSON.stringify(entry.payload) === JSON.stringify(classified.payload))) {
-      responses.push(classified);
-    }
-    return payload;
+    response = await fetchImpl(url, { signal });
   } catch {
     return null;
   }
+  if (!response.ok) return null;
+  let payload: unknown;
+  try {
+    payload = await response.json() as unknown;
+  } catch {
+    return null;
+  }
+  const classified = classifyJsonResponse({ url, payload });
+  if (!responses.some((entry) => entry.url === classified.url && entry.type === classified.type && JSON.stringify(entry.payload) === JSON.stringify(classified.payload))) {
+    responses.push(classified);
+  }
+  return payload;
 }
 
 function stripJsonExtension(value: string | undefined): string | null {

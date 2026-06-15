@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTokenTableSystem, renderTokenTableWithDiagnostics, renderStatusTableMarkdown } from '../src/json-extraction/render-markdown.js';
 import { renderDsdbResourceChunk } from '../src/json-extraction/extract-dsdb-resource.js';
+import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
 import type { ExtractionPageDiagnostic } from '../src/types.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -464,5 +465,213 @@ describe('TOKEN_TABLE resource chunk – malformed resource payloads', () => {
     expect(diag.tokenTables).toBe(1);
     expect(diag.tokenTablesRendered).toBe(0);
     expect(diag.unresolvedResourceCount).toBeGreaterThan(0);
+  });
+});
+
+// ─── normalizeResolvedValue – non-object shapes ───────────────────────────────
+
+describe('normalizeTokenTableSystem – non-object resolvedValue in contextual tree', () => {
+  it('normalizes string resolvedValue to empty object – does not throw', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+      contextualReferenceTrees: {
+        'ds/tok': {
+          contextualReferenceTree: [
+            { contextTags: ['ds/tags/light'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: 'not-an-object' },
+            { contextTags: ['ds/tags/dark'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: 42 }
+          ]
+        }
+      }
+    });
+    expect(result).not.toBeNull();
+    const entry = result!.contextualReferenceTrees['ds/tok']!.contextualReferenceTree[0]!;
+    expect(typeof entry.resolvedValue).toBe('object');
+    expect(entry.resolvedValue).toEqual({});
+  });
+
+  it('normalizes null resolvedValue to empty object', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+      contextualReferenceTrees: {
+        'ds/tok': {
+          contextualReferenceTree: [
+            { contextTags: ['ds/tags/light'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: null }
+          ]
+        }
+      }
+    });
+    expect(result).not.toBeNull();
+    expect(result!.contextualReferenceTrees['ds/tok']!.contextualReferenceTree[0]!.resolvedValue).toEqual({});
+  });
+
+  it('does not throw when rendering token table with non-object resolvedValues', () => {
+    const system = normalizeTokenTableSystem({
+      ...VALID_TOKEN_SYSTEM,
+      contextualReferenceTrees: {
+        'designSystems/ds/tokenSets/ts/tokens/tok1': {
+          contextualReferenceTree: [
+            { contextTags: ['ds/tags/light'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: 'bad' },
+            { contextTags: ['ds/tags/dark'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: [1, 2, 3] }
+          ]
+        }
+      }
+    })!;
+    expect(() => renderTokenTableWithDiagnostics(system, ['Divider - Common'])).not.toThrow();
+  });
+});
+
+// ─── STATUS_TABLE placeholder content ────────────────────────────────────────
+
+describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
+  it('placeholder includes resource name and reason when resource is missing', async () => {
+    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' };
+    const diag = emptyPageDiagnostic();
+    const result = await renderDsdbResourceChunk(chunk, async () => null, diag);
+    expect(result).toContain('missing-status-table-resource');
+    expect(result).toContain('design/system/status/comp-123');
+  });
+
+  it('placeholder includes resource name and reason when schema is unsupported', async () => {
+    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/system/status/comp-123' };
+    const diag = emptyPageDiagnostic();
+    const result = await renderDsdbResourceChunk(chunk, async () => ({ unknownShape: true }), diag);
+    expect(result).toContain('unknown-status-table-schema');
+    expect(result).toContain('design/system/status/comp-123');
+  });
+
+  it('statusTableDiagnostics contains structured entry with resource info for missing resource', async () => {
+    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const diag = emptyPageDiagnostic();
+    await renderDsdbResourceChunk(chunk, async () => null, diag);
+    expect(diag.statusTableDiagnostics).toBeDefined();
+    const entry = diag.statusTableDiagnostics![0]!;
+    expect(entry.resourceName).toBe('design/status/resource');
+    expect(entry.requested).toBe(true);
+    expect(entry.resolved).toBe(false);
+    expect(entry.rendered).toBe(false);
+    expect(entry.renderedAsPlaceholder).toBe(true);
+    expect(entry.unsupportedSchema).toBe(false);
+  });
+
+  it('statusTableDiagnostics contains structured entry for unsupported schema', async () => {
+    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const diag = emptyPageDiagnostic();
+    await renderDsdbResourceChunk(chunk, async () => ({ unknownShape: true }), diag);
+    const entry = diag.statusTableDiagnostics![0]!;
+    expect(entry.resolved).toBe(true);
+    expect(entry.rendered).toBe(false);
+    expect(entry.unsupportedSchema).toBe(true);
+  });
+
+  it('statusTableDiagnostics contains structured entry for successful render', async () => {
+    const chunk = { libraryModuleType: 'STATUS_TABLE', resourceName: 'design/status/resource' };
+    const diag = emptyPageDiagnostic();
+    await renderDsdbResourceChunk(chunk, async () => ({ headers: ['Status', 'Notes'], rows: [['Active', 'OK']] }), diag);
+    const entry = diag.statusTableDiagnostics![0]!;
+    expect(entry.resolved).toBe(true);
+    expect(entry.rendered).toBe(true);
+    expect(entry.renderedAsPlaceholder).toBe(false);
+    expect(entry.unsupportedSchema).toBe(false);
+  });
+});
+
+// ─── Content page extraction with malformed resources ─────────────────────────
+
+describe('extractContentPageToMaterialPage – malformed token/status resources', () => {
+  const baseUrl = 'https://m3.material.io/components/divider/specs';
+
+  it('produces placeholder markdown and correct diagnostics when TOKEN_TABLE resource has invalid system', async () => {
+    const contentPage = {
+      title: 'Divider specs',
+      sections: [{
+        name: 'Specifications',
+        contentBlocks: [{
+          contentChunks: [{
+            contentChunkType: 'RESOURCE',
+            libraryModuleType: 'TOKEN_TABLE',
+            resourceName: 'designSystems/ds/components/divider',
+            moduleConfiguration: { tokenSets: ['Divider - Common'] }
+          }]
+        }]
+      }]
+    };
+    const result = await extractContentPageToMaterialPage({
+      url: baseUrl,
+      pageData: null,
+      contentPage,
+      fetchResource: async () => ({ system: { tokenSets: 'not-an-array', tokens: null } })
+    });
+    expect(result.page.markdown).toContain('Material resource placeholder');
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.tokenTablesRendered).toBe(0);
+    expect(result.pageDiagnostic.unresolvedResourceCount).toBeGreaterThan(0);
+  });
+
+  it('produces placeholder markdown when STATUS_TABLE resource is missing', async () => {
+    const contentPage = {
+      title: 'Divider specs',
+      sections: [{
+        name: 'Status',
+        contentBlocks: [{
+          contentChunks: [{
+            contentChunkType: 'RESOURCE',
+            libraryModuleType: 'STATUS_TABLE',
+            resourceName: 'design/status/divider'
+          }]
+        }]
+      }]
+    };
+    const result = await extractContentPageToMaterialPage({
+      url: baseUrl,
+      pageData: null,
+      contentPage,
+      fetchResource: async () => null
+    });
+    expect(result.page.markdown).toContain('Material resource placeholder');
+    expect(result.pageDiagnostic.statusTablesRequested).toBe(1);
+    expect(result.pageDiagnostic.statusTablesResolved).toBe(0);
+    expect(result.pageDiagnostic.statusTablesRenderedAsPlaceholder).toBe(1);
+  });
+
+  it('does not throw TypeError and produces placeholder for mixed malformed resources', async () => {
+    const contentPage = {
+      title: 'Component specs',
+      sections: [{
+        name: 'Tokens',
+        contentBlocks: [{
+          contentChunks: [
+            {
+              contentChunkType: 'RESOURCE',
+              libraryModuleType: 'TOKEN_TABLE',
+              resourceName: 'designSystems/ds/components/cmp',
+              moduleConfiguration: { tokenSets: ['Component - Common'] }
+            },
+            {
+              contentChunkType: 'RESOURCE',
+              libraryModuleType: 'STATUS_TABLE',
+              resourceName: 'design/status/cmp'
+            }
+          ]
+        }]
+      }]
+    };
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/button/specs',
+      pageData: null,
+      contentPage,
+      fetchResource: async (_name: string, type?: string) => {
+        if (type === 'TOKEN_TABLE') return { system: { tokens: undefined, tokenSets: undefined } };
+        if (type === 'STATUS_TABLE') return { weirdShape: true };
+        return null;
+      }
+    });
+    expect(typeof result.page.markdown).toBe('string');
+    expect(result.page.markdown).toContain('Material resource placeholder');
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.statusTablesRequested).toBe(1);
+    expect(result.pageDiagnostic.statusTablesResolved).toBe(1);
+    expect(result.pageDiagnostic.unsupportedStatusTableSchemaCount).toBe(1);
   });
 });
