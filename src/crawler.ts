@@ -6,7 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright';
 import TurndownService from 'turndown';
-import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, writeIndex, writePage } from './cache.js';
+import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
@@ -14,6 +14,8 @@ const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
+// Re-crawl blog posts from the current year and the previous year; skip everything older.
+const BLOG_POST_REUSE_YEAR_LAG = 1;
 const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
@@ -1139,7 +1141,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
 
   try {
-    const index = await crawlIntoCache(stagingCacheDir, options);
+    const index = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
     assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(index, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
@@ -1150,7 +1152,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   }
 }
 
-async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<MaterialIndex> {
+async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const maxPages = options.maxPages ?? 250;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
@@ -1160,6 +1162,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   let lastSavedUrl: string | null = null;
   let lastFailedUrl: string | null = null;
   throwIfAborted(signal);
+
+  const reusableBlogPages = buildReusableBlogPageMap(previousIndex);
+  const blogPostYears = new Map<string, number>();
 
   const browser = await launchChromium(options.headless ?? true);
   const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
@@ -1287,6 +1292,27 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   }
 
   async function crawlPage(page: Page, url: string): Promise<void> {
+    if (reusableBlogPages.size > 0) {
+      const cached = reusableBlogPages.get(url);
+      if (cached && !writtenPaths.has(cached.path)) {
+        try {
+          const markdown = await readPage(cached.path, previousCacheDir);
+          const text = stripMarkdown(stripMarkdownFrontmatter(markdown)).replace(/\s+/g, ' ').trim();
+          if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
+            const materialPage: MaterialPage = { ...cached, text, markdown };
+            pages.push(materialPage);
+            writtenPaths.add(materialPage.path);
+            lastSavedUrl = url;
+            await writePage(materialPage, cacheDir);
+            emitProgress(true);
+          }
+          return;
+        } catch {
+          // cache read failed — fall through to live crawl
+        }
+      }
+    }
+
     let finalUrl: string;
     try {
       finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
@@ -1321,14 +1347,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
       return;
     }
     if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
-      pages.push(materialPage);
+      const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
+      const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
+      pages.push(pageToSave);
       lastSavedUrl = finalUrl;
-      writtenPaths.add(materialPage.path);
-      await writePage(materialPage, cacheDir);
+      writtenPaths.add(pageToSave.path);
+      await writePage(pageToSave, cacheDir);
       emitProgress(true);
     }
 
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
+    if (isBlogListingUrl(finalUrl, baseUrl)) {
+      const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
+      for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
+    }
     for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
     emitProgress(true);
   }
@@ -1353,6 +1385,53 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions): Promise<
   function wakeWorkers(): void {
     for (const resolve of waiters.splice(0)) resolve();
   }
+}
+
+function buildReusableBlogPageMap(previousIndex: MaterialIndex | null): Map<string, Omit<MaterialPage, 'text' | 'markdown'>> {
+  const map = new Map<string, Omit<MaterialPage, 'text' | 'markdown'>>();
+  if (!previousIndex) return map;
+  const oldestAllowedYear = new Date().getFullYear() - BLOG_POST_REUSE_YEAR_LAG;
+  for (const page of previousIndex.pages) {
+    if (!page.path.startsWith('blog/')) continue;
+    if (page.publishedYear && page.publishedYear < oldestAllowedYear) map.set(page.url, page);
+  }
+  return map;
+}
+
+function isBlogListingUrl(url: string, baseUrl: string): boolean {
+  return new URL(url).pathname.replace(/^\/+|\/+$/g, '') === 'blog';
+}
+
+async function extractBlogListingYears(page: Page, baseUrl: string): Promise<Array<[string, number]>> {
+  const origin = new URL(baseUrl).origin;
+  return page.evaluate((origin) => {
+    const result: Array<[string, number]> = [];
+    const root = document.querySelector('main') ?? document.querySelector('[role="main"]') ?? document.body;
+    let blogListingCurrentYear = 0;
+
+    function walk(node: Element): void {
+      const tag = node.nodeName.toLowerCase();
+      if (/^h[1-6]$/.test(tag)) {
+        const text = node.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+        const m = text.match(/^(20\d\d)$/);
+        if (m) { blogListingCurrentYear = parseInt(m[1], 10); return; }
+      }
+      if (tag === 'a' && blogListingCurrentYear > 0) {
+        const href = (node as HTMLAnchorElement).href;
+        try {
+          const url = new URL(href);
+          if (url.origin === origin && url.pathname.startsWith('/blog/') && url.pathname.length > '/blog/'.length) {
+            url.hash = '';
+            url.search = '';
+            result.push([url.toString().replace(/\/$/, ''), blogListingCurrentYear]);
+          }
+        } catch { /* ignore */ }
+      }
+      for (const child of Array.from(node.children)) walk(child);
+    }
+    walk(root);
+    return result;
+  }, origin);
 }
 
 function compareMaterialCrawlPriority(a: string, b: string): number {
