@@ -1,6 +1,6 @@
 import type { ExtractionPageDiagnostic } from '../types.js';
 import { compactJson, getPath, readString, walkObjects } from './schemas.js';
-import { renderResourcePlaceholder, renderStatusTableMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './render-markdown.js';
+import { renderResourcePlaceholder, renderStatusTableMarkdown, renderTokenTableWithDiagnostics, type TokenTableSystem } from './render-markdown.js';
 
 export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
 
@@ -54,13 +54,34 @@ export async function renderDsdbResourceChunk(
 
   if (libraryModuleType === 'STATUS_TABLE') {
     const resourceName = extractResourceName(resourceChunk);
+    pageDiagnostic.statusTablesRequested = (pageDiagnostic.statusTablesRequested ?? 0) + 1;
     const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
     const rendered = renderStatusTableMarkdown(resource);
+    const statusTableDiagnostics = pageDiagnostic.statusTableDiagnostics ?? (pageDiagnostic.statusTableDiagnostics = []);
     if (rendered) {
       pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
+      statusTableDiagnostics.push({
+        resourceName,
+        requested: true,
+        resolved: Boolean(resource),
+        rendered: true,
+        renderedAsPlaceholder: false,
+        unsupportedSchema: false
+      });
       return rendered;
     }
 
+    const unsupportedSchema = Boolean(resource);
+    pageDiagnostic.statusTablesRenderedAsPlaceholder = (pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0) + 1;
+    if (unsupportedSchema) pageDiagnostic.unsupportedStatusTableSchemaCount = (pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0) + 1;
+    statusTableDiagnostics.push({
+      resourceName,
+      requested: true,
+      resolved: Boolean(resource),
+      rendered: false,
+      renderedAsPlaceholder: true,
+      unsupportedSchema
+    });
     pageDiagnostic.unknownResourceTypes.push(libraryModuleType);
     pageDiagnostic.unresolvedResourceCount += 1;
     return renderResourcePlaceholder('STATUS_TABLE', {
@@ -97,9 +118,14 @@ export async function renderDsdbResourceChunk(
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-token-system', resource: resourceName, tokenSets: requestedTokenSets });
   }
 
-  const rendered = tokenTableToMarkdown(system, requestedTokenSets);
+  const tokenRender = renderTokenTableWithDiagnostics(system, requestedTokenSets);
+  const rendered = tokenRender.markdown;
   const missingRequestedTokenSets = requestedTokenSets.filter((tokenSet) => !matchesRequestedTokenSet(system, tokenSet));
   if (missingRequestedTokenSets.length > 0) pageDiagnostic.missingRequestedTokenSets.push(...missingRequestedTokenSets);
+  pageDiagnostic.tokenContextDiagnostics.push(...tokenRender.diagnostics.map((diagnostic) => ({
+    ...diagnostic,
+    resourceName
+  })));
   const missingTokenSetNote = missingRequestedTokenSets.length > 0
     ? `> Requested token sets not found: ${missingRequestedTokenSets.join(', ')}`
     : '';

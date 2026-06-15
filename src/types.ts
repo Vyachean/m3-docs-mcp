@@ -31,6 +31,28 @@ export type ExtractionFallbackReason =
   | 'max-pages-reached'
   | 'route-not-selected';
 
+export type TokenContextDiagnostic = {
+  resourceName: string | null;
+  requestedTokenSets: string[];
+  renderedTokenSets: string[];
+  selectedContextKeys: string[];
+  skippedContextKeys: string[];
+  availableContextKeys: string[];
+  unresolvedTokenCount: number;
+  missingRequestedTokenSetCount: number;
+  usedFallbackContext: boolean;
+  multipleContextVariantsAvailable: boolean;
+};
+
+export type StatusTableDiagnostic = {
+  resourceName: string | null;
+  requested: boolean;
+  resolved: boolean;
+  rendered: boolean;
+  renderedAsPlaceholder: boolean;
+  unsupportedSchema: boolean;
+};
+
 export type ExtractionPageDiagnostic = {
   url: string;
   path: string;
@@ -41,7 +63,12 @@ export type ExtractionPageDiagnostic = {
   unknownResourceTypes: string[];
   tokenTables: number;
   tokenTablesRendered: number;
+  tokenContextDiagnostics: TokenContextDiagnostic[];
+  statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesRenderedAsPlaceholder?: number;
+  unsupportedStatusTableSchemaCount?: number;
+  statusTableDiagnostics?: StatusTableDiagnostic[];
   missingRequestedTokenSets: string[];
   suspiciousReasons: string[];
   imageCount: number;
@@ -78,7 +105,12 @@ export type ExtractionRouteDiagnostic = {
   tokenTables: number;
   tokenTablesRendered: number;
   tokenTablesRequested?: number;
+  tokenContextDiagnostics?: TokenContextDiagnostic[];
+  statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesRenderedAsPlaceholder?: number;
+  unsupportedStatusTableSchemaCount?: number;
+  statusTableDiagnostics?: StatusTableDiagnostic[];
   missingRequestedTokenSets: string[];
   unknownJsonResourceCount?: number;
   capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -111,7 +143,14 @@ export type ExtractionDiagnostics = {
   tokenTablesSuccessfullyRendered: number;
   tokenTablesFailedToRender: number;
   tokenTablesMissingRequestedTokenSets: number;
+  tokenContextDiagnosticsRecorded: number;
+  tokenTablesUsingFallbackContext: number;
+  tokenTablesWithMultipleContextVariants: number;
+  tokenTablesWithUnresolvedTokens: number;
+  statusTablesRequested: number;
   statusTablesResolved: number;
+  statusTablesRenderedAsPlaceholder: number;
+  unsupportedStatusTableSchemaCount: number;
   pagesWithSuspiciouslyShortMarkdown: number;
   pagesWithNoSections: number;
   pagesWithNoHeadings: number;
@@ -121,6 +160,21 @@ export type ExtractionDiagnostics = {
   rawJsonDebugFilesWritten: number;
   routeDiagnostics: ExtractionRouteDiagnostic[];
   pageDiagnostics: ExtractionPageDiagnostic[];
+};
+
+export type CoverageDiagnostics = {
+  discoveredPublicUrlCount: number;
+  sitemapUrlCount: number;
+  renderedNavUrlCount: number;
+  angularRouteHintCount: number;
+  previousCacheRouteHintCount: number;
+  acceptedPageCount: number;
+  uncrawledDiscoveredUrlCount: number;
+  uncrawledDiscoveredUrls: string[];
+  skippedBecauseMaxPagesCount: number;
+  skippedBecauseJsonCoveredCount: number;
+  coverageVerified: boolean;
+  coverageWarnings: string[];
 };
 
 export type SuspiciousCrawlPage = {
@@ -173,6 +227,7 @@ export type MaterialIndex = {
   failedUrls: string[];
   qualityReport?: CrawlQualityReport;
   extractionDiagnostics?: ExtractionDiagnostics;
+  coverageDiagnostics?: CoverageDiagnostics;
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
@@ -187,6 +242,7 @@ export type CacheStatus = {
   ageMs: number | null;
   isFresh: boolean;
   extractionDiagnostics?: ExtractionDiagnostics;
+  coverageDiagnostics?: CoverageDiagnostics;
 };
 
 export type CrawlProgress = {

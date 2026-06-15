@@ -10,7 +10,7 @@ import { classifyJsonResponse, classifyResponseType } from '../src/json-extracti
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
 import { buildJsonPageBundleFromResponses, writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
-import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls } from '../src/json-extraction/fetch-json-page.js';
+import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls, fetchJsonPageBundle } from '../src/json-extraction/fetch-json-page.js';
 
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/json-extraction', name), 'utf8'));
 
@@ -115,6 +115,16 @@ describe('JSON-first extraction', () => {
     expect(result.page.markdown).not.toContain('0dp');
     expect(result.pageDiagnostic.tokenTables).toBe(1);
     expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
+    expect(result.pageDiagnostic.tokenContextDiagnostics).toEqual([
+      expect.objectContaining({
+        resourceName: 'designSystems/20543ce18892f7d9/components/6c818a16475113bd',
+        requestedTokenSets: expect.any(Array),
+        renderedTokenSets: expect.any(Array),
+        selectedContextKeys: expect.any(Array),
+        availableContextKeys: expect.any(Array),
+        multipleContextVariantsAvailable: true
+      })
+    ]);
   });
 
   it('renders missing token sets as explicit notes and records diagnostics', async () => {
@@ -141,6 +151,37 @@ describe('JSON-first extraction', () => {
 
     expect(result.page.markdown).toContain('| State | Description |');
     expect(result.page.markdown).toContain('| Enabled | Default interactive state |');
+    expect(result.pageDiagnostic.statusTableDiagnostics).toEqual([
+      expect.objectContaining({
+        requested: true,
+        resolved: true,
+        rendered: true,
+        renderedAsPlaceholder: false,
+        unsupportedSchema: false
+      })
+    ]);
+  });
+
+  it('records placeholder diagnostics for unsupported STATUS_TABLE schemas', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/status/overview',
+      pageData: null,
+      contentPage: fixture('content-status-table.json'),
+      fetchResource: async () => ({ payload: { unsupported: true } })
+    });
+
+    expect(result.page.markdown).toContain('Material resource placeholder: STATUS_TABLE');
+    expect(result.pageDiagnostic.statusTablesRenderedAsPlaceholder).toBe(1);
+    expect(result.pageDiagnostic.unsupportedStatusTableSchemaCount).toBe(1);
+    expect(result.pageDiagnostic.statusTableDiagnostics).toEqual([
+      expect.objectContaining({
+        requested: true,
+        resolved: true,
+        rendered: false,
+        renderedAsPlaceholder: true,
+        unsupportedSchema: true
+      })
+    ]);
   });
 
   it('preserves unknown chunk and resource types as explicit placeholders', async () => {
@@ -373,6 +414,32 @@ describe('JSON-first extraction', () => {
     expect(written).not.toContain('"cookies"');
   });
 
+  it('captures direct JSON resource payloads in raw debug output', async () => {
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), 'm3-json-direct-debug-'));
+    const fetchImpl = async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/page-data/')) return { ok: true, json: async () => fixture('page-data-componentsm3-document.json') } as Response;
+      if (url.includes('/_dsm/content/')) return { ok: true, json: async () => fixture('content-token-table.json') } as Response;
+      if (url.includes('TOKEN_TABLE.6c818a16475113bd.json')) return { ok: true, json: async () => fixture('token-table-resource.json') } as Response;
+      return { ok: false, status: 404, json: async () => ({}) } as Response;
+    };
+
+    const bundle = await fetchJsonPageBundle('https://m3.material.io', 'cv-123', {
+      slug: 'components/button/specs',
+      documentId: 'doc-button',
+      collectionName: 'ComponentsM3',
+      pageCanonId: 'page-canon-button-specs'
+    }, undefined, fetchImpl as typeof fetch);
+    await bundle.fetchResource('designSystems/20543ce18892f7d9/components/6c818a16475113bd', 'TOKEN_TABLE');
+    await writeRawJsonDebugFiles(tempDir, 'components/button/specs.md', bundle.responses);
+
+    const written = await readFile(path.join(tempDir, 'raw/components/button/specs/token-table.6c818a16475113bd.json'), 'utf8');
+    expect(written).toContain('"type": "token-table"');
+    expect(written).toContain('"stableId":');
+    expect(written).not.toContain('"headers"');
+    expect(written).not.toContain('"cookies"');
+  });
+
   it('rejects JSON output when requested token tables are missing', async () => {
     const result = await extractContentPageToMaterialPage({
       url: 'https://m3.material.io/components/button/specs',
@@ -395,7 +462,12 @@ describe('JSON-first extraction', () => {
       unknownResourceTypes: ['EXPERIMENTAL_GRID'],
       tokenTables: 1,
       tokenTablesRendered: 1,
+      tokenContextDiagnostics: [],
+      statusTablesRequested: 0,
       statusTablesResolved: 1,
+      statusTablesRenderedAsPlaceholder: 0,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
       missingRequestedTokenSets: ['Missing set'],
       suspiciousReasons: [],
       imageCount: 2,
@@ -428,7 +500,12 @@ describe('JSON-first extraction', () => {
       tokenTables: 1,
       tokenTablesRendered: 1,
       tokenTablesRequested: 1,
+      tokenContextDiagnostics: [],
+      statusTablesRequested: 0,
       statusTablesResolved: 1,
+      statusTablesRenderedAsPlaceholder: 0,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
       missingRequestedTokenSets: ['Missing set'],
       unknownJsonResourceCount: 1,
       capturedJsonResponseCounts: { 'page-metadata': 1, 'content-page': 1 },

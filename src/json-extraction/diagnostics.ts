@@ -25,7 +25,14 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     tokenTablesSuccessfullyRendered: 0,
     tokenTablesFailedToRender: 0,
     tokenTablesMissingRequestedTokenSets: 0,
+    tokenContextDiagnosticsRecorded: 0,
+    tokenTablesUsingFallbackContext: 0,
+    tokenTablesWithMultipleContextVariants: 0,
+    tokenTablesWithUnresolvedTokens: 0,
+    statusTablesRequested: 0,
     statusTablesResolved: 0,
+    statusTablesRenderedAsPlaceholder: 0,
+    unsupportedStatusTableSchemaCount: 0,
     pagesWithSuspiciouslyShortMarkdown: 0,
     pagesWithNoSections: 0,
     pagesWithNoHeadings: 0,
@@ -42,6 +49,7 @@ export function pushPageDiagnostic(
   diagnostics: ExtractionDiagnostics,
   pageDiagnostic: ExtractionPageDiagnostic
 ): void {
+  const tokenContextDiagnostics = pageDiagnostic.tokenContextDiagnostics ?? [];
   diagnostics.totalPages += 1;
   diagnostics.pageDiagnostics.push(pageDiagnostic);
   if (pageDiagnostic.markdownLength < 80) diagnostics.pagesWithSuspiciouslyShortMarkdown += 1;
@@ -50,6 +58,13 @@ export function pushPageDiagnostic(
   diagnostics.imageCount += pageDiagnostic.imageCount;
   diagnostics.videoCount += pageDiagnostic.videoCount;
   diagnostics.unresolvedResourceCount += pageDiagnostic.unresolvedResourceCount;
+  diagnostics.statusTablesRequested += pageDiagnostic.statusTablesRequested ?? 0;
+  diagnostics.statusTablesRenderedAsPlaceholder += pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0;
+  diagnostics.unsupportedStatusTableSchemaCount += pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0;
+  diagnostics.tokenContextDiagnosticsRecorded += tokenContextDiagnostics.length;
+  diagnostics.tokenTablesUsingFallbackContext += tokenContextDiagnostics.filter((entry) => entry.usedFallbackContext).length;
+  diagnostics.tokenTablesWithMultipleContextVariants += tokenContextDiagnostics.filter((entry) => entry.multipleContextVariantsAvailable).length;
+  diagnostics.tokenTablesWithUnresolvedTokens += tokenContextDiagnostics.filter((entry) => entry.unresolvedTokenCount > 0).length;
 }
 
 export function pushRouteDiagnostic(
@@ -79,6 +94,13 @@ export function pushRouteDiagnostic(
   diagnostics.tokenTablesSuccessfullyRendered += routeDiagnostic.tokenTablesRendered;
   diagnostics.tokenTablesFailedToRender += Math.max(0, routeDiagnostic.tokenTables - routeDiagnostic.tokenTablesRendered);
   diagnostics.tokenTablesMissingRequestedTokenSets += routeDiagnostic.missingRequestedTokenSets.length;
+  diagnostics.statusTablesRequested += routeDiagnostic.statusTablesRequested ?? 0;
   diagnostics.statusTablesResolved += routeDiagnostic.statusTablesResolved ?? 0;
+  diagnostics.statusTablesRenderedAsPlaceholder += routeDiagnostic.statusTablesRenderedAsPlaceholder ?? 0;
+  diagnostics.unsupportedStatusTableSchemaCount += routeDiagnostic.unsupportedStatusTableSchemaCount ?? 0;
+  diagnostics.tokenContextDiagnosticsRecorded += routeDiagnostic.tokenContextDiagnostics?.length ?? 0;
+  diagnostics.tokenTablesUsingFallbackContext += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.usedFallbackContext).length ?? 0;
+  diagnostics.tokenTablesWithMultipleContextVariants += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.multipleContextVariantsAvailable).length ?? 0;
+  diagnostics.tokenTablesWithUnresolvedTokens += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.unresolvedTokenCount > 0).length ?? 0;
   diagnostics.rawJsonDebugFilesWritten += routeDiagnostic.rawJsonDebugFilesWritten ?? 0;
 }

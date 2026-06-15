@@ -617,7 +617,7 @@ describe('crawlMaterialDocs', () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
-  });
+  }, 10_000);
 
   it('re-crawls blog posts with no publishedYear in the previous index', async () => {
     const capturedAt = new Date().toISOString();
@@ -688,7 +688,7 @@ describe('crawlMaterialDocs', () => {
     expect(blogEntry?.publishedYear).toBe(currentYear);
   }, 15_000);
 
-  it('uses valid JSON extraction without requiring Chromium', async () => {
+  it('runs first-cache coverage discovery even when direct JSON extraction succeeds', async () => {
     const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
     const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';
     const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
@@ -708,15 +708,26 @@ describe('crawlMaterialDocs', () => {
 
     const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
-    expect(playwrightMock.chromium.launch).not.toHaveBeenCalled();
-    expect(index.pages.map((page) => page.path)).toEqual(['components/lists/overview.md']);
+    expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
+    expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    expect(index.pages.map((page) => page.path).sort()).toEqual([
+      'components/dialogs/overview.md',
+      'components/lists/overview.md',
+      'index.md'
+    ]);
     expect(index.extractionDiagnostics).toMatchObject({
       pagesExtractedThroughJson: 1,
-      pagesExtractedThroughDomFallback: 0,
+      pagesExtractedThroughDomFallback: 2,
       pagesWhereJsonFailed: 0,
       jsonFallbackRoutes: 0
     });
-  });
+    expect(index.coverageDiagnostics).toMatchObject({
+      renderedNavUrlCount: 1,
+      angularRouteHintCount: 1,
+      acceptedPageCount: 3,
+      coverageVerified: false
+    });
+  }, 10_000);
 
   it('uses browser fallback only for routes that failed JSON extraction', async () => {
     const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
@@ -842,6 +853,10 @@ describe('crawlMaterialDocs', () => {
     const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
 
     expect(index.pageCount).toBe(1);
+    expect(index.coverageDiagnostics).toMatchObject({
+      coverageVerified: false,
+      coverageWarnings: expect.arrayContaining(['coverage-unverified:playwright-unavailable'])
+    });
     expect(index.extractionDiagnostics?.routeDiagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         path: 'components/lists/overview.md',
@@ -853,4 +868,30 @@ describe('crawlMaterialDocs', () => {
       })
     ]));
   });
+
+  it('allows max-pages partial crawls but marks coverage as partial', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      text: async () => '<urlset><url><loc>https://m3.material.io/components/buttons</loc></url><url><loc>https://m3.material.io/components/dialogs</loc></url></urlset>'
+    })));
+    playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/buttons', 'https://m3.material.io/components/dialogs'];
+    playwrightMock.pagesByUrl['https://m3.material.io/components/buttons/overview'] = {
+      html: '<h1>Buttons</h1><p>Buttons prompt actions with enough body text for crawler validation.</p>',
+      title: 'Buttons',
+      headings: ['Buttons'],
+      links: [],
+      finalUrl: 'https://m3.material.io/components/buttons/overview'
+    };
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 1 });
+
+    expect(index.pageCount).toBe(1);
+    expect(index.coverageDiagnostics).toMatchObject({
+      acceptedPageCount: 1,
+      coverageVerified: false
+    });
+    expect(index.coverageDiagnostics?.coverageWarnings).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^coverage-partial:max-pages-limited:/)
+    ]));
+  }, 10_000);
 });

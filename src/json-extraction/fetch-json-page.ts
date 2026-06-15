@@ -1,5 +1,7 @@
 import { deriveCollectionSegmentFromSlug, fallbackPageCanonId, extractPageDataMetadata } from './extract-page-data.js';
+import { classifyJsonResponse } from './classify-json-response.js';
 import { createJsonPageBundle, type JsonPageBundle } from './json-bundle.js';
+import type { JsonCapturedResponse } from './json-bundle.js';
 
 export type JsonRouteDescriptor = {
   slug: string;
@@ -19,7 +21,8 @@ export async function fetchJsonPageBundle(
   signal?: AbortSignal,
   fetchImpl: FetchLike = fetch
 ): Promise<JsonPageBundle> {
-  const pageData = await fetchFirstJsonOrNull(buildPageDataCandidateUrls(baseUrl, route), signal, fetchImpl);
+  const responses: JsonCapturedResponse[] = [];
+  const pageData = await fetchFirstJsonOrNull(buildPageDataCandidateUrls(baseUrl, route), signal, fetchImpl, responses);
   const metadata = extractPageDataMetadata(pageData);
   const pageCanonId = metadata.pageCanonId
     ?? fallbackPageCanonId(pageData)
@@ -30,16 +33,17 @@ export async function fetchJsonPageBundle(
   const contentPage = await fetchFirstJsonOrNull(
     buildContentPageCandidateUrls(baseUrl, carbonVersion, [pageCanonId, route.documentId, stripJsonExtension(route.exportedCarbonFileId)]),
     signal,
-    fetchImpl
+    fetchImpl,
+    responses
   );
 
   const fetchResource = async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
     const urls = buildDsdbResourceCandidateUrls(baseUrl, carbonVersion, resourceName, resourceType);
-    return fetchFirstJsonOrNull(urls, signal, fetchImpl);
+    return fetchFirstJsonOrNull(urls, signal, fetchImpl, responses);
   };
 
   return {
-    ...createJsonPageBundle({ pageData, contentPage, pageCanonId }),
+    ...createJsonPageBundle({ pageData, contentPage, pageCanonId, responses }),
     fetchResource
   };
 }
@@ -90,19 +94,34 @@ function toGenericDsdbFilenameCandidate(dsdbBase: string, resourceName: string):
   return `${dsdbBase}/designSystems_${designSystemId}_components_${componentId}.json`;
 }
 
-async function fetchFirstJsonOrNull(urls: string[], signal: AbortSignal | undefined, fetchImpl: FetchLike): Promise<unknown | null> {
+async function fetchFirstJsonOrNull(
+  urls: string[],
+  signal: AbortSignal | undefined,
+  fetchImpl: FetchLike,
+  responses: JsonCapturedResponse[]
+): Promise<unknown | null> {
   for (const url of urls) {
-    const response = await fetchJsonOrNull(url, signal, fetchImpl);
+    const response = await fetchJsonOrNull(url, signal, fetchImpl, responses);
     if (response) return response;
   }
   return null;
 }
 
-async function fetchJsonOrNull(url: string, signal: AbortSignal | undefined, fetchImpl: FetchLike): Promise<unknown | null> {
+async function fetchJsonOrNull(
+  url: string,
+  signal: AbortSignal | undefined,
+  fetchImpl: FetchLike,
+  responses: JsonCapturedResponse[]
+): Promise<unknown | null> {
   try {
     const response = await fetchImpl(url, { signal });
     if (!response.ok) return null;
-    return await response.json();
+    const payload = await response.json();
+    const classified = classifyJsonResponse({ url, payload });
+    if (!responses.some((entry) => entry.url === classified.url && entry.type === classified.type && JSON.stringify(entry.payload) === JSON.stringify(classified.payload))) {
+      responses.push(classified);
+    }
+    return payload;
   } catch {
     return null;
   }

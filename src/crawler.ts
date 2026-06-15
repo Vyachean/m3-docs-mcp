@@ -6,14 +6,14 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
-import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
+import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -31,6 +31,9 @@ const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
 const SITEMAP_FETCH_TIMEOUT_MS = 5_000;
+const COVERAGE_REGRESSION_RATIO = 0.8;
+const COVERAGE_WARNING_GAP_RATIO = 0.2;
+const COVERAGE_WARNING_GAP_MIN = 5;
 const NOT_FOUND_TITLE_PATTERNS = [
   /\bpage cannot be found\b/i,
   /\bthis page cannot be found\b/i,
@@ -479,7 +482,15 @@ export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string)
   return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlPriority);
 }
 
+export function discoverPublicDocPathsFromHrefs(hrefs: string[], baseUrl: string): string[] {
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort();
+}
+
 async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
+  return (await discoverSitemapDocPaths(baseUrl)).map((docPath) => new URL(docPath, baseUrl).toString().replace(/\/$/, ''));
+}
+
+async function discoverSitemapDocPaths(baseUrl: string): Promise<string[]> {
   if (typeof fetch !== 'function') return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SITEMAP_FETCH_TIMEOUT_MS);
@@ -490,7 +501,7 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
     const body = await response.text();
     const locUrls = Array.from(body.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/g)).map((match) => match[1]).filter((url): url is string => Boolean(url));
     const urls = locUrls.length > 0 ? locUrls : Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
-    return discoverMaterialLinksFromHrefs(urls, baseUrl);
+    return discoverPublicDocPathsFromHrefs(urls, baseUrl);
   } catch {
     return [];
   } finally {
@@ -501,6 +512,16 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
 async function discoverLinks(page: Page, baseUrl: string): Promise<string[]> {
   const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
   return discoverMaterialLinksFromHrefs(links, baseUrl);
+}
+
+async function discoverRenderedNavDocPaths(page: Page, baseUrl: string): Promise<string[]> {
+  const links = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]')).map((a) => (a as HTMLAnchorElement).href));
+  return discoverPublicDocPathsFromHrefs(links, baseUrl);
+}
+
+function discoverPublicDocPathsFromHtml(html: string, baseUrl: string): string[] {
+  const hrefs = Array.from(html.matchAll(/href=(?:"([^"]+)"|'([^']+)')/gi)).map((match) => match[1] ?? match[2] ?? '').filter(Boolean);
+  return discoverPublicDocPathsFromHrefs(hrefs, baseUrl);
 }
 
 async function assertMaterialRouteUnchanged(page: Page, expectedUrl: string, baseUrl: string, phase: string): Promise<void> {
@@ -692,6 +713,45 @@ function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
   return lastSlash > 0 && dsdbSlugs.has(path.slice(0, lastSlash));
 }
 
+function publicDocPathFromPagePath(pagePath: string): string {
+  const trimmed = `/${pagePath.replace(/\.md$/, '').replace(/^\/+/, '')}`;
+  return trimmed === '/index' ? '/' : trimmed.replace(/\/+/g, '/');
+}
+
+function publicDocPathFromUrl(url: string, baseUrl: string): string | null {
+  return normalizeMaterialPublicDocPath(url, baseUrl);
+}
+
+function hasSignificantCoverageGap(discoveredCount: number, acceptedCount: number): boolean {
+  if (discoveredCount <= 0 || acceptedCount >= discoveredCount) return false;
+  const missing = discoveredCount - acceptedCount;
+  return missing >= Math.max(COVERAGE_WARNING_GAP_MIN, Math.ceil(discoveredCount * COVERAGE_WARNING_GAP_RATIO));
+}
+
+function shouldAttemptBrowserCoverageCheck(previousIndex: MaterialIndex | null, discoveredCount: number, acceptedCount: number): boolean {
+  if (!previousIndex) return true;
+  if (hasSignificantCoverageGap(discoveredCount, acceptedCount)) return true;
+  const previousDiscovered = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
+  return discoveredCount > 0 && discoveredCount < Math.floor(previousDiscovered * COVERAGE_REGRESSION_RATIO);
+}
+
+function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
+  return {
+    discoveredPublicUrlCount: 0,
+    sitemapUrlCount: 0,
+    renderedNavUrlCount: 0,
+    angularRouteHintCount: 0,
+    previousCacheRouteHintCount: 0,
+    acceptedPageCount: 0,
+    uncrawledDiscoveredUrlCount: 0,
+    uncrawledDiscoveredUrls: [],
+    skippedBecauseMaxPagesCount: 0,
+    skippedBecauseJsonCoveredCount: 0,
+    coverageVerified: false,
+    coverageWarnings: []
+  };
+}
+
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
   const previousIndex = await readIndex(targetCacheDir);
@@ -727,6 +787,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   let browserContext: BrowserContext | undefined;
 
   const extractionDiagnostics = createEmptyExtractionDiagnostics();
+  const coverageDiagnostics = createEmptyCoverageDiagnostics();
   const queue: string[] = [];
   const queued = new Set<string>();
   const seen = new Set<string>();
@@ -736,6 +797,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const suspiciousPages: SuspiciousCrawlPage[] = [];
   const jsonFallbackRoutes = new Map<string, ExtractionFallbackReason>();
   const routeDiagnosticsByPath = new Map<string, ExtractionRouteDiagnostic>();
+  const discoveredPublicDocPaths = new Set<string>();
+  const sitemapPublicDocPaths = new Set<string>();
+  const renderedNavPublicDocPaths = new Set<string>();
+  const angularRoutePublicDocPaths = new Set<string>();
+  const previousCacheRoutePublicDocPaths = new Set<string>();
+  const acceptedPublicDocPaths = new Set<string>();
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
@@ -770,6 +837,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
   const routePathFromSlug = (slug: string): string => materialPagePath(new URL(`/${slug}`, baseUrl).toString());
   const routeSlugFromPath = (pagePath: string): string => pagePath.replace(/\/overview\.md$/, '').replace(/\.md$/, '');
+  const addDiscoveredPaths = (paths: Iterable<string>, bucket?: Set<string>): void => {
+    for (const docPath of paths) {
+      const normalized = docPath === '/' ? '/' : `/${docPath.replace(/^\/+/, '').replace(/\/$/, '')}`;
+      discoveredPublicDocPaths.add(normalized);
+      bucket?.add(normalized);
+    }
+  };
+  const markAcceptedPage = (pagePath: string): void => {
+    acceptedPublicDocPaths.add(publicDocPathFromPagePath(pagePath));
+  };
+
+  if (previousIndex) {
+    addDiscoveredPaths(previousIndex.pages.map((page) => publicDocPathFromPagePath(page.path)), previousCacheRoutePublicDocPaths);
+  }
 
   const createRouteDiagnostic = ({
     url,
@@ -789,7 +870,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables = 0,
     tokenTablesRendered = 0,
     tokenTablesRequested = tokenTables,
+    tokenContextDiagnostics = [],
+    statusTablesRequested = 0,
     statusTablesResolved = 0,
+    statusTablesRenderedAsPlaceholder = 0,
+    unsupportedStatusTableSchemaCount = 0,
+    statusTableDiagnostics = [],
     missingRequestedTokenSets = [],
     unknownJsonResourceCount = 0,
     capturedJsonResponseCounts = {},
@@ -815,7 +901,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables?: number;
     tokenTablesRendered?: number;
     tokenTablesRequested?: number;
+    tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
+    statusTablesRequested?: number;
     statusTablesResolved?: number;
+    statusTablesRenderedAsPlaceholder?: number;
+    unsupportedStatusTableSchemaCount?: number;
+    statusTableDiagnostics?: ExtractionRouteDiagnostic['statusTableDiagnostics'];
     missingRequestedTokenSets?: string[];
     unknownJsonResourceCount?: number;
     capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -845,7 +936,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables,
     tokenTablesRendered,
     tokenTablesRequested,
+    tokenContextDiagnostics,
+    statusTablesRequested,
     statusTablesResolved,
+    statusTablesRenderedAsPlaceholder,
+    unsupportedStatusTableSchemaCount,
+    statusTableDiagnostics,
     missingRequestedTokenSets,
     unknownJsonResourceCount,
     capturedJsonResponseCounts,
@@ -857,6 +953,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
   const jsonExtractedSlugs = new Set<string>();
   {
+    if (typeof fetch === 'function') {
+      try {
+        const shellResponse = await fetch(baseUrl, { signal });
+        if (shellResponse.ok) addDiscoveredPaths(discoverPublicDocPathsFromHtml(await shellResponse.text(), baseUrl), renderedNavPublicDocPaths);
+      } catch (err) {
+        if (signal?.aborted) throw err;
+      }
+    }
+
+    addDiscoveredPaths(await discoverSitemapDocPaths(baseUrl), sitemapPublicDocPaths);
+
     let dsdbConfig: DsdbSiteConfig | null = null;
     try {
       throwIfAborted(signal);
@@ -867,6 +974,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
 
     if (dsdbConfig) {
+      addDiscoveredPaths(dsdbConfig.routes.map((route) => normalizeMaterialPublicDocPath(`/${route.slug}`, baseUrl)).filter((value): value is string => Boolean(value)), angularRoutePublicDocPaths);
       const capturedAt = new Date().toISOString();
       const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
       const routes = dsdbConfig.routes;
@@ -920,7 +1028,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+                statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+                unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+                statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
                 ,
                 routeMetadataWarnings: route.metadataWarnings ?? []
@@ -931,6 +1044,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
               const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, materialPage.path, bundle.responses);
               pages.push(materialPage);
+              markAcceptedPage(materialPage.path);
               pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
               recordRouteDiagnostic(createRouteDiagnostic({
                 url: materialPage.url,
@@ -944,14 +1058,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+                statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+                unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+                statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
                 rawJsonDebugFilesWritten,
                 routeMetadataWarnings: route.metadataWarnings ?? [],
                 candidateSelectionReasons: bundle.selectionReasons
-              }));
-              writtenPaths.add(materialPage.path);
-              jsonExtractedSlugs.add(route.slug);
+            }));
+            writtenPaths.add(materialPage.path);
+            jsonExtractedSlugs.add(route.slug);
               lastSavedUrl = materialPage.url;
               await writePage(materialPage, cacheDir);
               emitProgress(true);
@@ -981,9 +1100,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), 'json-quality-accepted' as ExtractionFallbackReason];
     }
   }
+  coverageDiagnostics.sitemapUrlCount = sitemapPublicDocPaths.size;
+  coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
+  coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
+  coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
+  coverageDiagnostics.discoveredPublicUrlCount = discoveredPublicDocPaths.size;
+  coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath)).length;
+
   const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
-  if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback)) {
+  const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
+  if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
     let browser: Browser | null = null;
     try {
       browser = await launchChromium(options.headless ?? true);
@@ -994,6 +1121,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
           routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), fallbackReason];
         }
+        coverageDiagnostics.coverageWarnings.push('coverage-unverified:playwright-unavailable');
       } else {
         throw error;
       }
@@ -1012,6 +1140,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     signal?.addEventListener('abort', onAbort, { once: true });
     enqueue(baseUrl);
     for (const slug of jsonFallbackRoutes.keys()) enqueue(new URL(`/${slug}`, baseUrl).toString());
+    for (const docPath of discoveredPublicDocPaths) enqueue(new URL(docPath, baseUrl).toString());
     for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
     emitProgress(true);
 
@@ -1033,6 +1162,35 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const capturedAt = new Date().toISOString();
   for (const diagnostic of routeDiagnosticsByPath.values()) pushRouteDiagnostic(extractionDiagnostics, diagnostic);
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
+  coverageDiagnostics.acceptedPageCount = pages.length;
+  coverageDiagnostics.discoveredPublicUrlCount = discoveredPublicDocPaths.size;
+  coverageDiagnostics.sitemapUrlCount = sitemapPublicDocPaths.size;
+  coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
+  coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
+  coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
+  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath)).sort();
+  coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
+  coverageDiagnostics.uncrawledDiscoveredUrlCount = uncrawledDiscoveredUrls.length;
+  coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath) && isDsdbCoveredPath(docPath.replace(/^\/+/, ''), jsonExtractedSlugs)).length;
+  coverageDiagnostics.skippedBecauseMaxPagesCount = pages.length >= maxPages ? uncrawledDiscoveredUrls.length : 0;
+  if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
+    coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
+  }
+  if (coverageDiagnostics.skippedBecauseMaxPagesCount > 0) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${coverageDiagnostics.skippedBecauseMaxPagesCount}`);
+  }
+  if (hasSignificantCoverageGap(coverageDiagnostics.discoveredPublicUrlCount, coverageDiagnostics.acceptedPageCount)) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
+  }
+  const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
+  if (previousDiscoveredCount > 0 && coverageDiagnostics.discoveredPublicUrlCount > 0 && coverageDiagnostics.discoveredPublicUrlCount < Math.floor(previousDiscoveredCount * COVERAGE_REGRESSION_RATIO)) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-regression:previous=${previousDiscoveredCount}:current=${coverageDiagnostics.discoveredPublicUrlCount}`);
+  }
+  coverageDiagnostics.coverageVerified = coverageDiagnostics.discoveredPublicUrlCount > 0
+    && coverageDiagnostics.uncrawledDiscoveredUrlCount === 0
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,
@@ -1042,6 +1200,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     failedUrls,
     qualityReport,
     extractionDiagnostics,
+    coverageDiagnostics,
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
@@ -1108,6 +1267,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
             const materialPage: MaterialPage = { ...cached, text, markdown };
             pages.push(materialPage);
+            markAcceptedPage(materialPage.path);
             const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(materialPage.path));
             pushPageDiagnostic(extractionDiagnostics, {
               url: materialPage.url,
@@ -1119,7 +1279,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               unknownResourceTypes: [],
               tokenTables: 0,
               tokenTablesRendered: 0,
+              tokenContextDiagnostics: [],
+              statusTablesRequested: 0,
               statusTablesResolved: 0,
+              statusTablesRenderedAsPlaceholder: 0,
+              unsupportedStatusTableSchemaCount: 0,
+              statusTableDiagnostics: [],
               missingRequestedTokenSets: [],
               suspiciousReasons: [],
               imageCount: 0,
@@ -1149,7 +1314,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               tokenTables: previousDiagnostic?.tokenTables ?? 0,
               tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
               tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+              tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+              statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
               statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+              statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+              unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+              statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
               missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
               unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? 0,
               rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
@@ -1214,6 +1384,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       if (!networkExtraction.fallbackReason && networkExtraction.page.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(networkExtraction.page.path)) {
         const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, networkExtraction.page.path, capturedBundle.responses);
         pages.push(networkExtraction.page);
+        markAcceptedPage(networkExtraction.page.path);
         pushPageDiagnostic(extractionDiagnostics, { ...networkExtraction.pageDiagnostic, source: 'network-json' });
         recordRouteDiagnostic(createRouteDiagnostic({
           url: networkExtraction.page.url,
@@ -1231,7 +1402,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTables: networkExtraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
           tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+          tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
+          statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
           statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+          statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+          unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+          statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
           missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
           unknownJsonResourceCount,
           capturedJsonResponseCounts,
@@ -1247,7 +1423,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
           for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
         }
-        for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+        const discoveredLinks = await discoverLinks(page, baseUrl);
+        if (finalUrl === baseUrl) addDiscoveredPaths(await discoverRenderedNavDocPaths(page, baseUrl), renderedNavPublicDocPaths);
+        for (const link of discoveredLinks) enqueue(link);
         emitProgress(true);
         return;
       }
@@ -1269,7 +1447,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         tokenTables: networkExtraction.pageDiagnostic.tokenTables,
         tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
         tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+        tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
+        statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
         statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
         missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
         unknownJsonResourceCount,
         capturedJsonResponseCounts,
@@ -1316,7 +1499,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         tokenTables: previousDiagnostic?.tokenTables ?? 0,
         tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
         tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
         statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
         missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
         unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
         rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
@@ -1332,6 +1520,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
       const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
       pages.push(pageToSave);
+      markAcceptedPage(pageToSave.path);
       const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(pageToSave.path));
       pushPageDiagnostic(extractionDiagnostics, {
         url: pageToSave.url,
@@ -1343,7 +1532,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         unknownResourceTypes: [],
         tokenTables: 0,
         tokenTablesRendered: 0,
+        tokenContextDiagnostics: [],
+        statusTablesRequested: 0,
         statusTablesResolved: 0,
+        statusTablesRenderedAsPlaceholder: 0,
+        unsupportedStatusTableSchemaCount: 0,
+        statusTableDiagnostics: [],
         missingRequestedTokenSets: [],
         suspiciousReasons: [],
         imageCount: 0,
@@ -1373,7 +1567,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         tokenTables: previousDiagnostic?.tokenTables ?? 0,
         tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
         tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
         statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
         missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
         unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
         rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
@@ -1403,7 +1602,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         tokenTables: previousDiagnostic?.tokenTables ?? 0,
         tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
         tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        tokenContextDiagnostics: previousDiagnostic?.tokenContextDiagnostics ?? [],
+        statusTablesRequested: previousDiagnostic?.statusTablesRequested ?? 0,
         statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        statusTablesRenderedAsPlaceholder: previousDiagnostic?.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: previousDiagnostic?.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: previousDiagnostic?.statusTableDiagnostics ?? [],
         missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
         unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
         rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
@@ -1415,7 +1619,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
       for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
     }
-    for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+    const discoveredLinks = await discoverLinks(page, baseUrl);
+    if (finalUrl === baseUrl) addDiscoveredPaths(await discoverRenderedNavDocPaths(page, baseUrl), renderedNavPublicDocPaths);
+    for (const link of discoveredLinks) enqueue(link);
     emitProgress(true);
   }
 

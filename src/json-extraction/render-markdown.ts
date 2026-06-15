@@ -1,6 +1,6 @@
 import TurndownService from 'turndown';
 import { materialPageId, materialPagePath, sectionFromPagePath } from '../crawler-utils.js';
-import type { MaterialPage } from '../types.js';
+import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -505,38 +505,63 @@ export function extractDisplayTokenSets(html: string): string[] {
   }
 }
 
-export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
+export function renderTokenTableWithDiagnostics(
+  system: TokenTableSystem,
+  displayTokenSets: string[]
+): { markdown: string; diagnostics: TokenContextDiagnostic[] } {
   const idx = buildTagIndex(system);
   const displaySetNames = new Set(displayTokenSets);
   const relevantSets = system.tokenSets.filter((ts) => displaySetNames.has(ts.displayName) || displaySetNames.has(ts.tokenSetName));
-  if (relevantSets.length === 0) return '';
+  if (relevantSets.length === 0) {
+    return { markdown: '', diagnostics: [] };
+  }
 
   const sections: string[] = [];
+  const diagnostics: TokenContextDiagnostic[] = [];
   for (const ts of relevantSets) {
     const tokens = system.tokens.filter((t) => t.name.startsWith(ts.name) && t.state === 'ACTIVE');
     if (tokens.length === 0) continue;
     const rows: string[][] = [['Token', 'Name', 'sys alias', 'ref alias', 'Light', 'Dark', 'Light (High contrast)', 'Dark (High contrast)']];
+    const selectedContextKeys = new Set<string>();
+    const availableContextKeys = new Set<string>();
+    let unresolvedTokenCount = 0;
+    let usedFallbackContext = false;
+    let multipleContextVariantsAvailable = false;
 
     for (const token of tokens) {
       const treeData = system.contextualReferenceTrees[token.name];
       if (!treeData?.contextualReferenceTree?.length) continue;
       const entries = treeData.contextualReferenceTree;
+      const entryContextKeys = entries.map((entry) => entry.contextTags.slice().sort().join('|')).filter(Boolean);
+      for (const key of entryContextKeys) availableContextKeys.add(key);
+      if (new Set(entryContextKeys).size > 1) multipleContextVariantsAvailable = true;
       const lightEntry = findContextEntry(entries, idx, 'light', { audience: '3p' }) ?? findContextEntry(entries, idx, 'light', { audience: '1p.baseline' }) ?? findContextEntry(entries, idx, 'light');
       const darkEntry = findContextEntry(entries, idx, 'dark', { audience: '3p' }) ?? findContextEntry(entries, idx, 'dark', { audience: '1p.baseline' }) ?? findContextEntry(entries, idx, 'dark');
       const lightHcEntry = findContextEntry(entries, idx, 'light', { audience: '3p', contrast: 'high.contrast' }) ?? findContextEntry(entries, idx, 'light', { contrast: 'high.contrast' });
       const darkHcEntry = findContextEntry(entries, idx, 'dark', { audience: '3p', contrast: 'high.contrast' }) ?? findContextEntry(entries, idx, 'dark', { contrast: 'high.contrast' });
       if (!lightEntry && !darkEntry) continue;
+      if ((lightEntry && !entryMatchesContext(lightEntry, idx, { audience: '3p' })) || (darkEntry && !entryMatchesContext(darkEntry, idx, { audience: '3p' }))) {
+        usedFallbackContext = true;
+      }
       const activeEntry = lightEntry ?? darkEntry;
       const aliases = activeEntry ? extractAliasChain(activeEntry.referenceTree, token.tokenName) : [];
+      const renderedValues = [
+        lightEntry ? formatResolvedValue(lightEntry.resolvedValue) : '[unresolved]',
+        darkEntry ? formatResolvedValue(darkEntry.resolvedValue) : '[unresolved]',
+        lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '',
+        darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : ''
+      ];
+      if (renderedValues[0] === '[unresolved]' || renderedValues[1] === '[unresolved]') unresolvedTokenCount += 1;
+      for (const entry of [lightEntry, darkEntry, lightHcEntry, darkHcEntry]) {
+        const key = entry ? entry.contextTags.slice().sort().join('|') : '';
+        if (key) selectedContextKeys.add(key);
+      }
       rows.push([
         token.tokenName,
         token.displayName,
         aliases[0] ?? '',
         aliases[1] ?? '',
-        lightEntry ? formatResolvedValue(lightEntry.resolvedValue) : '[unresolved]',
-        darkEntry ? formatResolvedValue(darkEntry.resolvedValue) : '[unresolved]',
-        lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '',
-        darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : ''
+        ...renderedValues
       ]);
     }
 
@@ -544,9 +569,32 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
     const hasHcData = rows.slice(1).some((row) => row[6] || row[7]);
     const finalRows = hasHcData ? rows : rows.map((row) => row.slice(0, 6));
     sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
+    const requestedTokenSetsForSection = displayTokenSets.filter((name) => displaySetNames.has(name));
+    const renderedTokenSets = [ts.displayName, ts.tokenSetName].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
+    const availableKeys = Array.from(availableContextKeys).sort();
+    const selectedKeys = Array.from(selectedContextKeys).sort();
+    diagnostics.push({
+      resourceName: null,
+      requestedTokenSets: requestedTokenSetsForSection,
+      renderedTokenSets,
+      selectedContextKeys: selectedKeys,
+      skippedContextKeys: availableKeys.filter((key) => !selectedContextKeys.has(key)),
+      availableContextKeys: availableKeys,
+      unresolvedTokenCount,
+      missingRequestedTokenSetCount: Math.max(0, requestedTokenSetsForSection.filter((name) => !renderedTokenSets.includes(name)).length),
+      usedFallbackContext,
+      multipleContextVariantsAvailable
+    });
   }
 
-  return sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '';
+  return {
+    markdown: sections.length > 0 ? `\n\n## Design Tokens\n\n${sections.join('\n\n')}` : '',
+    diagnostics
+  };
+}
+
+export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
+  return renderTokenTableWithDiagnostics(system, displayTokenSets).markdown;
 }
 
 export function renderStatusTableMarkdown(resource: unknown): string {
@@ -770,4 +818,15 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const entries = Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
   return `{${entries.join(',')}}`;
+}
+
+function entryMatchesContext(
+  entry: ContextTreeEntry,
+  idx: TagIndex,
+  expected: { audience?: string; contrast?: string }
+): boolean {
+  const contextNames = new Set(entry.contextTags.map((tag) => idx.idByTagName.get(tag) ?? tag));
+  if (expected.audience && !contextNames.has(expected.audience)) return false;
+  if (expected.contrast && !contextNames.has(expected.contrast)) return false;
+  return true;
 }

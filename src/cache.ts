@@ -86,6 +86,8 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     ageMs,
     isFresh: isCacheFresh(ageMs, maxAgeHours),
     ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {})
+    ,
+    ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {})
   };
 }
 
@@ -149,6 +151,16 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
 
   if (!previousIndex || previousIndex.pageCount <= 0) return;
 
+  const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
+  const nextDiscoveredCount = nextIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? nextIndex.pageCount;
+  const intentionalPartial = nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false;
+  if (!intentionalPartial && previousDiscoveredCount > 0 && nextDiscoveredCount > 0) {
+    const minDiscoveredPages = Math.ceil(previousDiscoveredCount * DEFAULT_MIN_RETAINED_PAGE_RATIO);
+    if (nextDiscoveredCount < minDiscoveredPages) {
+      throw new Error(`Material 3 crawl discovered only ${nextDiscoveredCount} public documentation URLs, below ${formatPercent(DEFAULT_MIN_RETAINED_PAGE_RATIO)} of the previous cache coverage (${previousDiscoveredCount}). Keeping the existing cache. Use --force to replace it anyway.`);
+    }
+  }
+
   const minRetainedPageRatio = options.minRetainedPageRatio ?? DEFAULT_MIN_RETAINED_PAGE_RATIO;
   const minAcceptedPages = Math.ceil(previousIndex.pageCount * minRetainedPageRatio);
   if (nextIndex.pageCount < minAcceptedPages) {
@@ -166,6 +178,7 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
     ...(index.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
+    ...(index.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
     ...(index.qualityReport ? { qualityReport: index.qualityReport } : {}),
     pages
   };

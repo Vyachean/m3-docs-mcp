@@ -31,7 +31,7 @@ Add the server to your MCP client config. No global install is required.
 }
 ```
 
-The MCP server starts without downloading a browser during package installation. Browser installation is still needed for fallback extraction and route discovery during cache refreshes, but normal page content extraction is now JSON-first. This keeps normal MCP startup fast enough for clients with short stdio initialization timeouts.
+The MCP server starts without downloading a browser during package installation. Browser installation is still needed for fallback extraction and route coverage discovery during cache refreshes, but normal page content extraction is now JSON-first. This keeps normal MCP startup fast enough for clients with short stdio initialization timeouts.
 
 Install the Playwright-managed Chromium browser required by this Git package version before the first cache refresh:
 
@@ -149,6 +149,11 @@ M3_DOCS_CACHE_DIR=/path/to/cache npx -y github:Vyachean/m3-docs-mcp serve
 
 Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed, interrupted, or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
+The crawler now tracks two separate quality dimensions:
+
+- extraction quality: whether the accepted page content was extracted correctly;
+- coverage quality: whether enough public Material documentation URLs were discovered and crawled to treat the cache as broadly representative.
+
 The crawler now tries JSON extraction first for discovered Material documentation routes:
 
 - it reads `/page-data/.../page-data.json` when available;
@@ -156,14 +161,21 @@ The crawler now tries JSON extraction first for discovered Material documentatio
 - it resolves referenced DSDB resources such as token tables from `/_dsm/data/dsdb-m3/...`;
 - it falls back to Playwright DOM extraction only when JSON extraction fails or looks incomplete.
 
+Direct JSON is a fast content path, not the only coverage source. During `update`, the crawler also performs public URL discovery from sitemap data, rendered site navigation/shell links, Angular route metadata hints, and previous cache routes. A direct JSON success can still trigger browser discovery on a first cache build so route coverage is checked independently from per-page extraction quality.
+
 The browser crawler still opens links exactly as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` as a fallback when the discovered route does not render stable matching content. Before extraction, it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
 
 Each refreshed index includes:
 
 - `qualityReport` for duplicate page bodies, suspicious route/content mismatches, short pages, duplicate titles, and page counts by section;
-- `extractionDiagnostics` for JSON-vs-DOM extraction counts, token table coverage, unknown chunk/resource types, image/video counts, unresolved resources, and per-page fallback reasons.
+- `extractionDiagnostics` for JSON-vs-DOM extraction counts, token table coverage/context diagnostics, status table placeholder diagnostics, unknown chunk/resource types, image/video counts, unresolved resources, and per-page fallback reasons;
+- `coverageDiagnostics` for discovered public URL counts, discovery-source counts, uncrawled discovered routes, `max-pages` partial-crawl markers, and whether coverage was verified or left partial/unverified.
 
 This helps diagnose both SPA route failures such as `/components/buttons` rendering the parent `Components` listing instead of the Buttons documentation, and JSON-shape drift where a page had to fall back to the browser path.
+
+When `--max-pages` intentionally limits the crawl, the refresh can still succeed, but the stored diagnostics mark the cache as partial instead of silently treating `min-pages` as proof of full coverage. Likewise, if Playwright is unavailable and direct JSON still produces a usable partial cache, the cache metadata records that coverage was left unverified.
+
+Raw JSON debug output is sanitized for extraction audits. When JSON payloads are captured for an accepted page, the cache stores only the response URL/path, classified type, stable ID, and payload. It does not store request headers, cookies, or full HAR files.
 
 ## MCP tools
 
