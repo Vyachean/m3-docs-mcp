@@ -157,9 +157,15 @@ export async function renderDsdbResourceChunk(
 
 function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {
   const direct = getPath(resource, 'system');
-  if (direct) return normalizeTokenTableSystem(direct);
+  if (direct) {
+    const system = normalizeTokenTableSystem(direct);
+    if (system) return system;
+  }
   const nested = getPath(resource, 'payload', 'system');
-  if (nested) return normalizeTokenTableSystem(nested);
+  if (nested) {
+    const system = normalizeTokenTableSystem(nested);
+    if (system) return system;
+  }
   return null;
 }
 

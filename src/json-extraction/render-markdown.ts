@@ -631,8 +631,10 @@ function normalizeTokenItem(raw: unknown): TokenTableSystem['tokens'][number] | 
 function normalizeTokenSetItem(raw: unknown): TokenTableSystem['tokenSets'][number] | null {
   const obj = asObject(raw);
   if (!obj) return null;
+  const name = readString(obj.name);
+  if (!name) return null;
   return {
-    name: readString(obj.name) ?? '',
+    name,
     displayName: readString(obj.displayName) ?? '',
     tokenSetName: readString(obj.tokenSetName) ?? ''
   };

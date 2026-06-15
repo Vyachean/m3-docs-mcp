@@ -577,6 +577,123 @@ describe('STATUS_TABLE placeholder content and diagnostic structure', () => {
   });
 });
 
+// ─── extractTokenTableSystem – nested payload.system fallback ─────────────────
+
+describe('extractTokenTableSystem – nested payload.system fallback', () => {
+  const tokenChunk = {
+    libraryModuleType: 'TOKEN_TABLE',
+    resourceName: 'designSystems/ds/components/cmp',
+    moduleConfiguration: { tokenSets: ['Divider - Common'] }
+  };
+
+  async function renderTokenChunk(resource: unknown) {
+    const diag = emptyPageDiagnostic();
+    const result = await renderDsdbResourceChunk(tokenChunk, async () => resource, diag);
+    return { result, diag };
+  }
+
+  it('uses nested payload.system when direct system is invalid (null tokens/tokenSets)', async () => {
+    const resource = {
+      system: { tokens: null, tokenSets: null },
+      payload: { system: VALID_TOKEN_SYSTEM }
+    };
+    const { result, diag } = await renderTokenChunk(resource);
+    expect(result).toContain('### Divider - Common');
+    expect(diag.tokenTablesRendered).toBe(1);
+  });
+
+  it('uses nested payload.system when direct system is an empty object (no tokens/tokenSets)', async () => {
+    const resource = {
+      system: {},
+      payload: { system: VALID_TOKEN_SYSTEM }
+    };
+    const { result, diag } = await renderTokenChunk(resource);
+    expect(result).toContain('### Divider - Common');
+    expect(diag.tokenTablesRendered).toBe(1);
+  });
+
+  it('prefers valid direct system over nested payload.system', async () => {
+    const resource = {
+      system: VALID_TOKEN_SYSTEM,
+      payload: { system: { tokens: null, tokenSets: null } }
+    };
+    const { result, diag } = await renderTokenChunk(resource);
+    expect(result).toContain('### Divider - Common');
+    expect(diag.tokenTablesRendered).toBe(1);
+  });
+
+  it('returns placeholder when both direct and nested systems are invalid', async () => {
+    const resource = {
+      system: { tokens: null, tokenSets: null },
+      payload: { system: { tokens: [], tokenSets: [] } }
+    };
+    const { result, diag } = await renderTokenChunk(resource);
+    expect(result).toContain('Material resource placeholder');
+    expect(diag.tokenTablesRendered).toBe(0);
+    expect(diag.unresolvedResourceCount).toBeGreaterThan(0);
+  });
+});
+
+// ─── normalizeTokenSetItem – reject empty/missing names ──────────────────────
+
+describe('normalizeTokenSetItem – empty and missing names', () => {
+  it('drops token set with missing name field', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ displayName: 'Nameless Set', tokenSetName: 'md.nameless' }]
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('drops token set with empty string name', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: '', displayName: 'Empty Name', tokenSetName: 'md.empty' }]
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('drops token set with whitespace-only name', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: '   ', displayName: 'Whitespace Name', tokenSetName: 'md.ws' }]
+    });
+    expect(result).not.toBeNull();
+    expect(result!.tokenSets).toHaveLength(0);
+  });
+
+  it('nameless token set must not match every token via startsWith("")', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'designSystems/ds/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [
+        { displayName: 'Nameless Set', tokenSetName: 'md.nameless' },
+        { name: 'designSystems/ds/ts', displayName: 'Named Set', tokenSetName: 'md.named' }
+      ]
+    })!;
+    expect(result).not.toBeNull();
+    const { markdown } = renderTokenTableWithDiagnostics(result, ['Nameless Set']);
+    expect(markdown).toBe('');
+  });
+
+  it('does not throw when rendering a system that had nameless token sets dropped', () => {
+    const result = normalizeTokenTableSystem({
+      tokens: [{ name: 'designSystems/ds/tokenSets/ts/tokens/tok1', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [
+        { name: null, displayName: 'Null Name', tokenSetName: 'md.null' },
+        { name: '  ', displayName: 'Whitespace', tokenSetName: 'md.ws' },
+        { name: 'designSystems/ds/tokenSets/ts', displayName: 'Good Set', tokenSetName: 'md.good' }
+      ],
+      contextualReferenceTrees: {}
+    })!;
+    expect(result).not.toBeNull();
+    expect(result.tokenSets).toHaveLength(1);
+    expect(result.tokenSets[0]!.name).toBe('designSystems/ds/tokenSets/ts');
+    expect(() => renderTokenTableWithDiagnostics(result, ['Good Set'])).not.toThrow();
+  });
+});
+
 // ─── Content page extraction with malformed resources ─────────────────────────
 
 describe('extractContentPageToMaterialPage – malformed token/status resources', () => {
