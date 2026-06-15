@@ -4,8 +4,9 @@ import { rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Page } from 'playwright';
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import TurndownService from 'turndown';
+import { z } from 'zod';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from './crawler-utils.js';
 import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
@@ -16,6 +17,9 @@ const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
 const BLOG_POST_REUSE_YEAR_LAG = 1;
+const DSDB_FETCH_TIMEOUT_MS = 15_000;
+const DSDB_CONFIG_TIMEOUT_MS = 30_000;
+const DSDB_DEFAULT_CONCURRENCY = 8;
 const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
@@ -87,6 +91,49 @@ const TOKEN_VIEWER_CELL_SELECTORS = [
   '[class*="value"]',
   '[class*="token"]'
 ].join(',');
+
+type DsdbRoute = {
+  slug: string;
+  documentId: string;
+  collectionId: string;
+  exportedCarbonFileId: string;
+};
+
+type DsdbSiteConfig = {
+  carbonVersion: string;
+  routes: DsdbRoute[];
+};
+
+const DsdbChunkSchema = z.object({
+  contentChunkType: z.enum(['TEXT', 'IMAGE', 'VIDEO', 'RESOURCE']),
+  htmlValue: z.string().nullish(),
+  imageUrl: z.string().nullish(),
+  altText: z.string().nullish(),
+  footer: z.string().nullish(),
+});
+
+const DsdbBlockSchema = z.object({
+  title: z.string().nullish(),
+  isHidden: z.boolean(),
+  contentChunks: z.array(DsdbChunkSchema),
+});
+
+const DsdbSectionSchema = z.object({
+  name: z.string(),
+  isVisible: z.boolean(),
+  contentBlocks: z.array(DsdbBlockSchema),
+});
+
+const DsdbPageDataSchema = z.object({
+  title: z.string(),
+  updatedTimestamp: z.string(),
+  sections: z.array(DsdbSectionSchema),
+});
+
+type DsdbChunk = z.infer<typeof DsdbChunkSchema>;
+type DsdbBlock = z.infer<typeof DsdbBlockSchema>;
+type DsdbSection = z.infer<typeof DsdbSectionSchema>;
+type DsdbPageData = z.infer<typeof DsdbPageDataSchema>;
 
 type ExtractedContent = {
   html: string;
@@ -1211,6 +1258,106 @@ export function createCrawlQualityReport(pages: MaterialPage[], rejectedSuspicio
   };
 }
 
+export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal): Promise<DsdbSiteConfig> {
+  throwIfAborted(signal);
+  const configController = new AbortController();
+  const timer = setTimeout(() => configController.abort(), DSDB_CONFIG_TIMEOUT_MS);
+  const onAbort = () => configController.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    const htmlRes = await fetch(baseUrl, { signal: configController.signal });
+    if (!htmlRes.ok) throw new Error(`Failed to fetch ${baseUrl}: ${htmlRes.status}`);
+    const html = await htmlRes.text();
+
+    throwIfAborted(signal);
+
+    const mainJsMatch = html.match(/src="(\/static\/angular\/main\.[a-f0-9]+\.js)"/);
+    if (!mainJsMatch?.[1]) throw new Error('Angular main bundle URL not found in page HTML');
+
+    const mainJsUrl = new URL(mainJsMatch[1], baseUrl).toString();
+    const jsRes = await fetch(mainJsUrl, { signal: configController.signal });
+    if (!jsRes.ok) throw new Error(`Failed to fetch Angular bundle: ${jsRes.status}`);
+    const mainJs = await jsRes.text();
+
+    throwIfAborted(signal);
+
+    const cvMatch = mainJs.match(/"carbonVersion":"([^"]+)"/);
+    if (!cvMatch?.[1]) throw new Error('carbonVersion not found in Angular bundle');
+    const carbonVersion = cvMatch[1];
+
+    const routePattern = /"slug":"([^"]+)","documentId":"([^"]+)","collectionId":"([^"]+)","exportedCarbonFileId":"([a-f0-9-]+\.json)"/g;
+    const routes: DsdbRoute[] = [];
+    let m;
+    while ((m = routePattern.exec(mainJs)) !== null) {
+      routes.push({ slug: m[1], documentId: m[2], collectionId: m[3], exportedCarbonFileId: m[4] });
+    }
+
+    if (routes.length === 0) throw new Error('No DSDB routes found in Angular bundle');
+    return { carbonVersion, routes };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+export async function fetchDsdbPage(baseUrl: string, carbonVersion: string, uuid: string, signal?: AbortSignal): Promise<DsdbPageData> {
+  throwIfAborted(signal);
+  const url = `${baseUrl}/_dsm/data/dsdb-m3/${carbonVersion}/${uuid}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DSDB_FETCH_TIMEOUT_MS);
+  const onAbort = () => controller.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) throw new Error(`DSDB fetch failed (${res.status}) for ${uuid}`);
+    return DsdbPageDataSchema.parse(await res.json());
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+function assembleDsdbHtml(data: DsdbPageData): string {
+  const parts: string[] = [`<h1>${escapeHtmlText(data.title)}</h1>`];
+  for (const section of data.sections) {
+    if (!section.isVisible) continue;
+    parts.push(`<h2>${escapeHtmlText(section.name)}</h2>`);
+    for (const block of section.contentBlocks) {
+      if (block.isHidden) continue;
+      if (block.title) parts.push(`<h3>${escapeHtmlText(block.title)}</h3>`);
+      for (const chunk of block.contentChunks) {
+        if (chunk.contentChunkType === 'TEXT' && chunk.htmlValue) {
+          parts.push(chunk.htmlValue);
+        } else if (chunk.contentChunkType === 'IMAGE' && chunk.imageUrl) {
+          const src = preferLargeImageUrl(chunk.imageUrl);
+          const alt = chunk.altText ?? '';
+          if (chunk.footer) {
+            parts.push(`<figure><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"><figcaption>${chunk.footer}</figcaption></figure>`);
+          } else {
+            parts.push(`<img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}">`);
+          }
+        }
+        // VIDEO and RESOURCE chunks have no text content
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+function dsdbRouteToMaterialPage(data: DsdbPageData, route: DsdbRoute, baseUrl: string, capturedAt: string): MaterialPage {
+  const url = new URL(`/${route.slug}`, baseUrl).toString();
+  const html = assembleDsdbHtml(data);
+  return extractMaterialPageFromHtml(html, url, capturedAt);
+}
+
+function isDsdbCoveredPath(urlPath: string, dsdbSlugs: Set<string>): boolean {
+  const path = urlPath.replace(/^\/+|\/+$/g, '');
+  if (dsdbSlugs.has(path)) return true;
+  const lastSlash = path.lastIndexOf('/');
+  return lastSlash > 0 && dsdbSlugs.has(path.slice(0, lastSlash));
+}
+
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
   const previousIndex = await readIndex(targetCacheDir);
@@ -1242,8 +1389,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const reusableBlogPages = buildReusableBlogPageMap(previousIndex);
   const blogPostYears = new Map<string, number>();
 
-  const browser = await launchChromium(options.headless ?? true);
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
+  // Declared here so the nested worker() function can close over it
+  let browserContext: BrowserContext | undefined;
+
   const queue: string[] = [];
   const queued = new Set<string>();
   const seen = new Set<string>();
@@ -1254,6 +1402,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
+  let dsdbAttemptedCount = 0;
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
     const completedAt = running ? null : new Date().toISOString();
@@ -1264,7 +1413,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       running,
       maxPages,
       concurrency,
-      attemptedPageCount: seen.size,
+      attemptedPageCount: dsdbAttemptedCount + seen.size,
       savedPageCount: pages.length,
       failedPageCount: failedUrls.length,
       queuedPageCount: queue.length,
@@ -1277,29 +1426,85 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     options.onProgress?.(progress);
   };
 
-  const onAbort = () => {
-    aborted = true;
-    emitProgress(false, 'Material 3 crawl was interrupted.');
-    wakeWorkers();
-    void context.close().catch(() => undefined);
-  };
-  signal?.addEventListener('abort', onAbort, { once: true });
-  enqueue(baseUrl);
-  for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
-  emitProgress(true);
+  // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
+  const dsdbSlugs = new Set<string>();
+  {
+    let dsdbConfig: DsdbSiteConfig | null = null;
+    try {
+      throwIfAborted(signal);
+      dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      console.error(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-  try {
-    await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
-  } catch (error) {
-    emitProgress(false, error instanceof Error ? error.message : String(error));
-    throw error;
-  } finally {
-    signal?.removeEventListener('abort', onAbort);
-    wakeWorkers();
-    await browser.close();
+    if (dsdbConfig) {
+      const capturedAt = new Date().toISOString();
+      for (const route of dsdbConfig.routes) dsdbSlugs.add(route.slug);
+
+      const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
+      const routes = dsdbConfig.routes;
+      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += dsdbBatchSize) {
+        throwIfAborted(signal);
+        const batch = routes.slice(i, i + dsdbBatchSize);
+        await Promise.all(batch.map(async (route) => {
+          if (pages.length >= maxPages || signal?.aborted) return;
+          dsdbAttemptedCount += 1;
+          try {
+            throwIfAborted(signal);
+            const data = await fetchDsdbPage(baseUrl, dsdbConfig!.carbonVersion, route.exportedCarbonFileId, signal);
+            throwIfAborted(signal);
+            const materialPage = dsdbRouteToMaterialPage(data, route, baseUrl, capturedAt);
+            if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+              pages.push(materialPage);
+              writtenPaths.add(materialPage.path);
+              lastSavedUrl = materialPage.url;
+              await writePage(materialPage, cacheDir);
+              emitProgress(true);
+            }
+          } catch (err) {
+            if (signal?.aborted) return;
+            const failUrl = new URL(`/${route.slug}`, baseUrl).toString();
+            failedUrls.push(failUrl);
+            lastFailedUrl = failUrl;
+            console.error(`DSDB fetch failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            emitProgress(true);
+          }
+        }));
+      }
+      emitProgress(true);
+    }
   }
 
-  throwIfAborted(signal);
+  // ── Phase 2: Browser crawl for non-DSDB pages (blog posts, landing pages) ──
+  if (pages.length < maxPages && !signal?.aborted) {
+    const browser = await launchChromium(options.headless ?? true);
+    browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
+
+    const onAbort = () => {
+      aborted = true;
+      emitProgress(false, 'Material 3 crawl was interrupted.');
+      wakeWorkers();
+      void browserContext?.close().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    enqueue(baseUrl);
+    for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
+    emitProgress(true);
+
+    try {
+      await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
+    } catch (error) {
+      emitProgress(false, error instanceof Error ? error.message : String(error));
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+      wakeWorkers();
+      await browser.close();
+    }
+
+    throwIfAborted(signal);
+  }
 
   const capturedAt = new Date().toISOString();
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
@@ -1307,7 +1512,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     source: baseUrl,
     capturedAt,
     pageCount: pages.length,
-    attemptedPageCount: seen.size,
+    attemptedPageCount: dsdbAttemptedCount + seen.size,
     failedPageCount: failedUrls.length,
     failedUrls,
     qualityReport,
@@ -1335,7 +1540,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       currentUrls.set(workerIndex, url);
       emitProgress(true);
       try {
-        page = await context.newPage();
+        page = await browserContext!.newPage();
         throwIfAborted(signal);
         await crawlPage(page, url);
       } catch (error) {
@@ -1444,6 +1649,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   function enqueue(raw: string): void {
     const link = normalizeMaterialCrawlUrl(raw, baseUrl);
     if (!link || seen.has(link) || queued.has(link)) return;
+    const linkPath = new URL(link).pathname.replace(/^\/+|\/+$/g, '');
+    if (isDsdbCoveredPath(linkPath, dsdbSlugs)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
     queue.sort(compareMaterialCrawlPriority);
