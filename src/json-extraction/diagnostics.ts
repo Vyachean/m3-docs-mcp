@@ -31,6 +31,7 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     tokenTablesWithUnresolvedTokens: 0,
     statusTablesRequested: 0,
     statusTablesResolved: 0,
+    statusTablesRendered: 0,
     statusTablesRenderedAsPlaceholder: 0,
     unsupportedStatusTableSchemaCount: 0,
     pagesWithSuspiciouslyShortMarkdown: 0,
@@ -92,6 +93,7 @@ export function pushRouteDiagnostic(
   diagnostics.tokenTablesMissingRequestedTokenSets += routeDiagnostic.missingRequestedTokenSets.length;
   diagnostics.statusTablesRequested += routeDiagnostic.statusTablesRequested ?? 0;
   diagnostics.statusTablesResolved += routeDiagnostic.statusTablesResolved ?? 0;
+  diagnostics.statusTablesRendered += routeDiagnostic.statusTablesRendered ?? 0;
   diagnostics.statusTablesRenderedAsPlaceholder += routeDiagnostic.statusTablesRenderedAsPlaceholder ?? 0;
   diagnostics.unsupportedStatusTableSchemaCount += routeDiagnostic.unsupportedStatusTableSchemaCount ?? 0;
   diagnostics.tokenContextDiagnosticsRecorded += routeDiagnostic.tokenContextDiagnostics?.length ?? 0;

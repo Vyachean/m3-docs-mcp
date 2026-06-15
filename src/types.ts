@@ -66,6 +66,7 @@ export type ExtractionPageDiagnostic = {
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
@@ -108,6 +109,7 @@ export type ExtractionRouteDiagnostic = {
   tokenContextDiagnostics?: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
@@ -149,6 +151,7 @@ export type ExtractionDiagnostics = {
   tokenTablesWithUnresolvedTokens: number;
   statusTablesRequested: number;
   statusTablesResolved: number;
+  statusTablesRendered: number;
   statusTablesRenderedAsPlaceholder: number;
   unsupportedStatusTableSchemaCount: number;
   pagesWithSuspiciouslyShortMarkdown: number;

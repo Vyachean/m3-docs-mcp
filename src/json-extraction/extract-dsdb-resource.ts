@@ -56,14 +56,16 @@ export async function renderDsdbResourceChunk(
     const resourceName = extractResourceName(resourceChunk);
     pageDiagnostic.statusTablesRequested = (pageDiagnostic.statusTablesRequested ?? 0) + 1;
     const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
+    const resourceFound = Boolean(resource);
+    if (resourceFound) pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
     const rendered = renderStatusTableMarkdown(resource);
     const statusTableDiagnostics = pageDiagnostic.statusTableDiagnostics ?? (pageDiagnostic.statusTableDiagnostics = []);
     if (rendered) {
-      pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
+      pageDiagnostic.statusTablesRendered = (pageDiagnostic.statusTablesRendered ?? 0) + 1;
       statusTableDiagnostics.push({
         resourceName,
         requested: true,
-        resolved: Boolean(resource),
+        resolved: resourceFound,
         rendered: true,
         renderedAsPlaceholder: false,
         unsupportedSchema: false
@@ -71,13 +73,13 @@ export async function renderDsdbResourceChunk(
       return rendered;
     }
 
-    const unsupportedSchema = Boolean(resource);
+    const unsupportedSchema = resourceFound;
     pageDiagnostic.statusTablesRenderedAsPlaceholder = (pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0) + 1;
     if (unsupportedSchema) pageDiagnostic.unsupportedStatusTableSchemaCount = (pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0) + 1;
     statusTableDiagnostics.push({
       resourceName,
       requested: true,
-      resolved: Boolean(resource),
+      resolved: resourceFound,
       rendered: false,
       renderedAsPlaceholder: true,
       unsupportedSchema

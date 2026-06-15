@@ -54,6 +54,7 @@ export async function extractContentPageToMaterialPage({
     tokenContextDiagnostics: [],
     statusTablesRequested: 0,
     statusTablesResolved: 0,
+    statusTablesRendered: 0,
     statusTablesRenderedAsPlaceholder: 0,
     unsupportedStatusTableSchemaCount: 0,
     statusTableDiagnostics: [],

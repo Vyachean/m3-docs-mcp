@@ -1,7 +1,7 @@
 import TurndownService from 'turndown';
 import { materialPageId, materialPagePath, sectionFromPagePath } from '../crawler-utils.js';
 import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
-import { asArray, asObject } from './schemas.js';
+import { asArray, asObject, readString } from './schemas.js';
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -602,15 +602,59 @@ export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets:
 export function normalizeTokenTableSystem(raw: unknown): TokenTableSystem | null {
   const obj = asObject(raw);
   if (!obj) return null;
-  const tokens = asArray(obj.tokens) as TokenTableSystem['tokens'];
-  const tokenSets = asArray(obj.tokenSets) as TokenTableSystem['tokenSets'];
+  const tokens = asArray(obj.tokens).map(normalizeTokenItem).filter((t): t is TokenTableSystem['tokens'][number] => t !== null);
+  const tokenSets = asArray(obj.tokenSets).map(normalizeTokenSetItem).filter((ts): ts is TokenTableSystem['tokenSets'][number] => ts !== null);
   if (tokens.length === 0 && tokenSets.length === 0) return null;
   return {
     tokens,
     tokenSets,
-    tags: asArray(obj.tags) as TokenTableSystem['tags'],
-    contextTagGroups: asArray(obj.contextTagGroups) as TokenTableSystem['contextTagGroups'],
+    tags: asArray(obj.tags).map(normalizeTagItem).filter((t): t is TokenTableSystem['tags'][number] => t !== null),
+    contextTagGroups: asArray(obj.contextTagGroups).map(normalizeContextTagGroupItem).filter((g): g is TokenTableSystem['contextTagGroups'][number] => g !== null),
     contextualReferenceTrees: normalizeContextualRefTrees(obj.contextualReferenceTrees)
+  };
+}
+
+function normalizeTokenItem(raw: unknown): TokenTableSystem['tokens'][number] | null {
+  const obj = asObject(raw);
+  if (!obj) return null;
+  const name = readString(obj.name);
+  if (!name) return null;
+  return {
+    name,
+    tokenName: readString(obj.tokenName) ?? '',
+    displayName: readString(obj.displayName) ?? '',
+    tokenValueType: readString(obj.tokenValueType) ?? '',
+    state: readString(obj.state) ?? ''
+  };
+}
+
+function normalizeTokenSetItem(raw: unknown): TokenTableSystem['tokenSets'][number] | null {
+  const obj = asObject(raw);
+  if (!obj) return null;
+  return {
+    name: readString(obj.name) ?? '',
+    displayName: readString(obj.displayName) ?? '',
+    tokenSetName: readString(obj.tokenSetName) ?? ''
+  };
+}
+
+function normalizeTagItem(raw: unknown): TokenTableSystem['tags'][number] | null {
+  const obj = asObject(raw);
+  if (!obj) return null;
+  return {
+    name: readString(obj.name) ?? '',
+    displayName: readString(obj.displayName) ?? '',
+    tagName: readString(obj.tagName) ?? ''
+  };
+}
+
+function normalizeContextTagGroupItem(raw: unknown): TokenTableSystem['contextTagGroups'][number] | null {
+  const obj = asObject(raw);
+  if (!obj) return null;
+  return {
+    name: readString(obj.name) ?? '',
+    displayName: readString(obj.displayName) ?? '',
+    defaultTag: readString(obj.defaultTag) ?? ''
   };
 }
 
@@ -628,11 +672,19 @@ function normalizeContextualRefTrees(raw: unknown): TokenTableSystem['contextual
   return result;
 }
 
+function normalizeReferenceNode(raw: unknown): ReferenceNode {
+  const obj = asObject(raw) ?? {};
+  return {
+    tokenName: readString(obj.tokenName) ?? '',
+    childNodes: asArray(obj.childNodes).map(normalizeReferenceNode)
+  };
+}
+
 function normalizeContextTreeEntry(raw: unknown): ContextTreeEntry {
   const e = asObject(raw) ?? {};
   return {
     contextTags: asArray(e.contextTags).filter((t): t is string => typeof t === 'string'),
-    referenceTree: (e.referenceTree as ReferenceNode | undefined) ?? { tokenName: '' },
+    referenceTree: normalizeReferenceNode(e.referenceTree),
     resolvedValue: (e.resolvedValue as ResolvedTokenValue | undefined) ?? {}
   };
 }
