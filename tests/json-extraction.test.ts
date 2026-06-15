@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { pushPageDiagnostic, createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
+import { buildBundleFromCapturedResponses } from '../src/json-extraction/capture-network-json.js';
+import { classifyJsonResponse } from '../src/json-extraction/classify-json-response.js';
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
 import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls } from '../src/json-extraction/fetch-json-page.js';
@@ -162,16 +164,74 @@ describe('JSON-first extraction', () => {
     expect(result.fallbackReason).toBe('json-no-sections');
   });
 
+  it('classifies network-captured JSON responses by payload and URL', () => {
+    expect(classifyJsonResponse({
+      url: 'https://m3.material.io/page-data/components/lists/overview/page-data.json',
+      payload: fixture('network-page-data.json')
+    }).type).toBe('page-metadata');
+    expect(classifyJsonResponse({
+      url: 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json',
+      payload: fixture('network-content-page.json')
+    }).type).toBe('content-page');
+    expect(classifyJsonResponse({
+      url: 'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/TOKEN_TABLE.6c818a16475113bd.json',
+      payload: fixture('network-token-table.json')
+    }).type).toBe('token-table');
+    expect(classifyJsonResponse({
+      url: 'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/STATUS_TABLE.states.json',
+      payload: fixture('network-status-table.json')
+    }).type).toBe('status-table');
+    expect(classifyJsonResponse({
+      url: 'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/EXPERIMENTAL_GRID.sample.json',
+      payload: fixture('network-unknown.json')
+    }).type).toBe('dsdb-resource');
+  });
+
+  it('builds a normalized JSON page bundle from captured responses', async () => {
+    const bundle = buildBundleFromCapturedResponses([
+      classifyJsonResponse({
+        url: 'https://m3.material.io/page-data/components/lists/overview/page-data.json',
+        payload: fixture('network-page-data.json')
+      }),
+      classifyJsonResponse({
+        url: 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json',
+        payload: fixture('network-content-page.json')
+      }),
+      classifyJsonResponse({
+        url: 'https://m3.material.io/_dsm/data/dsdb-m3/cv-123/TOKEN_TABLE.6c818a16475113bd.json',
+        payload: fixture('network-token-table.json')
+      })
+    ]);
+
+    expect(bundle.pageCanonId).toBe('page-canon-lists');
+    expect(bundle.pageData).toBeTruthy();
+    expect(bundle.contentPage).toBeTruthy();
+    await expect(bundle.fetchResource('designSystems/20543ce18892f7d9/components/6c818a16475113bd', 'TOKEN_TABLE')).resolves.toEqual(fixture('network-token-table.json'));
+  });
+
+  it('rejects JSON output when requested token tables are missing', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/button/specs',
+      pageData: null,
+      contentPage: fixture('content-token-table.json'),
+      fetchResource: async () => null
+    });
+
+    expect(result.fallbackReason).toBe('json-missing-token-tables');
+  });
+
   it('aggregates extraction diagnostics', () => {
     const diagnostics = createEmptyExtractionDiagnostics();
     pushPageDiagnostic(diagnostics, {
       url: 'https://m3.material.io/components/lists/overview',
       path: 'components/lists/overview.md',
       method: 'json',
+      source: 'direct-json',
       unknownChunkTypes: ['CAROUSEL'],
       unknownResourceTypes: ['EXPERIMENTAL_GRID'],
       tokenTables: 1,
       tokenTablesRendered: 1,
+      statusTablesResolved: 1,
       missingRequestedTokenSets: ['Missing set'],
       suspiciousReasons: [],
       imageCount: 2,
@@ -179,39 +239,59 @@ describe('JSON-first extraction', () => {
       unresolvedResourceCount: 1,
       noSections: false,
       noHeadings: false,
-      markdownLength: 120
+      markdownLength: 120,
+      hasTitle: true,
+      qualityScore: 6,
+      routeTitlePathMismatch: false
     });
     pushRouteDiagnostic(diagnostics, {
       url: 'https://m3.material.io/components/lists/overview',
       path: 'components/lists/overview.md',
+      sourceUsed: 'direct-json',
       finalMethod: 'json',
       jsonAttempted: true,
       jsonSucceeded: true,
       browserFallbackAttempted: false,
       browserFallbackSucceeded: false,
+      directJsonAttempted: true,
+      directJsonSucceeded: true,
+      networkJsonAttempted: false,
+      networkJsonSucceeded: false,
+      domFallbackAttempted: false,
+      domFallbackSucceeded: false,
       unknownChunkTypes: ['CAROUSEL'],
       unknownResourceTypes: ['EXPERIMENTAL_GRID'],
       tokenTables: 1,
       tokenTablesRendered: 1,
-      missingRequestedTokenSets: ['Missing set']
+      tokenTablesRequested: 1,
+      statusTablesResolved: 1,
+      missingRequestedTokenSets: ['Missing set'],
+      unknownJsonResourceCount: 1,
+      capturedJsonResponseCounts: { 'page-metadata': 1, 'content-page': 1 },
+      rawJsonDebugFilesWritten: 2
     });
 
     expect(diagnostics).toMatchObject({
       totalPages: 1,
       totalRoutes: 1,
       pagesExtractedThroughJson: 1,
+      pagesAcceptedFromDirectJson: 1,
       jsonFallbackRoutes: 0,
       pagesWithUnknownChunkTypes: 1,
       pagesWithUnknownResourceTypes: 1,
       unknownChunkCount: 1,
       unknownResourceTypeCount: 1,
+      unknownJsonResourceCount: 1,
       pagesWithTokenTables: 1,
+      tokenTablesRequested: 1,
       tokenTablesSuccessfullyRendered: 1,
       tokenTablesFailedToRender: 0,
       tokenTablesMissingRequestedTokenSets: 1,
+      statusTablesResolved: 1,
       imageCount: 2,
       videoCount: 1,
-      unresolvedResourceCount: 1
+      unresolvedResourceCount: 1,
+      rawJsonDebugFilesWritten: 2
     });
   });
 });

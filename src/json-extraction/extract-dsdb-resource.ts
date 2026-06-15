@@ -56,7 +56,10 @@ export async function renderDsdbResourceChunk(
     const resourceName = extractResourceName(resourceChunk);
     const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
     const rendered = renderStatusTableMarkdown(resource);
-    if (rendered) return rendered;
+    if (rendered) {
+      pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
+      return rendered;
+    }
 
     pageDiagnostic.unknownResourceTypes.push(libraryModuleType);
     pageDiagnostic.unresolvedResourceCount += 1;

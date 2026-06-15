@@ -1,4 +1,5 @@
 import { deriveCollectionSegmentFromSlug, fallbackPageCanonId, extractPageDataMetadata } from './extract-page-data.js';
+import { createJsonPageBundle, type JsonPageBundle } from './json-bundle.js';
 
 export type JsonRouteDescriptor = {
   slug: string;
@@ -7,13 +8,6 @@ export type JsonRouteDescriptor = {
   collectionName?: string;
   exportedCarbonFileId?: string;
   pageCanonId?: string;
-};
-
-export type JsonPageBundle = {
-  pageData: unknown | null;
-  contentPage: unknown | null;
-  pageCanonId: string | null;
-  fetchResource: (resourceName: string) => Promise<unknown | null>;
 };
 
 type FetchLike = typeof fetch;
@@ -44,7 +38,10 @@ export async function fetchJsonPageBundle(
     return fetchFirstJsonOrNull(urls, signal, fetchImpl);
   };
 
-  return { pageData, contentPage, pageCanonId, fetchResource };
+  return {
+    ...createJsonPageBundle({ pageData, contentPage, pageCanonId }),
+    fetchResource
+  };
 }
 
 export function buildPageDataCandidateUrls(baseUrl: string, route: JsonRouteDescriptor): string[] {

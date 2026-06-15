@@ -8,20 +8,31 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     pagesExtractedThroughDomFallback: 0,
     pagesWhereJsonFailed: 0,
     jsonFallbackRoutes: 0,
+    pagesAcceptedFromDirectJson: 0,
+    pagesAcceptedFromNetworkJson: 0,
+    pagesAcceptedFromDomFallback: 0,
+    pagesFailed: 0,
+    routesWhereDirectJsonFailed: 0,
+    routesWhereNetworkJsonFailed: 0,
+    routesWhereDomFallbackFailed: 0,
     pagesWithUnknownChunkTypes: 0,
     pagesWithUnknownResourceTypes: 0,
     unknownChunkCount: 0,
     unknownResourceTypeCount: 0,
+    unknownJsonResourceCount: 0,
     pagesWithTokenTables: 0,
+    tokenTablesRequested: 0,
     tokenTablesSuccessfullyRendered: 0,
     tokenTablesFailedToRender: 0,
     tokenTablesMissingRequestedTokenSets: 0,
+    statusTablesResolved: 0,
     pagesWithSuspiciouslyShortMarkdown: 0,
     pagesWithNoSections: 0,
     pagesWithNoHeadings: 0,
     imageCount: 0,
     videoCount: 0,
     unresolvedResourceCount: 0,
+    rawJsonDebugFilesWritten: 0,
     routeDiagnostics: [],
     pageDiagnostics: []
   };
@@ -49,14 +60,25 @@ export function pushRouteDiagnostic(
   diagnostics.routeDiagnostics.push(routeDiagnostic);
   if (routeDiagnostic.finalMethod === 'json') diagnostics.pagesExtractedThroughJson += 1;
   if (routeDiagnostic.finalMethod === 'dom') diagnostics.pagesExtractedThroughDomFallback += 1;
-  if (routeDiagnostic.fallbackReason) diagnostics.pagesWhereJsonFailed += 1;
-  if (routeDiagnostic.fallbackReason) diagnostics.jsonFallbackRoutes += 1;
+  if (routeDiagnostic.sourceUsed === 'direct-json') diagnostics.pagesAcceptedFromDirectJson += 1;
+  if (routeDiagnostic.sourceUsed === 'network-json') diagnostics.pagesAcceptedFromNetworkJson += 1;
+  if (routeDiagnostic.sourceUsed === 'dom-fallback') diagnostics.pagesAcceptedFromDomFallback += 1;
+  if (routeDiagnostic.sourceUsed === 'failed') diagnostics.pagesFailed += 1;
+  if (routeDiagnostic.directJsonAttempted && !routeDiagnostic.directJsonSucceeded) diagnostics.routesWhereDirectJsonFailed += 1;
+  if (routeDiagnostic.networkJsonAttempted && !routeDiagnostic.networkJsonSucceeded) diagnostics.routesWhereNetworkJsonFailed += 1;
+  if (routeDiagnostic.domFallbackAttempted && !routeDiagnostic.domFallbackSucceeded) diagnostics.routesWhereDomFallbackFailed += 1;
+  if (routeDiagnostic.directJsonAttempted && !routeDiagnostic.directJsonSucceeded) diagnostics.pagesWhereJsonFailed += 1;
+  if (routeDiagnostic.directJsonAttempted && !routeDiagnostic.directJsonSucceeded) diagnostics.jsonFallbackRoutes += 1;
   if (routeDiagnostic.unknownChunkTypes.length > 0) diagnostics.pagesWithUnknownChunkTypes += 1;
   if (routeDiagnostic.unknownResourceTypes.length > 0) diagnostics.pagesWithUnknownResourceTypes += 1;
   diagnostics.unknownChunkCount += routeDiagnostic.unknownChunkTypes.length;
   diagnostics.unknownResourceTypeCount += routeDiagnostic.unknownResourceTypes.length;
+  diagnostics.unknownJsonResourceCount += routeDiagnostic.unknownJsonResourceCount ?? 0;
   if (routeDiagnostic.tokenTables > 0) diagnostics.pagesWithTokenTables += 1;
+  diagnostics.tokenTablesRequested += routeDiagnostic.tokenTablesRequested ?? routeDiagnostic.tokenTables;
   diagnostics.tokenTablesSuccessfullyRendered += routeDiagnostic.tokenTablesRendered;
   diagnostics.tokenTablesFailedToRender += Math.max(0, routeDiagnostic.tokenTables - routeDiagnostic.tokenTablesRendered);
   diagnostics.tokenTablesMissingRequestedTokenSets += routeDiagnostic.missingRequestedTokenSets.length;
+  diagnostics.statusTablesResolved += routeDiagnostic.statusTablesResolved ?? 0;
+  diagnostics.rawJsonDebugFilesWritten += routeDiagnostic.rawJsonDebugFilesWritten ?? 0;
 }

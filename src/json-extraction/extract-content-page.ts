@@ -40,14 +40,17 @@ export async function extractContentPageToMaterialPage({
   const title = discoveredTitle ?? 'Material 3 page';
   const sections = extractSections(contentPage);
   const headings = [discoveredTitle, ...sections.map((section) => section.title).filter(Boolean)].filter((value): value is string => Boolean(value));
+  const routeTitlePathMismatch = hasRouteTitlePathMismatch(url, title);
   const pageDiagnostic: ExtractionPageDiagnostic = {
     url,
     path: createMaterialPageFromBody({ url, title, headings, body: `# ${title}` }).path,
     method: 'json',
+    source: 'direct-json',
     unknownChunkTypes: [],
     unknownResourceTypes: [],
     tokenTables: 0,
     tokenTablesRendered: 0,
+    statusTablesResolved: 0,
     missingRequestedTokenSets: [],
     suspiciousReasons: [],
     imageCount: 0,
@@ -55,7 +58,10 @@ export async function extractContentPageToMaterialPage({
     unresolvedResourceCount: 0,
     noSections: sections.length === 0,
     noHeadings: headings.length === 0,
-    markdownLength: 0
+    markdownLength: 0,
+    hasTitle: Boolean(discoveredTitle?.trim()),
+    qualityScore: 0,
+    routeTitlePathMismatch
   };
 
   const bodyParts: string[] = [`# ${title}`];
@@ -84,6 +90,7 @@ export async function extractContentPageToMaterialPage({
   });
   pageDiagnostic.markdownLength = page.markdown.length;
   pageDiagnostic.path = page.path;
+  pageDiagnostic.qualityScore = scoreJsonExtraction(page, pageDiagnostic);
 
   const fallbackReason = determineFallbackReason(page, pageDiagnostic);
   if (fallbackReason) pageDiagnostic.suspiciousReasons.push(fallbackReason);
@@ -92,11 +99,37 @@ export async function extractContentPageToMaterialPage({
 }
 
 function determineFallbackReason(page: MaterialPage, pageDiagnostic: ExtractionPageDiagnostic): ExtractionFallbackReason | null {
+  if (!pageDiagnostic.hasTitle) return 'json-title-missing';
+  if (pageDiagnostic.routeTitlePathMismatch) return 'json-route-mismatch';
+  if (pageDiagnostic.tokenTables > pageDiagnostic.tokenTablesRendered) return 'json-missing-token-tables';
   if (pageDiagnostic.noSections) return 'json-no-sections';
   if (page.headings.length === 0) return 'json-no-headings';
   if (page.markdown.length < MIN_REASONABLE_MARKDOWN_LENGTH) return 'json-short-markdown';
   if (page.text.length < MIN_REASONABLE_MARKDOWN_LENGTH) return 'json-suspicious-content';
   return null;
+}
+
+function scoreJsonExtraction(page: MaterialPage, pageDiagnostic: ExtractionPageDiagnostic): number {
+  let score = 0;
+  if (pageDiagnostic.hasTitle) score += 2;
+  if (!pageDiagnostic.noSections) score += 2;
+  if (!pageDiagnostic.noHeadings) score += 1;
+  if (page.text.length >= MIN_REASONABLE_MARKDOWN_LENGTH) score += 2;
+  if (pageDiagnostic.tokenTables === 0 || pageDiagnostic.tokenTablesRendered === pageDiagnostic.tokenTables) score += 1;
+  if (pageDiagnostic.unknownChunkTypes.length > 0) score -= 1;
+  if (pageDiagnostic.unknownResourceTypes.length > 0) score -= 1;
+  if (pageDiagnostic.routeTitlePathMismatch) score -= 1;
+  if (pageDiagnostic.markdownLength < MIN_REASONABLE_MARKDOWN_LENGTH) score -= 1;
+  return score;
+}
+
+function hasRouteTitlePathMismatch(url: string, title: string): boolean {
+  const pathname = new URL(url).pathname.replace(/^\/+|\/+$/g, '');
+  const segments = pathname.split('/').filter(Boolean);
+  if (segments[0] !== 'components' || segments.length < 2) return false;
+  const expectedWords = segments[1]!.split('-').filter((word) => word.length > 1);
+  const normalizedTitle = title.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+  return expectedWords.some((word) => !normalizedTitle.includes(word));
 }
 
 function extractSections(contentPage: unknown): ParsedSection[] {

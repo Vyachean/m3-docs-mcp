@@ -7,11 +7,13 @@ import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
+import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
+import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -684,6 +686,83 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
 
   const routePathFromSlug = (slug: string): string => materialPagePath(new URL(`/${slug}`, baseUrl).toString());
+  const routeSlugFromPath = (pagePath: string): string => pagePath.replace(/\/overview\.md$/, '').replace(/\.md$/, '');
+
+  const createRouteDiagnostic = ({
+    url,
+    path,
+    sourceUsed,
+    finalMethod,
+    directJsonAttempted = false,
+    directJsonSucceeded = false,
+    networkJsonAttempted = false,
+    networkJsonSucceeded = false,
+    domFallbackAttempted = false,
+    domFallbackSucceeded = false,
+    fallbackReasons = [],
+    fallbackSkippedReasons = [],
+    unknownChunkTypes = [],
+    unknownResourceTypes = [],
+    tokenTables = 0,
+    tokenTablesRendered = 0,
+    tokenTablesRequested = tokenTables,
+    statusTablesResolved = 0,
+    missingRequestedTokenSets = [],
+    unknownJsonResourceCount = 0,
+    capturedJsonResponseCounts = {},
+    rawJsonDebugFilesWritten = 0
+  }: {
+    url: string;
+    path: string;
+    sourceUsed: ExtractionSource;
+    finalMethod: ExtractionRouteDiagnostic['finalMethod'];
+    directJsonAttempted?: boolean;
+    directJsonSucceeded?: boolean;
+    networkJsonAttempted?: boolean;
+    networkJsonSucceeded?: boolean;
+    domFallbackAttempted?: boolean;
+    domFallbackSucceeded?: boolean;
+    fallbackReasons?: ExtractionFallbackReason[];
+    fallbackSkippedReasons?: ExtractionFallbackReason[];
+    unknownChunkTypes?: string[];
+    unknownResourceTypes?: string[];
+    tokenTables?: number;
+    tokenTablesRendered?: number;
+    tokenTablesRequested?: number;
+    statusTablesResolved?: number;
+    missingRequestedTokenSets?: string[];
+    unknownJsonResourceCount?: number;
+    capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
+    rawJsonDebugFilesWritten?: number;
+  }): ExtractionRouteDiagnostic => ({
+    url,
+    path,
+    sourceUsed,
+    finalMethod,
+    jsonAttempted: directJsonAttempted || networkJsonAttempted,
+    jsonSucceeded: directJsonSucceeded || networkJsonSucceeded,
+    ...(fallbackReasons[0] ? { fallbackReason: fallbackReasons[0] } : {}),
+    ...(fallbackReasons.length > 0 ? { fallbackReasons } : {}),
+    ...(fallbackSkippedReasons.length > 0 ? { fallbackSkippedReasons } : {}),
+    browserFallbackAttempted: domFallbackAttempted,
+    browserFallbackSucceeded: domFallbackSucceeded,
+    directJsonAttempted,
+    directJsonSucceeded,
+    networkJsonAttempted,
+    networkJsonSucceeded,
+    domFallbackAttempted,
+    domFallbackSucceeded,
+    unknownChunkTypes,
+    unknownResourceTypes,
+    tokenTables,
+    tokenTablesRendered,
+    tokenTablesRequested,
+    statusTablesResolved,
+    missingRequestedTokenSets,
+    unknownJsonResourceCount,
+    capturedJsonResponseCounts,
+    rawJsonDebugFilesWritten
+  });
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
   const jsonExtractedSlugs = new Set<string>();
@@ -720,21 +799,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             const routePath = routePathFromSlug(route.slug);
             if (!bundle.pageData && !bundle.contentPage) {
               jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
-              recordRouteDiagnostic({
+              recordRouteDiagnostic(createRouteDiagnostic({
                 url: new URL(`/${route.slug}`, baseUrl).toString(),
                 path: routePath,
+                sourceUsed: 'failed',
                 finalMethod: null,
-                jsonAttempted: true,
-                jsonSucceeded: false,
-                fallbackReason: 'json-fetch-failed',
-                browserFallbackAttempted: false,
-                browserFallbackSucceeded: false,
-                unknownChunkTypes: [],
-                unknownResourceTypes: [],
-                tokenTables: 0,
-                tokenTablesRendered: 0,
-                missingRequestedTokenSets: []
-              });
+                directJsonAttempted: true,
+                fallbackReasons: ['json-fetch-failed']
+              }));
               return;
             }
             const extraction = await extractContentPageToMaterialPage({
@@ -746,41 +818,44 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             });
             if (extraction.fallbackReason) {
               jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
-              recordRouteDiagnostic({
+              recordRouteDiagnostic(createRouteDiagnostic({
                 url: extraction.page.url,
                 path: extraction.page.path,
+                sourceUsed: 'failed',
                 finalMethod: null,
-                jsonAttempted: true,
-                jsonSucceeded: false,
-                fallbackReason: extraction.fallbackReason,
-                browserFallbackAttempted: false,
-                browserFallbackSucceeded: false,
+                directJsonAttempted: true,
+                fallbackReasons: [extraction.fallbackReason],
                 unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
                 unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+                tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
-              });
+              }));
               return;
             }
             const materialPage = extraction.page;
             if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+              const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, materialPage.path, bundle.responses);
               pages.push(materialPage);
-              pushPageDiagnostic(extractionDiagnostics, extraction.pageDiagnostic);
-              recordRouteDiagnostic({
+              pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
+              recordRouteDiagnostic(createRouteDiagnostic({
                 url: materialPage.url,
                 path: materialPage.path,
+                sourceUsed: 'direct-json',
                 finalMethod: 'json',
-                jsonAttempted: true,
-                jsonSucceeded: true,
-                browserFallbackAttempted: false,
-                browserFallbackSucceeded: false,
+                directJsonAttempted: true,
+                directJsonSucceeded: true,
                 unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
                 unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
-                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
-              });
+                tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+                rawJsonDebugFilesWritten
+              }));
               writtenPaths.add(materialPage.path);
               jsonExtractedSlugs.add(route.slug);
               lastSavedUrl = materialPage.url;
@@ -790,21 +865,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           } catch (err) {
             if (signal?.aborted) return;
             jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
-            recordRouteDiagnostic({
+            recordRouteDiagnostic(createRouteDiagnostic({
               url: new URL(`/${route.slug}`, baseUrl).toString(),
               path: routePathFromSlug(route.slug),
+              sourceUsed: 'failed',
               finalMethod: null,
-              jsonAttempted: true,
-              jsonSucceeded: false,
-              fallbackReason: 'json-fetch-failed',
-              browserFallbackAttempted: false,
-              browserFallbackSucceeded: false,
-              unknownChunkTypes: [],
-              unknownResourceTypes: [],
-              tokenTables: 0,
-              tokenTablesRendered: 0,
-              missingRequestedTokenSets: []
-            });
+              directJsonAttempted: true,
+              fallbackReasons: ['json-fetch-failed']
+            }));
             console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }));
@@ -814,9 +882,32 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   }
 
   // ── Phase 2: Browser crawl for JSON misses and uncovered routes ───────────
+  for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
+    if (routeDiagnostic.sourceUsed === 'direct-json') {
+      routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), 'json-quality-accepted' as ExtractionFallbackReason];
+    }
+  }
   const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
-  if (pages.length < maxPages && !signal?.aborted && !jsonExtractionSatisfiedMinimum) {
-    const browser = await launchChromium(options.headless ?? true);
+  const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
+  if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback)) {
+    let browser: Browser;
+    try {
+      browser = await launchChromium(options.headless ?? true);
+    } catch (error) {
+      if (jsonExtractionSatisfiedMinimum) {
+        emitProgress(true);
+        const fallbackReason: ExtractionFallbackReason = 'playwright-unavailable';
+        for (const routeDiagnostic of routeDiagnosticsByPath.values()) {
+          routeDiagnostic.fallbackSkippedReasons = [...(routeDiagnostic.fallbackSkippedReasons ?? []), fallbackReason];
+        }
+      } else {
+        throw error;
+      }
+      browser = undefined as never;
+    }
+    if (!browser) {
+      // Direct JSON already produced an acceptable cache; keep it and record the skip.
+    } else {
     browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
 
     const onAbort = () => {
@@ -831,18 +922,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     for (const link of await discoverSitemapLinks(baseUrl)) enqueue(link);
     emitProgress(true);
 
-    try {
-      await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
-    } catch (error) {
-      emitProgress(false, error instanceof Error ? error.message : String(error));
-      throw error;
-    } finally {
-      signal?.removeEventListener('abort', onAbort);
-      wakeWorkers();
-      await browser.close();
-    }
+      try {
+        await Promise.all(Array.from({ length: concurrency }, (_, workerIndex) => worker(workerIndex)));
+      } catch (error) {
+        emitProgress(false, error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+        wakeWorkers();
+        await browser.close();
+      }
 
-    throwIfAborted(signal);
+      throwIfAborted(signal);
+    }
   }
 
   const capturedAt = new Date().toISOString();
@@ -923,16 +1015,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           if (text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages) {
             const materialPage: MaterialPage = { ...cached, text, markdown };
             pages.push(materialPage);
-            const fallbackReason = jsonFallbackRoutes.get(materialPage.path.replace(/\/overview\.md$/, '').replace(/\.md$/, ''));
+            const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(materialPage.path));
             pushPageDiagnostic(extractionDiagnostics, {
               url: materialPage.url,
               path: materialPage.path,
               method: 'dom',
+              source: 'dom-fallback',
               ...(fallbackReason ? { fallbackReason } : {}),
               unknownChunkTypes: [],
               unknownResourceTypes: [],
               tokenTables: 0,
               tokenTablesRendered: 0,
+              statusTablesResolved: 0,
               missingRequestedTokenSets: [],
               suspiciousReasons: [],
               imageCount: 0,
@@ -942,23 +1036,31 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               noHeadings: materialPage.headings.length === 0,
               markdownLength: materialPage.markdown.length
             });
-            recordRouteDiagnostic({
-              ...(routeDiagnosticsByPath.get(materialPage.path) ?? {
-                url: materialPage.url,
-                path: materialPage.path,
-                jsonAttempted: Boolean(fallbackReason),
-                jsonSucceeded: false,
-                unknownChunkTypes: [],
-                unknownResourceTypes: [],
-                tokenTables: 0,
-                tokenTablesRendered: 0,
-                missingRequestedTokenSets: []
-              }),
+            const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+            recordRouteDiagnostic(createRouteDiagnostic({
+              url: materialPage.url,
+              path: materialPage.path,
+              sourceUsed: 'dom-fallback',
               finalMethod: 'dom',
-              ...(fallbackReason ? { fallbackReason } : {}),
-              browserFallbackAttempted: false,
-              browserFallbackSucceeded: false
-            });
+              directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? Boolean(fallbackReason),
+              directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+              networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? false,
+              networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+              domFallbackAttempted: false,
+              domFallbackSucceeded: false,
+              fallbackReasons: previousDiagnostic?.fallbackReasons ?? (fallbackReason ? [fallbackReason] : []),
+              fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+              capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? {},
+              unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+              unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+              tokenTables: previousDiagnostic?.tokenTables ?? 0,
+              tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+              tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+              statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+              missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+              unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? 0,
+              rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+            }));
             writtenPaths.add(materialPage.path);
             lastSavedUrl = url;
             await writePage(materialPage, cacheDir);
@@ -971,10 +1073,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
     }
 
+    const networkCapture = createNetworkJsonCapture(page);
     let finalUrl: string;
     try {
       finalUrl = await navigateToStableMaterialPage(page, url, baseUrl, signal);
     } catch (error) {
+      networkCapture.stop();
       if (error instanceof RequestedRouteRejectedError) {
         suspiciousPages.push(error.rejectedRoute);
         failedUrls.push(url);
@@ -994,9 +1098,126 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'lazy-load scrolling');
     await waitForStableMaterialSnapshot(page, signal);
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'stabilization');
+    networkCapture.stop();
+
+    const capturedBundle = buildBundleFromCapturedResponses(networkCapture.getResponses());
+    const capturedJsonResponseCounts = countCapturedResponseTypes(capturedBundle.responses);
+    const unknownJsonResourceCount = capturedBundle.responses.filter((response) => response.type === 'unknown-json-resource').length;
+
+    if (capturedBundle.pageData || capturedBundle.contentPage) {
+      const networkExtraction = await extractContentPageToMaterialPage({
+        url: finalUrl,
+        pageData: capturedBundle.pageData,
+        contentPage: capturedBundle.contentPage,
+        fetchResource: capturedBundle.fetchResource
+      });
+      if (!networkExtraction.fallbackReason && networkExtraction.page.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(networkExtraction.page.path)) {
+        const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, networkExtraction.page.path, capturedBundle.responses);
+        pages.push(networkExtraction.page);
+        pushPageDiagnostic(extractionDiagnostics, { ...networkExtraction.pageDiagnostic, source: 'network-json' });
+        recordRouteDiagnostic(createRouteDiagnostic({
+          url: networkExtraction.page.url,
+          path: networkExtraction.page.path,
+          sourceUsed: 'network-json',
+          finalMethod: 'json',
+          directJsonAttempted: routeDiagnosticsByPath.get(networkExtraction.page.path)?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(networkExtraction.page.path)),
+          directJsonSucceeded: routeDiagnosticsByPath.get(networkExtraction.page.path)?.directJsonSucceeded ?? false,
+          networkJsonAttempted: true,
+          networkJsonSucceeded: true,
+          fallbackReasons: routeDiagnosticsByPath.get(networkExtraction.page.path)?.fallbackReasons ?? [],
+          fallbackSkippedReasons: routeDiagnosticsByPath.get(networkExtraction.page.path)?.fallbackSkippedReasons ?? [],
+          unknownChunkTypes: networkExtraction.pageDiagnostic.unknownChunkTypes,
+          unknownResourceTypes: networkExtraction.pageDiagnostic.unknownResourceTypes,
+          tokenTables: networkExtraction.pageDiagnostic.tokenTables,
+          tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
+          tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+          statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+          missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
+          unknownJsonResourceCount,
+          capturedJsonResponseCounts,
+          rawJsonDebugFilesWritten
+        }));
+        lastSavedUrl = finalUrl;
+        writtenPaths.add(networkExtraction.page.path);
+        await writePage(networkExtraction.page, cacheDir);
+        emitProgress(true);
+        await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');
+        if (isBlogListingUrl(finalUrl, baseUrl)) {
+          const pairs = await extractBlogListingYears(page, baseUrl).catch(() => [] as Array<[string, number]>);
+          for (const [postUrl, year] of pairs) blogPostYears.set(postUrl, year);
+        }
+        for (const link of await discoverLinks(page, baseUrl)) enqueue(link);
+        emitProgress(true);
+        return;
+      }
+
+      const previousDiagnostic = routeDiagnosticsByPath.get(networkExtraction.page.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: networkExtraction.page.url,
+        path: networkExtraction.page.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(networkExtraction.page.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: true,
+        networkJsonSucceeded: false,
+        fallbackReasons: [...(previousDiagnostic?.fallbackReasons ?? []), networkExtraction.fallbackReason ?? 'network-json-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        unknownChunkTypes: networkExtraction.pageDiagnostic.unknownChunkTypes,
+        unknownResourceTypes: networkExtraction.pageDiagnostic.unknownResourceTypes,
+        tokenTables: networkExtraction.pageDiagnostic.tokenTables,
+        tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
+        tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+        statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+        missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
+        unknownJsonResourceCount,
+        capturedJsonResponseCounts
+      }));
+    } else {
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: finalUrl,
+        path: materialPagePath(finalUrl),
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPagePath(finalUrl))),
+        directJsonSucceeded: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.directJsonSucceeded ?? false,
+        networkJsonAttempted: true,
+        networkJsonSucceeded: false,
+        fallbackReasons: [...(routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackReasons ?? []), 'network-json-failed'],
+        fallbackSkippedReasons: routeDiagnosticsByPath.get(materialPagePath(finalUrl))?.fallbackSkippedReasons ?? [],
+        unknownJsonResourceCount,
+        capturedJsonResponseCounts
+      }));
+    }
+
     const materialPage = await extract(page, finalUrl);
     const suspiciousResult = validateCrawledPage(materialPage);
     if (suspiciousResult) {
+      const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: materialPage.url,
+        path: materialPage.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPage.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: false,
+        fallbackReasons: previousDiagnostic?.fallbackReasons ?? ['dom-fallback-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
       suspiciousPages.push(suspiciousResult);
       failedUrls.push(url);
       lastFailedUrl = url;
@@ -1008,16 +1229,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const publishedYear = materialPage.path.startsWith('blog/') ? blogPostYears.get(finalUrl) : undefined;
       const pageToSave = publishedYear ? { ...materialPage, publishedYear } : materialPage;
       pages.push(pageToSave);
-      const fallbackReason = jsonFallbackRoutes.get(pageToSave.path.replace(/\/overview\.md$/, '').replace(/\.md$/, ''));
+      const fallbackReason = jsonFallbackRoutes.get(routeSlugFromPath(pageToSave.path));
       pushPageDiagnostic(extractionDiagnostics, {
         url: pageToSave.url,
         path: pageToSave.path,
         method: 'dom',
+        source: 'dom-fallback',
         ...(fallbackReason ? { fallbackReason } : {}),
         unknownChunkTypes: [],
         unknownResourceTypes: [],
         tokenTables: 0,
         tokenTablesRendered: 0,
+        statusTablesResolved: 0,
         missingRequestedTokenSets: [],
         suspiciousReasons: [],
         imageCount: 0,
@@ -1027,27 +1250,61 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         noHeadings: pageToSave.headings.length === 0,
         markdownLength: pageToSave.markdown.length
       });
-      recordRouteDiagnostic({
-        ...(routeDiagnosticsByPath.get(pageToSave.path) ?? {
-          url: pageToSave.url,
-          path: pageToSave.path,
-          jsonAttempted: Boolean(fallbackReason),
-          jsonSucceeded: false,
-          unknownChunkTypes: [],
-          unknownResourceTypes: [],
-          tokenTables: 0,
-          tokenTablesRendered: 0,
-          missingRequestedTokenSets: []
-        }),
+      const previousDiagnostic = routeDiagnosticsByPath.get(pageToSave.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: pageToSave.url,
+        path: pageToSave.path,
+        sourceUsed: 'dom-fallback',
         finalMethod: 'dom',
-        ...(fallbackReason ? { fallbackReason } : {}),
-        browserFallbackAttempted: true,
-        browserFallbackSucceeded: true
-      });
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? Boolean(fallbackReason),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: true,
+        fallbackReasons: previousDiagnostic?.fallbackReasons ?? (fallbackReason ? [fallbackReason] : ['network-json-failed']),
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
       lastSavedUrl = finalUrl;
       writtenPaths.add(pageToSave.path);
       await writePage(pageToSave, cacheDir);
       emitProgress(true);
+    } else {
+      const previousDiagnostic = routeDiagnosticsByPath.get(materialPage.path);
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: materialPage.url,
+        path: materialPage.path,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: previousDiagnostic?.directJsonAttempted ?? jsonFallbackRoutes.has(routeSlugFromPath(materialPage.path)),
+        directJsonSucceeded: previousDiagnostic?.directJsonSucceeded ?? false,
+        networkJsonAttempted: previousDiagnostic?.networkJsonAttempted ?? true,
+        networkJsonSucceeded: previousDiagnostic?.networkJsonSucceeded ?? false,
+        domFallbackAttempted: true,
+        domFallbackSucceeded: false,
+        fallbackReasons: [...(previousDiagnostic?.fallbackReasons ?? []), 'dom-fallback-failed'],
+        fallbackSkippedReasons: previousDiagnostic?.fallbackSkippedReasons ?? [],
+        capturedJsonResponseCounts: previousDiagnostic?.capturedJsonResponseCounts ?? capturedJsonResponseCounts,
+        unknownChunkTypes: previousDiagnostic?.unknownChunkTypes ?? [],
+        unknownResourceTypes: previousDiagnostic?.unknownResourceTypes ?? [],
+        tokenTables: previousDiagnostic?.tokenTables ?? 0,
+        tokenTablesRendered: previousDiagnostic?.tokenTablesRendered ?? 0,
+        tokenTablesRequested: previousDiagnostic?.tokenTablesRequested ?? previousDiagnostic?.tokenTables ?? 0,
+        statusTablesResolved: previousDiagnostic?.statusTablesResolved ?? 0,
+        missingRequestedTokenSets: previousDiagnostic?.missingRequestedTokenSets ?? [],
+        unknownJsonResourceCount: previousDiagnostic?.unknownJsonResourceCount ?? unknownJsonResourceCount,
+        rawJsonDebugFilesWritten: previousDiagnostic?.rawJsonDebugFilesWritten ?? 0
+      }));
     }
 
     await assertMaterialRouteUnchanged(page, finalUrl, baseUrl, 'link discovery');

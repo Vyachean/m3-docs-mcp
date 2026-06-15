@@ -1,0 +1,19 @@
+{
+  "title": "Lists",
+  "sections": [
+    {
+      "name": "Overview",
+      "contentBlocks": [
+        {
+          "title": "Usage",
+          "contentChunks": [
+            {
+              "contentChunkType": "TEXT",
+              "htmlValue": "<p>Lists present multiple line items in a compact column with enough text for validation.</p>"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
