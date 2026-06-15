@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { assertSafeCachePromotion, assertValidIndex, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
@@ -748,9 +748,11 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
     skippedBecauseMaxPagesCount: 0,
     skippedBecauseJsonCoveredCount: 0,
     coverageVerified: false,
-    coverageWarnings: []
+    coverageWarnings: [],
+    coverageHealth: 'unverified'
   };
 }
+
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
@@ -1191,6 +1193,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
+  coverageDiagnostics.coverageHealth = computeCoverageHealth(coverageDiagnostics);
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,

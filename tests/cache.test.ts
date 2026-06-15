@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
-import type { MaterialIndex, MaterialPage } from '../src/types.js';
+import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
+import type { CoverageDiagnostics, MaterialIndex, MaterialPage } from '../src/types.js';
 
 let cacheDir: string;
 const originalCacheDir = process.env.M3_DOCS_CACHE_DIR;
@@ -286,5 +286,122 @@ describe('cache helpers', () => {
     });
 
     expect(() => assertSafeCachePromotion(smallIndex, null)).not.toThrow();
+  });
+
+  it('rejects first cache with significant coverage gap (no max-pages explanation) unless forced', () => {
+    const gapIndex = materialIndex(10, {
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 80,
+        sitemapUrlCount: 80,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 10,
+        uncrawledDiscoveredUrlCount: 70,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 0,
+        skippedBecauseJsonCoveredCount: 0,
+        coverageVerified: false,
+        coverageWarnings: ['coverage-gap:accepted=10:discovered=80'],
+        coverageHealth: 'failed'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(gapIndex, null)).toThrow('coverage gap');
+    expect(() => assertSafeCachePromotion(gapIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('allows first cache with max-pages coverage gap and marks it partial', () => {
+    const partialIndex = materialIndex(10, {
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 80,
+        sitemapUrlCount: 80,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 10,
+        uncrawledDiscoveredUrlCount: 70,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 70,
+        skippedBecauseJsonCoveredCount: 0,
+        coverageVerified: false,
+        coverageWarnings: [
+          'coverage-partial:max-pages-limited:70',
+          'coverage-gap:accepted=10:discovered=80'
+        ],
+        coverageHealth: 'partial'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(partialIndex, null)).not.toThrow();
+  });
+
+  it('allows first cache with discovery empty (unverified) without rejecting', () => {
+    const unverifiedIndex = materialIndex(15, {
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 0,
+        sitemapUrlCount: 0,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 15,
+        uncrawledDiscoveredUrlCount: 0,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 0,
+        skippedBecauseJsonCoveredCount: 0,
+        coverageVerified: false,
+        coverageWarnings: ['coverage-discovery-empty:no-baseline'],
+        coverageHealth: 'unverified'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(unverifiedIndex, null)).not.toThrow();
+  });
+});
+
+describe('computeCoverageHealth', () => {
+  const baseDiag: Omit<CoverageDiagnostics, 'coverageWarnings' | 'coverageVerified' | 'coverageHealth'> = {
+    discoveredPublicUrlCount: 100,
+    sitemapUrlCount: 100,
+    renderedNavUrlCount: 0,
+    angularRouteHintCount: 0,
+    previousCacheRouteHintCount: 0,
+    acceptedPageCount: 100,
+    uncrawledDiscoveredUrlCount: 0,
+    uncrawledDiscoveredUrls: [],
+    skippedBecauseMaxPagesCount: 0,
+    skippedBecauseJsonCoveredCount: 0
+  };
+
+  it('returns verified when discovery succeeded and all URLs crawled', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: true, coverageWarnings: [], coverageHealth: 'verified' })).toBe('verified');
+  });
+
+  it('returns partial when max-pages limited the crawl', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-partial:max-pages-limited:30'], coverageHealth: 'partial' })).toBe('partial');
+  });
+
+  it('returns partial even when a gap warning accompanies the max-pages warning', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-partial:max-pages-limited:30', 'coverage-gap:accepted=70:discovered=100'], coverageHealth: 'partial' })).toBe('partial');
+  });
+
+  it('returns failed when an unexpected coverage gap exists without max-pages', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-gap:accepted=10:discovered=100'], coverageHealth: 'failed' })).toBe('failed');
+  });
+
+  it('returns failed when a coverage regression is detected', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-regression:previous=100:current=70'], coverageHealth: 'failed' })).toBe('failed');
+  });
+
+  it('returns failed for regression even alongside a max-pages partial warning', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-partial:max-pages-limited:10', 'coverage-regression:previous=100:current=70'], coverageHealth: 'failed' })).toBe('failed');
+  });
+
+  it('returns unverified when discovery was empty', () => {
+    expect(computeCoverageHealth({ ...baseDiag, discoveredPublicUrlCount: 0, coverageVerified: false, coverageWarnings: ['coverage-discovery-empty:no-baseline'], coverageHealth: 'unverified' })).toBe('unverified');
+  });
+
+  it('returns unverified when playwright was unavailable', () => {
+    expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-unverified:playwright-unavailable'], coverageHealth: 'unverified' })).toBe('unverified');
   });
 });

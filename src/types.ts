@@ -162,6 +162,8 @@ export type ExtractionDiagnostics = {
   pageDiagnostics: ExtractionPageDiagnostic[];
 };
 
+export type CoverageHealth = 'verified' | 'partial' | 'unverified' | 'failed';
+
 export type CoverageDiagnostics = {
   discoveredPublicUrlCount: number;
   sitemapUrlCount: number;
@@ -175,6 +177,7 @@ export type CoverageDiagnostics = {
   skippedBecauseJsonCoveredCount: number;
   coverageVerified: boolean;
   coverageWarnings: string[];
+  coverageHealth?: CoverageHealth;
 };
 
 export type SuspiciousCrawlPage = {
@@ -241,6 +244,7 @@ export type CacheStatus = {
   failedUrls: string[];
   ageMs: number | null;
   isFresh: boolean;
+  coverageHealth?: CoverageHealth;
   extractionDiagnostics?: ExtractionDiagnostics;
   coverageDiagnostics?: CoverageDiagnostics;
 };

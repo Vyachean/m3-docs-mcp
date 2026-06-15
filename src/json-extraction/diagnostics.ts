@@ -49,22 +49,18 @@ export function pushPageDiagnostic(
   diagnostics: ExtractionDiagnostics,
   pageDiagnostic: ExtractionPageDiagnostic
 ): void {
-  const tokenContextDiagnostics = pageDiagnostic.tokenContextDiagnostics ?? [];
   diagnostics.totalPages += 1;
   diagnostics.pageDiagnostics.push(pageDiagnostic);
+  // Page-level content quality metrics — authoritative source is page diagnostics
   if (pageDiagnostic.markdownLength < 80) diagnostics.pagesWithSuspiciouslyShortMarkdown += 1;
   if (pageDiagnostic.noSections) diagnostics.pagesWithNoSections += 1;
   if (pageDiagnostic.noHeadings) diagnostics.pagesWithNoHeadings += 1;
   diagnostics.imageCount += pageDiagnostic.imageCount;
   diagnostics.videoCount += pageDiagnostic.videoCount;
   diagnostics.unresolvedResourceCount += pageDiagnostic.unresolvedResourceCount;
-  diagnostics.statusTablesRequested += pageDiagnostic.statusTablesRequested ?? 0;
-  diagnostics.statusTablesRenderedAsPlaceholder += pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0;
-  diagnostics.unsupportedStatusTableSchemaCount += pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0;
-  diagnostics.tokenContextDiagnosticsRecorded += tokenContextDiagnostics.length;
-  diagnostics.tokenTablesUsingFallbackContext += tokenContextDiagnostics.filter((entry) => entry.usedFallbackContext).length;
-  diagnostics.tokenTablesWithMultipleContextVariants += tokenContextDiagnostics.filter((entry) => entry.multipleContextVariantsAvailable).length;
-  diagnostics.tokenTablesWithUnresolvedTokens += tokenContextDiagnostics.filter((entry) => entry.unresolvedTokenCount > 0).length;
+  // Route-level metrics (token tables, status tables, context diagnostics) are
+  // intentionally NOT aggregated here — they are counted exclusively in
+  // pushRouteDiagnostic to avoid double-counting for accepted pages.
 }
 
 export function pushRouteDiagnostic(

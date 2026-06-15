@@ -11,6 +11,7 @@ import { extractContentPageToMaterialPage } from '../src/json-extraction/extract
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
 import { buildJsonPageBundleFromResponses, writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
 import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls, fetchJsonPageBundle } from '../src/json-extraction/fetch-json-page.js';
+import { renderTokenTableWithDiagnostics } from '../src/json-extraction/render-markdown.js';
 
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/json-extraction', name), 'utf8'));
 
@@ -557,5 +558,283 @@ describe('JSON-first extraction', () => {
     });
 
     expect(result.fallbackReason).toBe('json-low-quality');
+  });
+
+  it('does not double-count token context or status table metrics when page and route diagnostics share the same data', () => {
+    const diagnostics = createEmptyExtractionDiagnostics();
+    const sharedTokenContextDiag = [
+      {
+        resourceName: 'token-table-1',
+        requestedTokenSets: ['Button - Common'],
+        renderedTokenSets: ['Button - Common'],
+        selectedContextKeys: ['light|android|3p'],
+        skippedContextKeys: [],
+        availableContextKeys: ['light|android|3p', 'dark|android|3p'],
+        unresolvedTokenCount: 1,
+        missingRequestedTokenSetCount: 0,
+        usedFallbackContext: true,
+        multipleContextVariantsAvailable: true
+      }
+    ];
+
+    // Simulates a page accepted through direct JSON: pushPageDiagnostic then pushRouteDiagnostic
+    pushPageDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/button/overview',
+      path: 'components/button/overview.md',
+      method: 'json',
+      source: 'direct-json',
+      unknownChunkTypes: [],
+      unknownResourceTypes: [],
+      tokenTables: 1,
+      tokenTablesRendered: 1,
+      tokenContextDiagnostics: sharedTokenContextDiag,
+      statusTablesRequested: 1,
+      statusTablesResolved: 1,
+      statusTablesRenderedAsPlaceholder: 0,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
+      missingRequestedTokenSets: [],
+      suspiciousReasons: [],
+      imageCount: 0,
+      videoCount: 0,
+      unresolvedResourceCount: 0,
+      noSections: false,
+      noHeadings: false,
+      markdownLength: 200
+    });
+
+    pushRouteDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/button/overview',
+      path: 'components/button/overview.md',
+      sourceUsed: 'direct-json',
+      finalMethod: 'json',
+      jsonAttempted: true,
+      jsonSucceeded: true,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      directJsonAttempted: true,
+      directJsonSucceeded: true,
+      networkJsonAttempted: false,
+      networkJsonSucceeded: false,
+      domFallbackAttempted: false,
+      domFallbackSucceeded: false,
+      unknownChunkTypes: [],
+      unknownResourceTypes: [],
+      tokenTables: 1,
+      tokenTablesRendered: 1,
+      tokenTablesRequested: 1,
+      tokenContextDiagnostics: sharedTokenContextDiag,
+      statusTablesRequested: 1,
+      statusTablesResolved: 1,
+      statusTablesRenderedAsPlaceholder: 0,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
+      missingRequestedTokenSets: [],
+      unknownJsonResourceCount: 0,
+      rawJsonDebugFilesWritten: 1
+    });
+
+    // Each counter must be 1, not 2 — page diagnostics do not aggregate route-level counters
+    expect(diagnostics.tokenContextDiagnosticsRecorded).toBe(1);
+    expect(diagnostics.tokenTablesUsingFallbackContext).toBe(1);
+    expect(diagnostics.tokenTablesWithMultipleContextVariants).toBe(1);
+    expect(diagnostics.tokenTablesWithUnresolvedTokens).toBe(1);
+    expect(diagnostics.statusTablesRequested).toBe(1);
+    expect(diagnostics.statusTablesResolved).toBe(1);
+    expect(diagnostics.statusTablesRenderedAsPlaceholder).toBe(0);
+    expect(diagnostics.unsupportedStatusTableSchemaCount).toBe(0);
+    // Page-level content metrics come exclusively from page diagnostics
+    expect(diagnostics.imageCount).toBe(0);
+    expect(diagnostics.videoCount).toBe(0);
+    expect(diagnostics.unresolvedResourceCount).toBe(0);
+    expect(diagnostics.totalPages).toBe(1);
+    expect(diagnostics.totalRoutes).toBe(1);
+  });
+
+  it('does not report false missing token sets when all requested sets are rendered', () => {
+    const LIGHT_TAG = 'designSystems/ds1/contextTagGroups/theme/tags/light';
+    const DARK_TAG = 'designSystems/ds1/contextTagGroups/theme/tags/dark';
+    const system = {
+      tokens: [
+        { name: 'designSystems/ds1/tokenSets/ts1/tokens/tok1', tokenName: 'md.comp.button.color', displayName: 'Button color', tokenValueType: 'COLOR', state: 'ACTIVE' },
+        { name: 'designSystems/ds1/tokenSets/ts2/tokens/tok2', tokenName: 'md.comp.button.shape', displayName: 'Button shape', tokenValueType: 'SHAPE', state: 'ACTIVE' }
+      ],
+      tokenSets: [
+        { name: 'designSystems/ds1/tokenSets/ts1', displayName: 'Button - Color', tokenSetName: 'md.comp.button.color-set' },
+        { name: 'designSystems/ds1/tokenSets/ts2', displayName: 'Button - Shape', tokenSetName: 'md.comp.button.shape-set' }
+      ],
+      tags: [
+        { name: LIGHT_TAG, displayName: 'Light', tagName: 'light' },
+        { name: DARK_TAG, displayName: 'Dark', tagName: 'dark' }
+      ],
+      contextTagGroups: [{ name: 'designSystems/ds1/contextTagGroups/theme', displayName: 'Theme', defaultTag: LIGHT_TAG }],
+      contextualReferenceTrees: {
+        'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
+          contextualReferenceTree: [
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+          ]
+        },
+        'designSystems/ds1/tokenSets/ts2/tokens/tok2': {
+          contextualReferenceTree: [
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } }
+          ]
+        }
+      }
+    };
+
+    const result = renderTokenTableWithDiagnostics(system, ['Button - Color', 'Button - Shape']);
+
+    expect(result.diagnostics).toHaveLength(2);
+    // Each section reports only its own token set name — no false missing count
+    expect(result.diagnostics[0]!.requestedTokenSets).toEqual(['Button - Color']);
+    expect(result.diagnostics[0]!.renderedTokenSets).toContain('Button - Color');
+    expect(result.diagnostics[0]!.missingRequestedTokenSetCount).toBe(0);
+    expect(result.diagnostics[1]!.requestedTokenSets).toEqual(['Button - Shape']);
+    expect(result.diagnostics[1]!.renderedTokenSets).toContain('Button - Shape');
+    expect(result.diagnostics[1]!.missingRequestedTokenSetCount).toBe(0);
+  });
+
+  it('reports zero missing token sets for a rendered section even when other requested sets are absent from the system', () => {
+    const LIGHT_TAG = 'designSystems/ds1/contextTagGroups/theme/tags/light';
+    const DARK_TAG = 'designSystems/ds1/contextTagGroups/theme/tags/dark';
+    const system = {
+      tokens: [
+        { name: 'designSystems/ds1/tokenSets/ts1/tokens/tok1', tokenName: 'md.comp.button.color', displayName: 'Button color', tokenValueType: 'COLOR', state: 'ACTIVE' }
+      ],
+      tokenSets: [
+        { name: 'designSystems/ds1/tokenSets/ts1', displayName: 'Button - Color', tokenSetName: 'md.comp.button.color-set' }
+      ],
+      tags: [
+        { name: LIGHT_TAG, displayName: 'Light', tagName: 'light' },
+        { name: DARK_TAG, displayName: 'Dark', tagName: 'dark' }
+      ],
+      contextTagGroups: [{ name: 'designSystems/ds1/contextTagGroups/theme', displayName: 'Theme', defaultTag: LIGHT_TAG }],
+      contextualReferenceTrees: {
+        'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
+          contextualReferenceTree: [
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+          ]
+        }
+      }
+    };
+
+    // Request "Button - Color" (exists) and "Button - Missing" (not in system)
+    const result = renderTokenTableWithDiagnostics(system, ['Button - Color', 'Button - Missing']);
+
+    expect(result.diagnostics).toHaveLength(1);
+    // The rendered section only claims the token set it actually rendered
+    expect(result.diagnostics[0]!.requestedTokenSets).toEqual(['Button - Color']);
+    expect(result.diagnostics[0]!.missingRequestedTokenSetCount).toBe(0);
+    // The missing set is not reported here — it is tracked at the resource level
+  });
+});
+
+describe('STATUS_TABLE diagnostics', () => {
+  it('counts status table request and resolution exactly once per rendered table', async () => {
+    const diagnostics = createEmptyExtractionDiagnostics();
+
+    pushRouteDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/status/overview',
+      path: 'components/status/overview.md',
+      sourceUsed: 'direct-json',
+      finalMethod: 'json',
+      jsonAttempted: true,
+      jsonSucceeded: true,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      directJsonAttempted: true,
+      directJsonSucceeded: true,
+      networkJsonAttempted: false,
+      networkJsonSucceeded: false,
+      domFallbackAttempted: false,
+      domFallbackSucceeded: false,
+      unknownChunkTypes: [],
+      unknownResourceTypes: [],
+      tokenTables: 0,
+      tokenTablesRendered: 0,
+      tokenTablesRequested: 0,
+      tokenContextDiagnostics: [],
+      statusTablesRequested: 1,
+      statusTablesResolved: 1,
+      statusTablesRenderedAsPlaceholder: 0,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [{ resourceName: 'status/states', requested: true, resolved: true, rendered: true, renderedAsPlaceholder: false, unsupportedSchema: false }],
+      missingRequestedTokenSets: [],
+      unknownJsonResourceCount: 0
+    });
+
+    expect(diagnostics.statusTablesRequested).toBe(1);
+    expect(diagnostics.statusTablesResolved).toBe(1);
+    expect(diagnostics.statusTablesRenderedAsPlaceholder).toBe(0);
+    expect(diagnostics.unsupportedStatusTableSchemaCount).toBe(0);
+  });
+
+  it('counts placeholder status tables without doubling when page and route diagnostics share the same data', () => {
+    const diagnostics = createEmptyExtractionDiagnostics();
+
+    pushPageDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/status/overview',
+      path: 'components/status/overview.md',
+      method: 'json',
+      source: 'direct-json',
+      unknownChunkTypes: [],
+      unknownResourceTypes: ['STATUS_TABLE'],
+      tokenTables: 0,
+      tokenTablesRendered: 0,
+      tokenContextDiagnostics: [],
+      statusTablesRequested: 1,
+      statusTablesResolved: 0,
+      statusTablesRenderedAsPlaceholder: 1,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
+      missingRequestedTokenSets: [],
+      suspiciousReasons: [],
+      imageCount: 0,
+      videoCount: 0,
+      unresolvedResourceCount: 1,
+      noSections: false,
+      noHeadings: false,
+      markdownLength: 120
+    });
+
+    pushRouteDiagnostic(diagnostics, {
+      url: 'https://m3.material.io/components/status/overview',
+      path: 'components/status/overview.md',
+      sourceUsed: 'direct-json',
+      finalMethod: 'json',
+      jsonAttempted: true,
+      jsonSucceeded: true,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      directJsonAttempted: true,
+      directJsonSucceeded: true,
+      networkJsonAttempted: false,
+      networkJsonSucceeded: false,
+      domFallbackAttempted: false,
+      domFallbackSucceeded: false,
+      unknownChunkTypes: [],
+      unknownResourceTypes: ['STATUS_TABLE'],
+      tokenTables: 0,
+      tokenTablesRendered: 0,
+      tokenTablesRequested: 0,
+      tokenContextDiagnostics: [],
+      statusTablesRequested: 1,
+      statusTablesResolved: 0,
+      statusTablesRenderedAsPlaceholder: 1,
+      unsupportedStatusTableSchemaCount: 0,
+      statusTableDiagnostics: [],
+      missingRequestedTokenSets: [],
+      unknownJsonResourceCount: 0
+    });
+
+    // Must be 1, not 2 — page diagnostics no longer increment route-level status table counters
+    expect(diagnostics.statusTablesRequested).toBe(1);
+    expect(diagnostics.statusTablesRenderedAsPlaceholder).toBe(1);
+    expect(diagnostics.unsupportedStatusTableSchemaCount).toBe(0);
+    // Page-level metric (unresolvedResourceCount) must still be correct
+    expect(diagnostics.unresolvedResourceCount).toBe(1);
   });
 });

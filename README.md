@@ -149,10 +149,25 @@ M3_DOCS_CACHE_DIR=/path/to/cache npx -y github:Vyachean/m3-docs-mcp serve
 
 Cache refresh is staged in a temporary directory and promoted only after the crawl result passes basic validation and safety checks against the previous cache. A failed, interrupted, or suspicious crawl should not replace the previous cache. A running MCP server re-reads cache metadata before serving tools and rebuilds its in-memory search index when the cache changes externally.
 
-The crawler now tracks two separate quality dimensions:
+The crawler tracks two separate quality dimensions:
 
-- extraction quality: whether the accepted page content was extracted correctly;
-- coverage quality: whether enough public Material documentation URLs were discovered and crawled to treat the cache as broadly representative.
+- **extraction quality**: whether the accepted page content was extracted correctly (JSON vs DOM path, token tables rendered, status tables resolved, unknown chunk types).
+- **coverage quality**: whether enough public Material documentation URLs were discovered and crawled to treat the cache as broadly representative.
+
+### Coverage health states
+
+Each cache index stores a `coverageHealth` field alongside `coverageWarnings` in `coverageDiagnostics`. The possible values are:
+
+| State | Meaning |
+|---|---|
+| `verified` | Discovery found all expected URLs and the crawl accepted all of them without gaps or regressions. |
+| `partial` | The crawl was intentionally limited by `--max-pages`. Coverage is incomplete by design. |
+| `unverified` | The crawl extracted content successfully but coverage cannot be confirmed — for example, because Playwright was unavailable or URL discovery returned nothing. |
+| `failed` | A significant unexpected coverage gap or regression was detected. Promotion is blocked unless `--force` is used. |
+
+A `partial` or `unverified` cache remains fully usable for search and page retrieval. `material_docs_cache_status` exposes `coverageHealth` directly so agents can decide how to interpret results. Search and get tool responses include the cache status object, which contains `coverageHealth` and the full `coverageWarnings` list.
+
+First-cache coverage policy: if a crawl that was not intentionally limited by `--max-pages` discovers substantially more public documentation URLs than it accepted, the cache promotion is rejected — the same coverage gap check that applies to subsequent crawls is also enforced on the first cache. Use `--force` to promote anyway if you have confirmed the gap is expected.
 
 The crawler now tries JSON extraction first for discovered Material documentation routes:
 
@@ -224,7 +239,7 @@ Lists component slugs discovered under `components/*`.
 
 ### `material_docs_cache_status`
 
-Returns local cache status and startup background refresh status.
+Returns local cache status and startup background refresh status. The `status` object includes a top-level `coverageHealth` field (`"verified"`, `"partial"`, `"unverified"`, or `"failed"`) and the full `coverageDiagnostics` object with `coverageWarnings`. Search and page-retrieval tools include the same `status` object in their responses so agents can check coverage health alongside results.
 
 ### `refresh_material_docs`
 
