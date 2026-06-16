@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { computeEta, formatDurationMs } from '../src/progress.js';
+import { createCliProgressRenderer } from '../src/index.js';
 import type { CrawlProgress } from '../src/types.js';
 
 // ── ETA / progress utilities ─────────────────────────────────────────────────
@@ -287,5 +288,171 @@ describe('progress phase reporting', () => {
     for (let i = 1; i < elapsed.length; i++) {
       expect(elapsed[i]).toBeGreaterThanOrEqual(elapsed[i - 1]!);
     }
+  }, 10_000);
+});
+
+// ── CLI renderer ─────────────────────────────────────────────────────────────
+
+function makeProgress(overrides: Partial<CrawlProgress> = {}): CrawlProgress {
+  return {
+    phase: 'direct-json',
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    completedAt: null,
+    running: true,
+    maxPages: 100,
+    concurrency: 4,
+    elapsedMs: 30_000,
+    processedPageCount: 10,
+    targetPageCount: 100,
+    attemptedPageCount: 10,
+    savedPageCount: 8,
+    failedPageCount: 2,
+    queuedPageCount: 90,
+    activeWorkerCount: 4,
+    ratePagesPerSecond: null,
+    estimatedRemainingMs: null,
+    currentUrls: [],
+    lastSavedUrl: null,
+    lastFailedUrl: null,
+    error: null,
+    ...overrides
+  };
+}
+
+describe('CLI progress renderer', () => {
+  let writtenLines: string[];
+  let originalIsTTY: boolean | undefined;
+
+  beforeEach(() => {
+    writtenLines = [];
+    originalIsTTY = process.stderr.isTTY;
+    // Force non-TTY so renderer writes full lines (not \r-overwrite)
+    Object.defineProperty(process.stderr, 'isTTY', { value: false, configurable: true });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      writtenLines.push(String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(process.stderr, 'isTTY', { value: originalIsTTY, configurable: true });
+  });
+
+  it('formats ETA as "eta=calculating" before enough progress', () => {
+    const { onProgress } = createCliProgressRenderer();
+    onProgress(makeProgress({ ratePagesPerSecond: null, estimatedRemainingMs: null }));
+    expect(writtenLines.join('')).toContain('eta=calculating');
+  });
+
+  it('formats ETA with duration when available on direct-json phase', () => {
+    const { onProgress } = createCliProgressRenderer();
+    onProgress(makeProgress({ estimatedRemainingMs: 78_000, ratePagesPerSecond: 0.42, phase: 'direct-json' }));
+    const output = writtenLines.join('');
+    expect(output).toContain('eta=1m18s');
+  });
+
+  it('formats ETA with "eta≈" prefix on browser-crawl phase', () => {
+    const { onProgress } = createCliProgressRenderer();
+    onProgress(makeProgress({ estimatedRemainingMs: 42_000, ratePagesPerSecond: 0.5, phase: 'browser-crawl' }));
+    const output = writtenLines.join('');
+    expect(output).toContain('eta≈42s');
+  });
+
+  it('includes phase, elapsed, saved, failed, queued, active, concurrency in output', () => {
+    const { onProgress } = createCliProgressRenderer();
+    onProgress(makeProgress({
+      phase: 'direct-json',
+      elapsedMs: 30_000,
+      savedPageCount: 8,
+      failedPageCount: 2,
+      queuedPageCount: 90,
+      activeWorkerCount: 4,
+      concurrency: 4
+    }));
+    const output = writtenLines.join('');
+    expect(output).toContain('phase=direct-json');
+    expect(output).toContain('elapsed=30s');
+    expect(output).toContain('saved=8/100');
+    expect(output).toContain('failed=2');
+    expect(output).toContain('queued=90');
+    expect(output).toContain('active=4/4');
+  });
+
+  it('throttles output — does not emit a second line within THROTTLE_MS', () => {
+    const { onProgress } = createCliProgressRenderer();
+    onProgress(makeProgress());
+    const countAfterFirst = writtenLines.length;
+    // Immediate second call should be suppressed by 1s throttle
+    onProgress(makeProgress());
+    expect(writtenLines.length).toBe(countAfterFirst);
+  });
+
+  it('onBeforeLog writes a newline on TTY when progress line is active', () => {
+    // Override to TTY mode for this test
+    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
+    const chunks: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+
+    const { onProgress, onBeforeLog } = createCliProgressRenderer();
+    // Render a progress line (writes \r...)
+    onProgress(makeProgress());
+    // Then simulate a log message needing a clean line
+    onBeforeLog();
+    expect(chunks.some((c) => c === '\n')).toBe(true);
+  });
+
+  it('onBeforeLog does nothing when no progress line has been written', () => {
+    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
+    const chunks: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      chunks.push(String(chunk));
+      return true;
+    });
+
+    const { onBeforeLog } = createCliProgressRenderer();
+    onBeforeLog(); // no progress rendered yet → should not write newline
+    expect(chunks.filter((c) => c === '\n').length).toBe(0);
+  });
+});
+
+// ── verbose-only per-route logs ───────────────────────────────────────────────
+
+describe('verbose-only per-route log behavior', () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-verbose-test-'));
+    fetchJsonConcurrencyTracker.reset();
+    fetchJsonConcurrencyTracker.fn.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('does not call onBeforeLog in normal (non-verbose) mode when routes silently fail', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    const beforeLogCalls: number[] = [];
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 2,
+      force: true,
+      verbose: false,
+      onBeforeLog: () => { beforeLogCalls.push(1); }
+    });
+
+    // In non-verbose mode, per-route failures (all routes return null bundle)
+    // should not trigger onBeforeLog
+    expect(beforeLogCalls.length).toBe(0);
   }, 10_000);
 });

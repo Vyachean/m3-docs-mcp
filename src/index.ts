@@ -50,7 +50,7 @@ program.command('update')
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
-    const renderProgress = createCliProgressRenderer();
+    const { onProgress, onBeforeLog } = createCliProgressRenderer();
     console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}, includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
@@ -62,11 +62,12 @@ program.command('update')
         force: options.force,
         includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
-        onProgress: renderProgress,
+        onProgress,
+        onBeforeLog,
         logDir: options.logDir,
         verbose: options.verbose ?? false
       });
-      renderProgress(null);
+      onProgress(null);
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
       console.log(JSON.stringify({
         cacheDir,
@@ -79,7 +80,7 @@ program.command('update')
         coverageDiagnostics: index.coverageDiagnostics
       }, null, 2));
     } catch (error) {
-      renderProgress(null);
+      onProgress(null);
       if (abortController.signal.aborted) {
         console.error('Material 3 docs cache refresh interrupted. Existing cache was left unchanged. If this was the first refresh, status will still report hasCache=false.');
         process.exitCode = 130;
@@ -113,12 +114,22 @@ program.parseAsync(process.argv).catch((error) => {
   process.exitCode = 1;
 });
 
-function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
+export function createCliProgressRenderer(): {
+  onProgress: (progress: CrawlProgress | null) => void;
+  onBeforeLog: () => void;
+} {
   let previousLength = 0;
   let lastRenderMs = 0;
   const THROTTLE_MS = 1000;
 
-  return (progress) => {
+  const onBeforeLog = (): void => {
+    if (process.stderr.isTTY && previousLength > 0) {
+      process.stderr.write('\n');
+      previousLength = 0;
+    }
+  };
+
+  const onProgress = (progress: CrawlProgress | null): void => {
     if (!progress) {
       if (process.stderr.isTTY && previousLength > 0) process.stderr.write('\n');
       previousLength = 0;
@@ -148,6 +159,8 @@ function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
       process.stderr.write(`${line}\n`);
     }
   };
+
+  return { onProgress, onBeforeLog };
 }
 
 function installAbortSignalHandlers(abortController: AbortController): () => void {

@@ -37,6 +37,13 @@ export type UpdateRunDiagnostics = {
   hasPreviousCache: boolean;
   preservedFailedStagingPath: string | null;
   coverageHealth: string | null;
+  elapsedMs?: number | null;
+  lastPhase?: string | null;
+  concurrency?: number | null;
+  lastRatePagesPerSecond?: number | null;
+  lastEstimatedRemainingMs?: number | null;
+  lastActiveWorkerCount?: number | null;
+  lastQueuedPageCount?: number | null;
 };
 
 const MAX_STRING_LEN = 500;

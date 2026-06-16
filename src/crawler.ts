@@ -14,7 +14,7 @@ import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnost
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
-import { computeEta } from './progress.js';
+import { computeEta, formatDurationMs } from './progress.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
 import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
@@ -786,9 +786,15 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
   let crawledIndex: MaterialIndex | null = null;
   let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' = 'pending';
+  let lastProgress: CrawlProgress | null = null;
+  const originalOnProgress = options.onProgress;
+  const trackingOptions: CrawlOptions = {
+    ...options,
+    onProgress: (p) => { lastProgress = p; originalOnProgress?.(p); }
+  };
 
   try {
-    crawledIndex = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
+    crawledIndex = await crawlIntoCache(stagingCacheDir, trackingOptions, previousIndex, targetCacheDir);
     assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
@@ -810,7 +816,8 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     });
     await logger.writeFinalDiagnostics(buildRunDiagnostics({
       logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
-      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: null
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: null,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1
     }));
     return crawledIndex;
   } catch (error) {
@@ -837,9 +844,10 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     });
     await logger.writeFinalDiagnostics(buildRunDiagnostics({
       logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
-      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: preservedPath
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: preservedPath,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1
     }));
-    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath, logger.logFile, logger.diagnosticsFile);
+    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath, logger.logFile, logger.diagnosticsFile, lastProgress);
   }
 }
 
@@ -876,7 +884,7 @@ function emitRouteEvents(logger: UpdateLogger, index: MaterialIndex): void {
 }
 
 function buildRunDiagnostics({
-  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath
+  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath, lastProgress, concurrency
 }: {
   logger: UpdateLogger;
   startedAt: string;
@@ -886,13 +894,18 @@ function buildRunDiagnostics({
   previousIndex: MaterialIndex | null;
   promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
   preservedFailedStagingPath: string | null;
+  lastProgress: CrawlProgress | null;
+  concurrency: number;
 }) {
   const diag = crawledIndex?.extractionDiagnostics;
   const covDiag = crawledIndex?.coverageDiagnostics;
+  const finishedAt = new Date().toISOString();
+  const elapsedMs = Date.parse(finishedAt) - Date.parse(startedAt);
   return {
     runId: logger.runId,
     startedAt,
-    finishedAt: new Date().toISOString(),
+    finishedAt,
+    elapsedMs,
     cacheDir: targetCacheDir,
     stagingDir,
     logFile: logger.logFile,
@@ -921,7 +934,13 @@ function buildRunDiagnostics({
     promotionDecision,
     hasPreviousCache: previousIndex !== null,
     preservedFailedStagingPath,
-    coverageHealth: covDiag?.coverageHealth ?? null
+    coverageHealth: covDiag?.coverageHealth ?? null,
+    lastPhase: lastProgress?.phase ?? null,
+    concurrency,
+    lastRatePagesPerSecond: lastProgress?.ratePagesPerSecond ?? null,
+    lastEstimatedRemainingMs: lastProgress?.estimatedRemainingMs ?? null,
+    lastActiveWorkerCount: lastProgress?.activeWorkerCount ?? null,
+    lastQueuedPageCount: lastProgress?.queuedPageCount ?? null
   };
 }
 
@@ -931,14 +950,23 @@ function buildPromotionFailureError(
   previousIndex: MaterialIndex | null,
   preservedStagingPath: string | null,
   logFile?: string,
-  diagnosticsFile?: string
+  diagnosticsFile?: string,
+  lastProgress?: CrawlProgress | null
 ): Error {
   const base = originalError instanceof Error ? originalError.message : String(originalError);
-  // Replace the generic trailing phrase with a context-aware one
   const hasPreviousCache = previousIndex !== null;
   const cacheStatus = hasPreviousCache
     ? 'The previous cache has been left unchanged.'
     : 'No previous cache exists; no cache is available.';
+
+  let progressContext = '';
+  if (lastProgress) {
+    const elapsed = formatDurationMs(lastProgress.elapsedMs);
+    const etaStr = lastProgress.estimatedRemainingMs !== null
+      ? `eta=${formatDurationMs(lastProgress.estimatedRemainingMs)}`
+      : 'eta=unknown';
+    progressContext = `\nFailed at: phase=${lastProgress.phase} elapsed=${elapsed} ${etaStr} active=${lastProgress.activeWorkerCount} queued=${lastProgress.queuedPageCount}`;
+  }
 
   let diagnostics = '';
   if (index !== null) {
@@ -973,7 +1001,7 @@ function buildPromotionFailureError(
 
   // Strip the generic "Keeping the existing cache." so we can append the correct message.
   const cleanedBase = base.replace(/\s*Keeping the existing cache\.\s*$/, '').trim();
-  return new Error(`${cleanedBase}\n${cacheStatus}${diagnostics}${stagingNote}${logNote}${diagNote}`);
+  return new Error(`${cleanedBase}\n${cacheStatus}${progressContext}${diagnostics}${stagingNote}${logNote}${diagNote}`);
 }
 
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
@@ -1019,6 +1047,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   let aborted = false;
   let dsdbAttemptedCount = 0;
   const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
+  const verbose = options.verbose ?? false;
+  const logError = (msg: string): void => { options.onBeforeLog?.(); console.error(msg); };
+  const logVerbose = (msg: string): void => { if (verbose) { options.onBeforeLog?.(); console.error(msg); } };
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
     const nowMs = Date.now();
@@ -1224,7 +1255,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
-      console.error(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     if (dsdbConfig) {
@@ -1360,7 +1391,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               directJsonAttempted: true,
               fallbackReasons: ['json-fetch-failed']
             }));
-            console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            logVerbose(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
         }));
       }
@@ -1453,7 +1484,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.skippedBlogCount = skippedBlogCount;
   coverageDiagnostics.skippedByPolicyUrls = skippedByPolicyUrls;
   if (skippedBlogCount > 0) {
-    console.error(`[crawl-priority] Skipped ${skippedBlogCount} blog route(s) by policy (use --include-blog to include them).`);
+    logError(`[crawl-priority] Skipped ${skippedBlogCount} blog route(s) by policy (use --include-blog to include them).`);
   }
   // Uncrawled = discovered - accepted - intentionally skipped by policy
   const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath) && !policySkippedDocPaths.has(docPath)).sort();
@@ -1528,7 +1559,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         failedUrls.push(url);
         lastFailedUrl = url;
         emitProgress(true);
-        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
+        logVerbose(`Failed to crawl ${url}: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         activeWorkers -= 1;
         currentUrls.delete(workerIndex);
@@ -1642,7 +1673,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         failedUrls.push(url);
         lastFailedUrl = url;
         emitProgress(true);
-        console.error(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
+        logVerbose(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
         return;
       }
       throw error;
@@ -1818,7 +1849,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       failedUrls.push(url);
       lastFailedUrl = url;
       emitProgress(true);
-      console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
+      logVerbose(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
       return;
     }
     if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {

@@ -328,6 +328,9 @@ export type CrawlOptions = {
   includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
+  /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
+   *  Use this to clear a TTY progress line so error messages are not interleaved with it. */
+  onBeforeLog?: () => void;
   logDir?: string;
   verbose?: boolean;
 };
