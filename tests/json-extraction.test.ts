@@ -11,7 +11,7 @@ import { extractContentPageToMaterialPage } from '../src/json-extraction/extract
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
 import { buildJsonPageBundleFromResponses, writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
 import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls, fetchJsonPageBundle } from '../src/json-extraction/fetch-json-page.js';
-import { renderTokenTableWithDiagnostics } from '../src/json-extraction/render-markdown.js';
+import { normalizeTokenTableSystem, renderTokenTableWithDiagnostics } from '../src/json-extraction/render-markdown.js';
 
 const fixture = (name: string) => JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/json-extraction', name), 'utf8'));
 
@@ -671,14 +671,14 @@ describe('JSON-first extraction', () => {
       contextualReferenceTrees: {
         'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
           ]
         },
         'designSystems/ds1/tokenSets/ts2/tokens/tok2': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.shape' }, resolvedValue: { shape: { family: 'ROUNDED' } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.shape', childNodes: [] }, resolvedValue: { shape: { family: 'ROUNDED' } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.shape', childNodes: [] }, resolvedValue: { shape: { family: 'ROUNDED' } } }
           ]
         }
       }
@@ -714,8 +714,8 @@ describe('JSON-first extraction', () => {
       contextualReferenceTrees: {
         'designSystems/ds1/tokenSets/ts1/tokens/tok1': {
           contextualReferenceTree: [
-            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
-            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color' }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
+            { contextTags: [LIGHT_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.38, green: 0, blue: 0.93 } } },
+            { contextTags: [DARK_TAG], referenceTree: { tokenName: 'md.comp.button.color', childNodes: [] }, resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1 } } }
           ]
         }
       }
@@ -837,4 +837,148 @@ describe('STATUS_TABLE diagnostics', () => {
     // Page-level metric (unresolvedResourceCount) must still be correct
     expect(diagnostics.unresolvedResourceCount).toBe(1);
   });
+});
+
+describe('Tolerant decoder: normalizeTokenTableSystem', () => {
+  it('returns null for non-object input', () => {
+    expect(normalizeTokenTableSystem(null)).toBeNull();
+    expect(normalizeTokenTableSystem(undefined)).toBeNull();
+    expect(normalizeTokenTableSystem('string')).toBeNull();
+    expect(normalizeTokenTableSystem(42)).toBeNull();
+    expect(normalizeTokenTableSystem([])).toBeNull();
+  });
+
+  it('returns null when both tokens and tokenSets are absent', () => {
+    expect(normalizeTokenTableSystem({})).toBeNull();
+    expect(normalizeTokenTableSystem({ tags: [] })).toBeNull();
+  });
+
+  it('normalizes missing top-level arrays to empty arrays', () => {
+    const system = normalizeTokenTableSystem({
+      tokens: [{ name: 'n', tokenName: 't', displayName: 'd', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ts', displayName: 'D', tokenSetName: 'D' }]
+    });
+    expect(system).not.toBeNull();
+    expect(system!.tags).toEqual([]);
+    expect(system!.contextTagGroups).toEqual([]);
+    expect(system!.contextualReferenceTrees).toEqual({});
+  });
+
+  it('normalizes missing contextTags to empty array inside contextualReferenceTrees', () => {
+    const rawSystem = (fixture('token-table-missing-context-tags.json') as Record<string, unknown>).system;
+    const system = normalizeTokenTableSystem(rawSystem);
+    expect(system).not.toBeNull();
+    const treeEntry = system!.contextualReferenceTrees['ds1/ts1/tok1']?.contextualReferenceTree[0];
+    expect(treeEntry).toBeDefined();
+    expect(Array.isArray(treeEntry!.contextTags)).toBe(true);
+    expect(treeEntry!.contextTags).toEqual([]);
+  });
+
+  it('normalizes a fully malformed contextualReferenceTrees value to undefined entry', () => {
+    const system = normalizeTokenTableSystem({
+      tokens: [{ name: 'n', tokenName: 't', displayName: 'd', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+      tokenSets: [{ name: 'ts', displayName: 'D', tokenSetName: 'D' }],
+      contextualReferenceTrees: { 'n': null }
+    });
+    expect(system).not.toBeNull();
+    expect(system!.contextualReferenceTrees['n']).toBeUndefined();
+  });
+});
+
+describe('Tolerant extraction: divider/specs-class regression', () => {
+  it('does not crash when token table entries have missing contextTags (divider/specs class)', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/divider/specs',
+      pageData: null,
+      contentPage: fixture('content-missing-context-tags.json'),
+      fetchResource: async (_name, type) => type === 'TOKEN_TABLE' ? fixture('token-table-missing-context-tags.json') : null
+    });
+
+    // Must not crash — the key invariant
+    expect(typeof result.page.markdown).toBe('string');
+    expect(result.page.markdown).not.toMatch(/Cannot read properties/);
+    // Should produce some token table content (entries without contextTags are treated as context-neutral)
+    expect(result.page.markdown).toContain('md.comp.divider.color');
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
+  });
+
+  it('renders a token table system with missing contextTags to valid markdown without crashing', () => {
+    const rawSystem = (fixture('token-table-missing-context-tags.json') as Record<string, unknown>).system;
+    const system = normalizeTokenTableSystem(rawSystem);
+    expect(system).not.toBeNull();
+
+    const result = renderTokenTableWithDiagnostics(system!, ['Divider - Color']);
+
+    expect(typeof result.markdown).toBe('string');
+    expect(result.markdown).not.toMatch(/Cannot read properties/);
+    expect(result.markdown).toContain('md.comp.divider.color');
+  });
+
+  it('produces a placeholder when the entire token table system is missing (null resource)', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/divider/specs',
+      pageData: null,
+      contentPage: fixture('content-missing-context-tags.json'),
+      fetchResource: async () => null
+    });
+
+    expect(typeof result.page.markdown).toBe('string');
+    expect(result.page.markdown).toContain('Material resource placeholder: TOKEN_TABLE');
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.tokenTablesRendered).toBe(0);
+  });
+});
+
+describe('No-raw-TypeError guard: malformed external JSON must not crash extraction', () => {
+  const SPECS_CONTENT_PAGE = {
+    title: 'Test Component',
+    sections: [{
+      name: 'Specs',
+      contentBlocks: [{
+        contentChunks: [{
+          contentChunkType: 'RESOURCE',
+          libraryModuleType: 'TOKEN_TABLE',
+          resourceName: 'test/resource',
+          moduleConfigurationOverrides: { tokenSets: ['Component - Color'] }
+        }]
+      }]
+    }]
+  };
+
+  const malformedTokenTablePayloads = [
+    { label: 'null payload', payload: null },
+    { label: 'empty object', payload: {} },
+    { label: 'system is null', payload: { system: null } },
+    { label: 'system is a string', payload: { system: 'unexpected' } },
+    { label: 'tokens is null', payload: { system: { tokens: null, tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }] } } },
+    { label: 'tokenSets is null', payload: { system: { tokens: [], tokenSets: null } } },
+    { label: 'contextTags missing on entry', payload: { system: { tokens: [{ name: 'ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }], tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }], contextualReferenceTrees: { 'ts/tok': { contextualReferenceTree: [{ referenceTree: { tokenName: 'md.tok', childNodes: [] }, resolvedValue: { color: { red: 0.5, green: 0.5, blue: 0.5 } } }] } } } } },
+    { label: 'contextualReferenceTree is not an array', payload: { system: { tokens: [{ name: 'ts/tok', tokenName: 'md.tok', displayName: 'Tok', tokenValueType: 'COLOR', state: 'ACTIVE' }], tokenSets: [{ name: 'ts', displayName: 'Component - Color', tokenSetName: 'ts' }], contextualReferenceTrees: { 'ts/tok': { contextualReferenceTree: null } } } } }
+  ];
+
+  for (const { label, payload } of malformedTokenTablePayloads) {
+    it(`does not throw a raw TypeError for: ${label}`, async () => {
+      let result: Awaited<ReturnType<typeof extractContentPageToMaterialPage>> | undefined;
+      let thrown: unknown;
+
+      try {
+        result = await extractContentPageToMaterialPage({
+          url: 'https://m3.material.io/components/test/specs',
+          pageData: null,
+          contentPage: SPECS_CONTENT_PAGE,
+          fetchResource: async () => payload
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown, `Expected no thrown error for "${label}" but got: ${thrown}`).toBeUndefined();
+      expect(result).toBeDefined();
+      expect(typeof result!.page.markdown).toBe('string');
+      // Output must be either normalized content or an explicit placeholder — never a raw error string
+      expect(result!.page.markdown).not.toMatch(/Cannot read properties of undefined/);
+      expect(result!.page.markdown).not.toMatch(/TypeError/);
+    });
+  }
 });

@@ -1,0 +1,50 @@
+{
+  "system": {
+    "tokens": [
+      {
+        "name": "ds1/ts1/tok1",
+        "tokenName": "md.comp.divider.color",
+        "displayName": "Divider color",
+        "tokenValueType": "COLOR",
+        "state": "ACTIVE"
+      },
+      {
+        "name": "ds1/ts1/tok2",
+        "tokenName": "md.comp.divider.thickness",
+        "displayName": "Divider thickness",
+        "tokenValueType": "DIMENSION",
+        "state": "ACTIVE"
+      }
+    ],
+    "tokenSets": [
+      {
+        "name": "ds1/ts1",
+        "displayName": "Divider - Color",
+        "tokenSetName": "md.comp.divider.color-set"
+      }
+    ],
+    "tags": [
+      { "name": "light-tag", "displayName": "Light", "tagName": "light" },
+      { "name": "dark-tag", "displayName": "Dark", "tagName": "dark" }
+    ],
+    "contextTagGroups": [],
+    "contextualReferenceTrees": {
+      "ds1/ts1/tok1": {
+        "contextualReferenceTree": [
+          {
+            "referenceTree": { "tokenName": "md.comp.divider.color" },
+            "resolvedValue": { "color": { "red": 0.5, "green": 0.5, "blue": 0.5, "alpha": 0.2 } }
+          }
+        ]
+      },
+      "ds1/ts1/tok2": {
+        "contextualReferenceTree": [
+          {
+            "referenceTree": { "tokenName": "md.comp.divider.thickness" },
+            "resolvedValue": { "dimension": { "value": 1, "unit": "DIPS" } }
+          }
+        ]
+      }
+    }
+  }
+}

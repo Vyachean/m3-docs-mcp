@@ -63,12 +63,23 @@ export type ExtractionPageDiagnostic = {
   unknownResourceTypes: string[];
   tokenTables: number;
   tokenTablesRendered: number;
+  tokenTablesResolved?: number;
+  tokenTablesDecoded?: number;
+  tokenTablesRenderedAsPlaceholder?: number;
+  tokenTablesUnsupportedSchema?: number;
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesDecoded?: number;
+  statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
+  resourceChunksRequested?: number;
+  resourceChunksResolved?: number;
+  resourceChunksDecoded?: number;
+  resourceChunksRendered?: number;
+  resourceChunksPlaceholder?: number;
   missingRequestedTokenSets: string[];
   suspiciousReasons: string[];
   imageCount: number;
@@ -105,12 +116,23 @@ export type ExtractionRouteDiagnostic = {
   tokenTables: number;
   tokenTablesRendered: number;
   tokenTablesRequested?: number;
+  tokenTablesResolved?: number;
+  tokenTablesDecoded?: number;
+  tokenTablesRenderedAsPlaceholder?: number;
+  tokenTablesUnsupportedSchema?: number;
   tokenContextDiagnostics?: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesDecoded?: number;
+  statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
+  resourceChunksRequested?: number;
+  resourceChunksResolved?: number;
+  resourceChunksDecoded?: number;
+  resourceChunksRendered?: number;
+  resourceChunksPlaceholder?: number;
   missingRequestedTokenSets: string[];
   unknownJsonResourceCount?: number;
   capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -140,7 +162,11 @@ export type ExtractionDiagnostics = {
   unknownJsonResourceCount: number;
   pagesWithTokenTables: number;
   tokenTablesRequested: number;
+  tokenTablesResolved: number;
+  tokenTablesDecoded: number;
   tokenTablesSuccessfullyRendered: number;
+  tokenTablesRenderedAsPlaceholder: number;
+  tokenTablesUnsupportedSchema: number;
   tokenTablesFailedToRender: number;
   tokenTablesMissingRequestedTokenSets: number;
   tokenContextDiagnosticsRecorded: number;
@@ -149,8 +175,15 @@ export type ExtractionDiagnostics = {
   tokenTablesWithUnresolvedTokens: number;
   statusTablesRequested: number;
   statusTablesResolved: number;
+  statusTablesDecoded: number;
+  statusTablesRendered: number;
   statusTablesRenderedAsPlaceholder: number;
   unsupportedStatusTableSchemaCount: number;
+  resourceChunksRequested: number;
+  resourceChunksResolved: number;
+  resourceChunksDecoded: number;
+  resourceChunksRendered: number;
+  resourceChunksPlaceholder: number;
   pagesWithSuspiciouslyShortMarkdown: number;
   pagesWithNoSections: number;
   pagesWithNoHeadings: number;
@@ -175,6 +208,11 @@ export type CoverageDiagnostics = {
   uncrawledDiscoveredUrls: string[];
   skippedBecauseMaxPagesCount: number;
   skippedBecauseJsonCoveredCount: number;
+  skippedByPolicyCount: number;
+  skippedBlogCount: number;
+  skippedByPolicyUrls: string[];
+  includeBlog: boolean;
+  crawlPriorityPolicyVersion: string;
   coverageVerified: boolean;
   coverageWarnings: string[];
   coverageHealth?: CoverageHealth;
@@ -247,20 +285,32 @@ export type CacheStatus = {
   coverageHealth?: CoverageHealth;
   extractionDiagnostics?: ExtractionDiagnostics;
   coverageDiagnostics?: CoverageDiagnostics;
+  latestLogFile: string | null;
+  latestDiagnosticsFile: string | null;
 };
 
+export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';
+
 export type CrawlProgress = {
+  phase: CrawlPhase;
   startedAt: string;
   updatedAt: string;
   completedAt: string | null;
   running: boolean;
   maxPages: number;
   concurrency: number;
+  elapsedMs: number;
+  processedPageCount: number;
+  targetPageCount: number | null;
   attemptedPageCount: number;
+  directJsonAttemptedPageCount: number;
+  browserAttemptedPageCount: number;
   savedPageCount: number;
   failedPageCount: number;
   queuedPageCount: number;
   activeWorkerCount: number;
+  ratePagesPerSecond: number | null;
+  estimatedRemainingMs: number | null;
   currentUrls: string[];
   lastSavedUrl: string | null;
   lastFailedUrl: string | null;
@@ -277,14 +327,23 @@ export type CrawlOptions = {
   headless?: boolean;
   force?: boolean;
   concurrency?: number;
+  includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
+  /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
+   *  Use this to clear a TTY progress line so error messages are not interleaved with it. */
+  onBeforeLog?: () => void;
+  /** Called once the update logger is ready with the log file path and diagnostics file path. */
+  onLoggerReady?: (logFile: string, diagnosticsFile: string) => void;
+  logDir?: string;
+  verbose?: boolean;
 };
 
 export type RefreshOptions = {
   maxPages?: number;
   force?: boolean;
   concurrency?: number;
+  includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
 };

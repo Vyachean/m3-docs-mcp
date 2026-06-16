@@ -1,6 +1,18 @@
 import TurndownService from 'turndown';
 import { materialPageId, materialPagePath, sectionFromPagePath } from '../crawler-utils.js';
 import type { MaterialPage, TokenContextDiagnostic } from '../types.js';
+import type { DecodedContentSection } from './schemas.js';
+import {
+  compactJson,
+  parseTokenTableSystem,
+  type DecodedContextTreeEntry,
+  type DecodedReferenceNode,
+  type DecodedStatusTable,
+  type DecodedTokenTableSystem,
+} from './schemas.js';
+
+// Backwards-compatible alias for consumers that previously imported from here
+export type TokenTableSystem = DecodedTokenTableSystem;
 
 const MIN_EMBEDDED_IMAGE_WIDTH = 800;
 const PREFERRED_EMBEDDED_IMAGE_WIDTH = 1600;
@@ -47,44 +59,6 @@ const TOKEN_VIEWER_CELL_SELECTORS = [
   '[class*="token"]'
 ].join(',');
 
-export type TokenTableSystem = {
-  tokens: Array<{ name: string; tokenName: string; displayName: string; tokenValueType: string; state: string }>;
-  tokenSets: Array<{ name: string; displayName: string; tokenSetName: string }>;
-  tags: Array<{ name: string; displayName: string; tagName: string }>;
-  contextTagGroups: Array<{ name: string; displayName: string; defaultTag: string }>;
-  contextualReferenceTrees: Record<string, { contextualReferenceTree: ContextTreeEntry[] } | undefined>;
-};
-
-type ContextTreeEntry = {
-  contextTags: string[];
-  referenceTree: ReferenceNode;
-  resolvedValue: ResolvedTokenValue;
-};
-
-type ReferenceNode = {
-  tokenName: string;
-  childNodes?: ReferenceNode[];
-};
-
-type ResolvedTokenValue = {
-  color?: { red: number; green: number; blue: number; alpha?: number };
-  dimension?: { value?: number; unit?: string };
-  length?: { value?: number; unit?: string };
-  measurement?: { value?: number; unit?: string };
-  shape?: { family?: string; defaultSize?: { value?: number; unit?: string }; corners?: Array<{ value?: number; unit?: string }> };
-  fontSize?: { value?: number; unit?: string };
-  lineHeight?: { value?: number; unit?: string };
-  fontTracking?: { value?: number; unit?: string };
-  fontNames?: { values?: string[] };
-  elevation?: { value?: number; unit?: string };
-  type?: { fontNames?: { values?: string[] }; fontWeight?: number; fontSize?: { value?: number; unit?: string }; lineHeight?: { value?: number; unit?: string } };
-  opacity?: number;
-  fontWeight?: number;
-  number?: number;
-  undefined?: boolean;
-  [key: string]: unknown;
-};
-
 type TagIndex = {
   idByTagName: Map<string, string>;
 };
@@ -94,7 +68,7 @@ export function extractMaterialPageFromHtml(
   url: string,
   capturedAt = new Date().toISOString(),
   metadata?: Partial<Pick<MaterialPage, 'title' | 'headings'>>,
-  tokenSystem?: TokenTableSystem
+  tokenSystem?: DecodedTokenTableSystem
 ): MaterialPage {
   const relPath = materialPagePath(url);
   const sanitizedHtml = preserveBackgroundImageAttributes(preserveTokenViewerTextLines(stripUnsafeHtml(html)));
@@ -134,7 +108,7 @@ export function createMaterialPageFromBody({
   };
 }
 
-export function renderHtmlToMarkdown(html: string, tokenSystem?: TokenTableSystem): string {
+export function renderHtmlToMarkdown(html: string, tokenSystem?: DecodedTokenTableSystem): string {
   const turndown = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
   addMaterialMarkdownRules(turndown, tokenSystem);
   const rawBody = turndown.turndown(html).replace(/\n{3,}/g, '\n\n').trim();
@@ -167,14 +141,14 @@ export function renderVideoMarkdown({
   return lines.join('\n\n');
 }
 
-export function renderResourcePlaceholder(label: string, details: Record<string, unknown>): string {
+export function renderResourcePlaceholder(label: string, details: object): string {
   return [
     `> Material resource placeholder: ${label}`,
     `> ${escapeMarkdownListText(JSON.stringify(details))}`
   ].join('\n');
 }
 
-function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem): string[] {
+function resolveDisplayTokenSets(viewer: Element, tokenSystem: DecodedTokenTableSystem): string[] {
   const setsAttr = viewer.getAttribute('display-token-sets');
   if (setsAttr) {
     try {
@@ -204,7 +178,7 @@ function resolveDisplayTokenSets(viewer: Element, tokenSystem: TokenTableSystem)
   return discovered;
 }
 
-function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: TokenTableSystem): void {
+function addMaterialMarkdownRules(turndown: TurndownService, tokenSystem?: DecodedTokenTableSystem): void {
   turndown.addRule('materialTables', {
     filter: (node) => isElementNode(node) && nodeName(node) === 'table',
     replacement: (_content, node) => tableElementToMarkdown(turndown, node as Element)
@@ -358,18 +332,18 @@ function elementToTableCellMarkdown(turndown: TurndownService, element: Element)
   return escapeMarkdownTableCell(normalizeInlineText(markdown));
 }
 
-function buildTagIndex(sys: TokenTableSystem): TagIndex {
+function buildTagIndex(sys: DecodedTokenTableSystem): TagIndex {
   const idByTagName = new Map<string, string>();
   for (const tag of sys.tags) idByTagName.set(tag.tagName, tag.name);
   return { idByTagName };
 }
 
 function findContextEntry(
-  entries: ContextTreeEntry[],
+  entries: DecodedContextTreeEntry[],
   idx: TagIndex,
   theme: 'light' | 'dark',
   opts: { audience?: string; contrast?: string } = {}
-): ContextTreeEntry | undefined {
+): DecodedContextTreeEntry | undefined {
   const { audience = '3p', contrast = 'default' } = opts;
   const themeId = idx.idByTagName.get(theme);
   const antiThemeId = idx.idByTagName.get(theme === 'light' ? 'dark' : 'light');
@@ -385,7 +359,7 @@ function findContextEntry(
   const nonAndroidPlatforms = [iosId, webId, composeId].filter(Boolean) as string[];
 
   const candidates = entries.filter((entry) => {
-    if (entry.resolvedValue?.undefined === true) return false;
+    if (entry.resolvedValue['undefined'] === true) return false;
     const tags = entry.contextTags;
     if (!tags) return contrast !== 'high.contrast';
     if (elevatedId && tags.includes(elevatedId)) return false;
@@ -408,7 +382,7 @@ function findContextEntry(
   if (candidates.length === 0) return undefined;
 
   return candidates.sort((a, b) => {
-    const score = (e: ContextTreeEntry) => {
+    const score = (e: DecodedContextTreeEntry) => {
       const t = e.contextTags;
       if (!t) return -1;
       let s = 0;
@@ -428,6 +402,10 @@ function normalizeUnit(unit: string): string {
   return unit.toLowerCase();
 }
 
+function isNonArrayObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 function formatUnknownStructuredValue(v: Record<string, unknown>): string {
   return stableStringify(v);
 }
@@ -436,46 +414,46 @@ function formatValueNode(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (typeof v !== 'object') return String(v);
   if (Array.isArray(v)) return v.map(formatValueNode).filter(Boolean).join(', ');
+  if (!isNonArrayObject(v)) return '';
 
-  const obj = v as Record<string, unknown>;
-  if ('red' in obj && 'green' in obj && 'blue' in obj) {
-    const red = Number(obj.red);
-    const green = Number(obj.green);
-    const blue = Number(obj.blue);
-    const alpha = obj.alpha != null ? Number(obj.alpha) : 1;
+  if ('red' in v && 'green' in v && 'blue' in v) {
+    const red = Number(v.red);
+    const green = Number(v.green);
+    const blue = Number(v.blue);
+    const alpha = v.alpha != null ? Number(v.alpha) : 1;
     if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
     if (Number.isFinite(alpha) && alpha < 0.9999) {
       return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
     }
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
-  if ('unit' in obj && typeof obj.unit === 'string') {
-    if (typeof obj.value !== 'number') return '';
-    return `${obj.value}${normalizeUnit(obj.unit)}`;
+  if ('unit' in v && typeof v.unit === 'string') {
+    if (typeof v.value !== 'number') return '';
+    return `${v.value}${normalizeUnit(v.unit)}`;
   }
-  if ('values' in obj && Array.isArray(obj.values)) return obj.values.map(formatValueNode).filter(Boolean).join(', ');
-  if ('family' in obj || 'defaultSize' in obj || 'corners' in obj) {
+  if ('values' in v && Array.isArray(v.values)) return v.values.map(formatValueNode).filter(Boolean).join(', ');
+  if ('family' in v || 'defaultSize' in v || 'corners' in v) {
     const parts = [
-      typeof obj.family === 'string' ? obj.family : '',
-      obj.defaultSize ? formatValueNode(obj.defaultSize) : '',
-      Array.isArray(obj.corners) ? obj.corners.map(formatValueNode).filter(Boolean).join(', ') : ''
+      typeof v.family === 'string' ? v.family : '',
+      v.defaultSize ? formatValueNode(v.defaultSize) : '',
+      Array.isArray(v.corners) ? v.corners.map(formatValueNode).filter(Boolean).join(', ') : ''
     ].filter(Boolean);
     return parts.join(' ');
   }
-  if ('fontNames' in obj || 'fontWeight' in obj || 'fontSize' in obj || 'lineHeight' in obj) {
+  if ('fontNames' in v || 'fontWeight' in v || 'fontSize' in v || 'lineHeight' in v) {
     const parts = [
-      obj.fontNames ? formatValueNode(obj.fontNames) : '',
-      typeof obj.fontWeight === 'number' ? String(obj.fontWeight) : '',
-      obj.fontSize ? formatValueNode(obj.fontSize) : '',
-      obj.lineHeight ? formatValueNode(obj.lineHeight) : ''
+      v.fontNames ? formatValueNode(v.fontNames) : '',
+      typeof v.fontWeight === 'number' ? String(v.fontWeight) : '',
+      v.fontSize ? formatValueNode(v.fontSize) : '',
+      v.lineHeight ? formatValueNode(v.lineHeight) : ''
     ].filter(Boolean);
     return parts.join(' ');
   }
-  return formatUnknownStructuredValue(obj);
+  return formatUnknownStructuredValue(v);
 }
 
-function formatResolvedValue(rv: ResolvedTokenValue): string {
-  if (!rv || rv.undefined === true) return '';
+function formatResolvedValue(rv: Record<string, unknown>): string {
+  if (!rv || rv['undefined'] === true) return '';
   const formatted = Object.entries(rv)
     .filter(([key]) => key !== 'undefined')
     .map(([, value]) => formatValueNode(value))
@@ -484,12 +462,12 @@ function formatResolvedValue(rv: ResolvedTokenValue): string {
   return formatted || '[unresolved]';
 }
 
-function extractAliasChain(tree: ReferenceNode, selfTokenName: string): string[] {
+function extractAliasChain(tree: DecodedReferenceNode, selfTokenName: string): string[] {
   const aliases: string[] = [];
-  let node: ReferenceNode | undefined = tree.childNodes?.[0];
+  let node: DecodedReferenceNode | undefined = (tree.childNodes ?? [])[0];
   while (node) {
     if (node.tokenName && node.tokenName !== selfTokenName) aliases.push(node.tokenName);
-    node = node.childNodes?.[0];
+    node = (node.childNodes ?? [])[0];
   }
   return aliases;
 }
@@ -506,7 +484,7 @@ export function extractDisplayTokenSets(html: string): string[] {
 }
 
 export function renderTokenTableWithDiagnostics(
-  system: TokenTableSystem,
+  system: DecodedTokenTableSystem,
   displayTokenSets: string[]
 ): { markdown: string; diagnostics: TokenContextDiagnostic[] } {
   const idx = buildTagIndex(system);
@@ -569,7 +547,6 @@ export function renderTokenTableWithDiagnostics(
     const hasHcData = rows.slice(1).some((row) => row[6] || row[7]);
     const finalRows = hasHcData ? rows : rows.map((row) => row.slice(0, 6));
     sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
-    // Only the names from displayTokenSets that match THIS token set — not all requested sets.
     const requestedTokenSetsForSection = displayTokenSets.filter((name) => name === ts.displayName || name === ts.tokenSetName);
     const renderedTokenSets = [ts.displayName, ts.tokenSetName].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
     const availableKeys = Array.from(availableContextKeys).sort();
@@ -594,15 +571,33 @@ export function renderTokenTableWithDiagnostics(
   };
 }
 
-export function tokenTableToMarkdown(system: TokenTableSystem, displayTokenSets: string[]): string {
+export function tokenTableToMarkdown(system: DecodedTokenTableSystem, displayTokenSets: string[]): string {
   return renderTokenTableWithDiagnostics(system, displayTokenSets).markdown;
 }
 
-export function renderStatusTableMarkdown(resource: unknown): string {
-  const headers = readStatusTableHeaders(resource);
-  const rows = readStatusTableRows(resource);
-  if (headers.length === 0 || rows.length === 0) return '';
-  return markdownTable([headers, ...rows]);
+export function normalizeTokenTableSystem(raw: unknown): DecodedTokenTableSystem | null {
+  return parseTokenTableSystem(raw);
+}
+
+export function renderStatusTableMarkdown(decoded: DecodedStatusTable): string {
+  return markdownTable([decoded.headers, ...decoded.rows]);
+}
+
+export function renderDecodedSections(
+  sections: DecodedContentSection[],
+  renderChunk: (chunk: import('./schemas.js').DecodedContentChunk) => Promise<string>
+): Promise<string[]> {
+  const parts: Promise<string>[] = [];
+  for (const section of sections) {
+    if (section.title.trim()) parts.push(Promise.resolve(`## ${section.title.trim()}`));
+    for (const block of section.blocks) {
+      if (block.title?.trim()) parts.push(Promise.resolve(`### ${block.title.trim()}`));
+      for (const chunk of block.chunks) {
+        parts.push(renderChunk(chunk).then((r) => r.trim()));
+      }
+    }
+  }
+  return Promise.all(parts);
 }
 
 export function preferLargeImageUrl(url: string): string {
@@ -661,7 +656,7 @@ function postProcessMarkdown(markdown: string): string {
   const lines = markdown
     .replace(/\r\n/g, '\n')
     .replace(/[^\S\n]+$/gm, '')
-    .replace(/\u200b/g, '')
+    .replace(/​/g, '')
     .replace(/!\[([^\]]*)\]\(([^)]*=w\d+[^)]*)\)\s*!\[\1\]\(([^)]*=s0[^)]*)\)/g, '![$1]($2)')
     .replace(/!\[([^\]]*)\]\(([^)]*=s0[^)]*)\)\s*!\[\1\]\(([^)]*=w\d+[^)]*)\)/g, '![$1]($3)')
     .split('\n');
@@ -754,7 +749,7 @@ function escapeMarkdownListText(value: string): string {
 }
 
 function normalizeInlineText(value: string): string {
-  return value.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim();
+  return value.replace(/​/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function visibleTextLines(value: string): string[] {
@@ -783,46 +778,19 @@ function hasAncestorMatching(node: Element, boundary: Element, selector: string)
   return false;
 }
 
-function readStatusTableHeaders(resource: unknown): string[] {
-  if (!resource || typeof resource !== 'object') return [];
-  const obj = resource as Record<string, unknown>;
-  const directHeaders = Array.isArray(obj.headers) ? obj.headers : Array.isArray(obj.columns) ? obj.columns : null;
-  if (directHeaders) return directHeaders.map((value) => typeof value === 'string' ? value : typeof value === 'object' && value && 'label' in value ? String((value as Record<string, unknown>).label ?? '') : '').filter(Boolean);
-
-  const payload = obj.payload;
-  if (payload && typeof payload === 'object') return readStatusTableHeaders(payload);
-  return [];
-}
-
-function readStatusTableRows(resource: unknown): string[][] {
-  if (!resource || typeof resource !== 'object') return [];
-  const obj = resource as Record<string, unknown>;
-  const rawRows = Array.isArray(obj.rows) ? obj.rows : Array.isArray(obj.statuses) ? obj.statuses : null;
-  if (rawRows) {
-    return rawRows.map((row) => {
-      if (Array.isArray(row)) return row.map((value) => typeof value === 'string' ? value : stableStringify(value));
-      if (row && typeof row === 'object') return Object.values(row as Record<string, unknown>).map((value) => typeof value === 'string' ? value : stableStringify(value));
-      return [String(row ?? '')];
-    }).filter((row) => row.some(Boolean));
-  }
-
-  const payload = obj.payload;
-  if (payload && typeof payload === 'object') return readStatusTableRows(payload);
-  return [];
-}
-
 function stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-
-  const obj = value as Record<string, unknown>;
-  const entries = Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
-  return `{${entries.join(',')}}`;
+  if (isNonArrayObject(value)) {
+    const entries = Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return '{}';
 }
 
 function entryMatchesContext(
-  entry: ContextTreeEntry,
+  entry: DecodedContextTreeEntry,
   idx: TagIndex,
   expected: { audience?: string; contrast?: string }
 ): boolean {

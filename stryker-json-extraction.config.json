@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "testRunner": "vitest",
+  "packageManager": "npm",
+  "reporters": ["progress", "clear-text"],
+  "mutate": [
+    "src/json-extraction/**/*.ts"
+  ],
+  "coverageAnalysis": "perTest",
+  "thresholds": {
+    "high": 80,
+    "low": 70,
+    "break": 65
+  },
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  }
+}

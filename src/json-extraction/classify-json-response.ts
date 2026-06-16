@@ -1,7 +1,48 @@
 import { extractPageDataMetadata } from './extract-page-data.js';
-import { asObject, firstString, getPath, walkObjects } from './schemas.js';
 import type { JsonCapturedResponse } from './json-bundle.js';
 import type { JsonResponseType } from '../types.js';
+
+// ── Local helpers (type-predicate approach, no 'as' casts) ───────────────────
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function getLocal(root: unknown, ...path: string[]): unknown {
+  let current: unknown = root;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function firstStringLocal(root: unknown, paths: string[][]): string | null {
+  for (const path of paths) {
+    const v = getLocal(root, ...path);
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return null;
+}
+
+function walkObjectsLocal(root: unknown, visitor: (value: Record<string, unknown>) => void): void {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (isRecord(value)) {
+      visitor(value);
+      for (const nested of Object.values(value)) visit(nested);
+    }
+  };
+  visit(root);
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export function classifyJsonResponse({
   url,
@@ -36,7 +77,7 @@ export function classifyResponseType(url: string, payload: unknown): JsonRespons
 
 function deriveResourceName(url: string, payload: unknown, type: JsonResponseType): string | null {
   if (type === 'page-metadata' || type === 'content-page') return null;
-  const direct = firstString(payload, [
+  const direct = firstStringLocal(payload, [
     ['resourceName'],
     ['name'],
     ['id'],
@@ -65,51 +106,49 @@ function isPageDataPayload(payload: unknown): boolean {
 }
 
 function isContentPagePayload(url: string, payload: unknown): boolean {
-  const root = asObject(payload);
-  if (!root) return false;
-  const title = firstString(payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
+  if (!isRecord(payload)) return false;
+  const title = firstStringLocal(payload, [['title'], ['name'], ['page', 'title'], ['content', 'title']]);
   const hasStructuredSections = hasArrayPath(payload, [
     ['sections'],
     ['content', 'sections'],
     ['page', 'sections'],
     ['data', 'sections']
   ]);
-  const hasStructuredContent = hasContentStructure(root);
+  const hasStructuredContent = hasContentStructure(payload);
   const pathname = getUrlPathname(url);
   if (hasStructuredSections) return true;
   if (title && hasStructuredContent) return true;
-  if (/\/_dsm\/content\/m3\/.+\.json$/i.test(pathname) && (hasStructuredContent || Boolean(title && hasPageIdentity(root)))) {
+  if (/\/_dsm\/content\/m3\/.+\.json$/i.test(pathname) && (hasStructuredContent || Boolean(title && hasPageIdentity(payload)))) {
     return true;
   }
   return false;
 }
 
 function isTokenTablePayload(payload: unknown): boolean {
-  const system = getPath(payload, 'system');
-  return typeof system === 'object' && system !== null && Array.isArray((system as { tokenSets?: unknown }).tokenSets);
+  const system = getLocal(payload, 'system');
+  return isRecord(system) && Array.isArray(system.tokenSets);
 }
 
 function isStatusTablePayload(payload: unknown): boolean {
-  const states = getPath(payload, 'states');
-  const rows = getPath(payload, 'rows');
+  const states = getLocal(payload, 'states');
+  const rows = getLocal(payload, 'rows');
   return Array.isArray(states) || Array.isArray(rows);
 }
 
 function isDsdbResourcePayload(payload: unknown): boolean {
-  const resourceLike = asObject(payload);
-  if (!resourceLike) return false;
-  return typeof resourceLike.resourceName === 'string'
-    || typeof resourceLike.resourcePath === 'string'
-    || typeof resourceLike.libraryModuleType === 'string'
-    || 'moduleConfigurationOverrides' in resourceLike
-    || 'resource' in resourceLike
-    || 'component' in resourceLike
-    || 'tokenSets' in resourceLike;
+  if (!isRecord(payload)) return false;
+  return typeof payload.resourceName === 'string'
+    || typeof payload.resourcePath === 'string'
+    || typeof payload.libraryModuleType === 'string'
+    || 'moduleConfigurationOverrides' in payload
+    || 'resource' in payload
+    || 'component' in payload
+    || 'tokenSets' in payload;
 }
 
 function inferResourceNameFromPayload(payload: unknown): string | null {
   let discovered: string | null = null;
-  walkObjects(payload, (value) => {
+  walkObjectsLocal(payload, (value) => {
     if (discovered) return;
     for (const key of ['resourceName', 'resourcePath', 'resourceUrl']) {
       const candidate = value[key];
@@ -136,14 +175,15 @@ function lastUrlSegment(url: string): string {
 }
 
 function hasArrayPath(payload: unknown, paths: string[][]): boolean {
-  return paths.some((path) => Array.isArray(getPath(payload, ...path)));
+  return paths.some((path) => Array.isArray(getLocal(payload, ...path)));
 }
 
-function hasContentStructure(root: Record<string, unknown>): boolean {
+function hasContentStructure(root: unknown): boolean {
+  if (!isRecord(root)) return false;
   if (Array.isArray(root.contentBlocks) || Array.isArray(root.contentChunks)) return true;
 
   let found = false;
-  walkObjects(root, (value) => {
+  walkObjectsLocal(root, (value) => {
     if (found) return;
     if (Array.isArray(value.contentBlocks) || Array.isArray(value.contentChunks) || Array.isArray(value.sections)) {
       found = true;
@@ -152,7 +192,8 @@ function hasContentStructure(root: Record<string, unknown>): boolean {
   return found;
 }
 
-function hasPageIdentity(root: Record<string, unknown>): boolean {
+function hasPageIdentity(root: unknown): boolean {
+  if (!isRecord(root)) return false;
   return typeof root.pageCanonId === 'string'
     || typeof root.pageCanonicalId === 'string'
     || typeof root.documentId === 'string'

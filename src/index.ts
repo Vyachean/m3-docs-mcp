@@ -5,6 +5,7 @@ import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
+import { formatDurationMs } from './progress.js';
 import type { CrawlProgress } from './types.js';
 
 const program = new Command();
@@ -39,6 +40,9 @@ program.command('update')
   .option('--concurrency <number>', `Maximum concurrent Playwright pages, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
+  .option('--include-blog', 'Include blog, news, and article routes in the crawl (excluded by default)')
+  .option('--log-dir <path>', 'Directory for update log files (default: <cache-dir>/logs)')
+  .option('--verbose', 'Enable verbose/debug log output in the log file')
   .action(async (options) => {
     const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
@@ -46,8 +50,10 @@ program.command('update')
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
-    const renderProgress = createCliProgressRenderer();
-    console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}. Press Ctrl+C to stop safely.`);
+    const { onProgress, onBeforeLog } = createCliProgressRenderer();
+    let updateLogFile: string | null = null;
+    let updateDiagnosticsFile: string | null = null;
+    console.error(`Starting Material 3 docs cache refresh: cacheDir=${cacheDir} maxPages=${maxPages} minPages=${minPageCount} concurrency=${concurrency} includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir,
@@ -56,11 +62,23 @@ program.command('update')
         concurrency,
         headless: !options.headed,
         force: options.force,
+        includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
-        onProgress: renderProgress
+        onProgress,
+        onBeforeLog,
+        onLoggerReady: (logFile, diagnosticsFile) => {
+          updateLogFile = logFile;
+          updateDiagnosticsFile = diagnosticsFile;
+          console.error(`Update log: ${logFile}`);
+          console.error(`Diagnostics: ${diagnosticsFile}`);
+        },
+        logDir: options.logDir,
+        verbose: options.verbose ?? false
       });
-      renderProgress(null);
+      onProgress(null);
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
+      if (updateLogFile) console.error(`Update log: ${updateLogFile}`);
+      if (updateDiagnosticsFile) console.error(`Diagnostics: ${updateDiagnosticsFile}`);
       console.log(JSON.stringify({
         cacheDir,
         capturedAt: index.capturedAt,
@@ -72,7 +90,7 @@ program.command('update')
         coverageDiagnostics: index.coverageDiagnostics
       }, null, 2));
     } catch (error) {
-      renderProgress(null);
+      onProgress(null);
       if (abortController.signal.aborted) {
         console.error('Material 3 docs cache refresh interrupted. Existing cache was left unchanged. If this was the first refresh, status will still report hasCache=false.');
         process.exitCode = 130;
@@ -106,27 +124,53 @@ program.parseAsync(process.argv).catch((error) => {
   process.exitCode = 1;
 });
 
-function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
+export function createCliProgressRenderer(): {
+  onProgress: (progress: CrawlProgress | null) => void;
+  onBeforeLog: () => void;
+} {
   let previousLength = 0;
+  let lastRenderMs = 0;
+  const THROTTLE_MS = 1000;
 
-  return (progress) => {
+  const onBeforeLog = (): void => {
+    if (process.stderr.isTTY && previousLength > 0) {
+      process.stderr.write('\n');
+      previousLength = 0;
+    }
+  };
+
+  const onProgress = (progress: CrawlProgress | null): void => {
     if (!progress) {
       if (process.stderr.isTTY && previousLength > 0) process.stderr.write('\n');
       previousLength = 0;
+      lastRenderMs = 0;
       return;
     }
 
-    const elapsedSeconds = Math.floor((Date.parse(progress.updatedAt) - Date.parse(progress.startedAt)) / 1000);
+    const nowMs = Date.now();
+    if (nowMs - lastRenderMs < THROTTLE_MS && progress.running) return;
+    lastRenderMs = nowMs;
+
+    const elapsed = formatDurationMs(progress.elapsedMs);
+    const etaPrefix = progress.phase === 'browser-crawl' ? 'eta≈' : 'eta=';
+    const etaStr = progress.estimatedRemainingMs !== null
+      ? `${etaPrefix}${formatDurationMs(progress.estimatedRemainingMs)}`
+      : 'eta=calculating';
+    const rateStr = progress.ratePagesPerSecond !== null
+      ? `rate=${progress.ratePagesPerSecond.toFixed(2)}/s`
+      : 'rate=calculating';
     const current = progress.currentUrls[0] ? ` current=${progress.currentUrls[0]}` : '';
-    const line = `Material 3 docs cache refresh: elapsed=${elapsedSeconds}s saved=${progress.savedPageCount}/${progress.maxPages} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount} concurrency=${progress.concurrency}${current}`;
+    const line = `Material 3 docs cache refresh: phase=${progress.phase} elapsed=${elapsed} ${etaStr} ${rateStr} saved=${progress.savedPageCount}/${progress.maxPages} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount}/${progress.concurrency}${current}`;
     if (process.stderr.isTTY) {
       const padding = previousLength > line.length ? ' '.repeat(previousLength - line.length) : '';
       process.stderr.write(`\r${line}${padding}`);
       previousLength = line.length;
     } else {
-      console.error(line);
+      process.stderr.write(`${line}\n`);
     }
   };
+
+  return { onProgress, onBeforeLog };
 }
 
 function installAbortSignalHandlers(abortController: AbortController): () => void {

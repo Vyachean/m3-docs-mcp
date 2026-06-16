@@ -1,28 +1,34 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { DEFAULT_MAX_FAILED_PAGE_RATIO, assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, diagnosticsDir, getDefaultCacheDir, logsDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { UpdateLogger } from './update-logger.js';
+import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
-import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CoverageDiagnostics, CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import { computeEta, formatDurationMs } from './progress.js';
+import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
 const BLOG_POST_REUSE_YEAR_LAG = 1;
 const DSDB_CONFIG_TIMEOUT_MS = 30_000;
-const DSDB_DEFAULT_CONCURRENCY = 8;
 const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
@@ -376,7 +382,7 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
   });
   if (!tokenTableUrl) return undefined;
 
-  const rawData = await page.evaluate(async (url) => {
+  const rawData: unknown = await page.evaluate(async (url) => {
     try {
       const resp = await fetch(url);
       return resp.ok ? (resp.json() as Promise<unknown>) : null;
@@ -384,11 +390,9 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
       return null;
     }
   }, tokenTableUrl);
-  if (!rawData || typeof rawData !== 'object') return undefined;
 
-  const system = (rawData as { system?: unknown }).system;
-  if (!system || typeof system !== 'object') return undefined;
-  return system as TokenTableSystem;
+  const system: unknown = isRecord(rawData) ? rawData['system'] : undefined;
+  return normalizeTokenTableSystem(system) ?? undefined;
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
@@ -448,8 +452,8 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
   if (content.tokenSystemJson) {
     try {
       const parsed: unknown = JSON.parse(content.tokenSystemJson);
-      const sys = (parsed as { system?: unknown })?.system;
-      if (sys && typeof sys === 'object') tokenSystem = sys as TokenTableSystem;
+      const sys: unknown = isRecord(parsed) ? parsed['system'] : undefined;
+      tokenSystem = normalizeTokenTableSystem(sys) ?? undefined;
     } catch { /* ignore */ }
   }
   if (!tokenSystem) {
@@ -479,11 +483,11 @@ export function materialCrawlCandidates(raw: string, baseUrl: string): string[] 
 }
 
 export function discoverMaterialLinksFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlPriority);
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialCrawlUrl(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialCrawlUrlPriority);
 }
 
 export function discoverPublicDocPathsFromHrefs(hrefs: string[], baseUrl: string): string[] {
-  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort();
+  return Array.from(new Set(hrefs.map((href) => normalizeMaterialPublicDocPath(href, baseUrl)).filter((value): value is string => Boolean(value)))).sort(compareMaterialRoutePriority);
 }
 
 async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
@@ -747,6 +751,11 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
     uncrawledDiscoveredUrls: [],
     skippedBecauseMaxPagesCount: 0,
     skippedBecauseJsonCoveredCount: 0,
+    skippedByPolicyCount: 0,
+    skippedBlogCount: 0,
+    skippedByPolicyUrls: [],
+    includeBlog: false,
+    crawlPriorityPolicyVersion: CRAWL_PRIORITY_POLICY_VERSION,
     coverageVerified: false,
     coverageWarnings: [],
     coverageHealth: 'unverified'
@@ -756,19 +765,333 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const startedAt = new Date().toISOString();
+  const logger = new UpdateLogger({
+    cacheDir: targetCacheDir,
+    logDir: options.logDir ?? logsDir(targetCacheDir),
+    diagnosticsDir: diagnosticsDir(targetCacheDir),
+    verbose: options.verbose ?? false
+  });
+  await logger.init();
+  options.onLoggerReady?.(logger.logFile, logger.diagnosticsFile);
+  logger.log('info', 'update:start', {
+    phase: 'init',
+    message: 'Material 3 docs cache refresh starting',
+    maxPages: options.maxPages,
+    concurrency: options.concurrency,
+    includeBlog: options.includeBlog ?? false,
+    force: options.force ?? false,
+    logFile: logger.logFile,
+    diagnosticsFile: logger.diagnosticsFile
+  });
+
   const previousIndex = await readIndex(targetCacheDir);
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
+  let crawledIndex: MaterialIndex | null = null;
+  let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' = 'pending';
+  let lastProgress: CrawlProgress | null = null;
+  const originalOnProgress = options.onProgress;
+
+  let lastProgressLogMs = 0;
+  const PROGRESS_LOG_THROTTLE_MS = 5_000;
+
+  const trackingOptions: CrawlOptions = {
+    ...options,
+    onProgress: (p) => {
+      lastProgress = p;
+      originalOnProgress?.(p);
+      const nowMs = Date.now();
+      if (nowMs - lastProgressLogMs >= PROGRESS_LOG_THROTTLE_MS) {
+        lastProgressLogMs = nowMs;
+        logger.log('info', 'update:progress', {
+          phase: p.phase,
+          elapsedMs: p.elapsedMs,
+          estimatedRemainingMs: p.estimatedRemainingMs,
+          ratePagesPerSecond: p.ratePagesPerSecond,
+          savedPageCount: p.savedPageCount,
+          failedPageCount: p.failedPageCount,
+          attemptedPageCount: p.attemptedPageCount,
+          directJsonAttemptedPageCount: p.directJsonAttemptedPageCount,
+          browserAttemptedPageCount: p.browserAttemptedPageCount,
+          queuedPageCount: p.queuedPageCount,
+          activeWorkerCount: p.activeWorkerCount,
+          concurrency: p.concurrency,
+          currentUrls: p.currentUrls,
+          targetPageCount: p.targetPageCount
+        });
+      }
+    }
+  };
+
+  const emitFinalProgressSnapshot = (): void => {
+    if (lastProgress) {
+      logger.log('info', 'update:progress', {
+        phase: lastProgress.phase,
+        elapsedMs: lastProgress.elapsedMs,
+        estimatedRemainingMs: lastProgress.estimatedRemainingMs,
+        ratePagesPerSecond: lastProgress.ratePagesPerSecond,
+        savedPageCount: lastProgress.savedPageCount,
+        failedPageCount: lastProgress.failedPageCount,
+        attemptedPageCount: lastProgress.attemptedPageCount,
+        directJsonAttemptedPageCount: lastProgress.directJsonAttemptedPageCount,
+        browserAttemptedPageCount: lastProgress.browserAttemptedPageCount,
+        queuedPageCount: lastProgress.queuedPageCount,
+        activeWorkerCount: lastProgress.activeWorkerCount,
+        concurrency: lastProgress.concurrency,
+        currentUrls: lastProgress.currentUrls,
+        targetPageCount: lastProgress.targetPageCount,
+        final: true
+      });
+    }
+  };
 
   try {
-    const index = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
-    assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
-    assertSafeCachePromotion(index, previousIndex, { force: options.force });
+    crawledIndex = await crawlIntoCache(stagingCacheDir, trackingOptions, previousIndex, targetCacheDir);
+    assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
+    assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
+    logger.log('info', 'update:promoting', {
+      phase: 'promoting',
+      message: 'Promoting staging cache to production',
+      savedPages: crawledIndex.pageCount,
+      failedPages: crawledIndex.failedPageCount
+    });
+    // Flush pending log writes, then move logs and diagnostics into the staging dir
+    // before promotion. promoteStagingCache deletes .previous after swapping, so any
+    // files still in targetCacheDir at promotion time are lost. By moving them into
+    // staging first, they become part of the new targetCacheDir after the rename.
+    await logger.flush();
+    await rename(logsDir(targetCacheDir), logsDir(stagingCacheDir)).catch(() => undefined);
+    await rename(diagnosticsDir(targetCacheDir), diagnosticsDir(stagingCacheDir)).catch(() => undefined);
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
-    return index;
+    promotionDecision = 'promoted';
+    const diag = crawledIndex.extractionDiagnostics;
+    emitRouteEvents(logger, crawledIndex);
+    emitFinalProgressSnapshot();
+    logger.log('info', 'update:complete', {
+      phase: 'promoting',
+      message: `Cache promoted: ${crawledIndex.pageCount} pages saved, ${crawledIndex.failedPageCount} failed`,
+      savedPages: crawledIndex.pageCount,
+      failedPages: crawledIndex.failedPageCount,
+      attemptedPages: crawledIndex.attemptedPageCount,
+      coverageHealth: crawledIndex.coverageDiagnostics?.coverageHealth ?? null,
+      logFile: logger.logFile,
+      diagnosticsFile: logger.diagnosticsFile,
+      tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
+      tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
+      tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
+      tokenTablesRendered: diag?.tokenTablesSuccessfullyRendered ?? 0,
+      tokenTablesRenderedAsPlaceholder: diag?.tokenTablesRenderedAsPlaceholder ?? 0
+    });
+    await logger.writeFinalDiagnostics(buildRunDiagnostics({
+      logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: null,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1
+    }));
+    return crawledIndex;
   } catch (error) {
-    await rm(stagingCacheDir, { recursive: true, force: true });
-    throw error;
+    promotionDecision = promotionDecision === 'pending' ? 'rejected' : 'error';
+    const failedStagingDir = `${targetCacheDir}.failed-staging`;
+    let preservedPath: string | null = null;
+    try {
+      await rm(failedStagingDir, { recursive: true, force: true });
+      await rename(stagingCacheDir, failedStagingDir);
+      preservedPath = failedStagingDir;
+    } catch {
+      await rm(stagingCacheDir, { recursive: true, force: true });
+    }
+    if (crawledIndex) emitRouteEvents(logger, crawledIndex);
+    // Capture phase before emitFinalProgressSnapshot (which also closes over lastProgress).
+    const failurePhase = (lastProgress as CrawlProgress | null)?.phase ?? 'unknown';
+    emitFinalProgressSnapshot();
+    logger.log('error', 'update:failed', {
+      phase: failurePhase,
+      message: error instanceof Error ? error.message : String(error),
+      errorName: error instanceof Error ? error.name : undefined,
+      promotionDecision,
+      preservedFailedStagingPath: preservedPath,
+      hasPreviousCache: previousIndex !== null,
+      logFile: logger.logFile,
+      diagnosticsFile: logger.diagnosticsFile
+    });
+    await logger.writeFinalDiagnostics(buildRunDiagnostics({
+      logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: preservedPath,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1
+    }));
+    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath, logger.logFile, logger.diagnosticsFile, lastProgress);
   }
+}
+
+function emitRouteEvents(logger: UpdateLogger, index: MaterialIndex): void {
+  const routeDiagnostics = index.extractionDiagnostics?.routeDiagnostics ?? [];
+  for (const route of routeDiagnostics) {
+    const hasTokenActivity = (route.tokenTablesRequested ?? route.tokenTables) > 0;
+    const hasStatusActivity = (route.statusTablesRequested ?? 0) > 0;
+    const hasFailed = route.sourceUsed === 'failed';
+    if (!hasTokenActivity && !hasStatusActivity && !hasFailed) continue;
+    logger.log('info', 'update:route:diagnostics', {
+      phase: 'extraction',
+      route: route.url,
+      path: route.path,
+      source: route.sourceUsed,
+      fallbackReasons: route.fallbackReasons ?? [],
+      tokenTablesRequested: route.tokenTablesRequested ?? route.tokenTables,
+      tokenTablesResolved: route.tokenTablesResolved ?? 0,
+      tokenTablesDecoded: route.tokenTablesDecoded ?? 0,
+      tokenTablesRendered: route.tokenTablesRendered,
+      tokenTablesRenderedAsPlaceholder: route.tokenTablesRenderedAsPlaceholder ?? 0,
+      tokenTablesUnsupportedSchema: route.tokenTablesUnsupportedSchema ?? 0,
+      statusTablesRequested: route.statusTablesRequested ?? 0,
+      statusTablesResolved: route.statusTablesResolved ?? 0,
+      statusTablesDecoded: route.statusTablesDecoded ?? 0,
+      statusTablesRendered: route.statusTablesRendered ?? 0,
+      statusTablesRenderedAsPlaceholder: route.statusTablesRenderedAsPlaceholder ?? 0,
+      resourceChunksRequested: route.resourceChunksRequested ?? 0,
+      resourceChunksRendered: route.resourceChunksRendered ?? 0,
+      resourceChunksPlaceholder: route.resourceChunksPlaceholder ?? 0,
+      missingRequestedTokenSets: route.missingRequestedTokenSets
+    });
+  }
+}
+
+function buildRunDiagnostics({
+  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath, lastProgress, concurrency
+}: {
+  logger: UpdateLogger;
+  startedAt: string;
+  targetCacheDir: string;
+  stagingDir: string | null;
+  crawledIndex: MaterialIndex | null;
+  previousIndex: MaterialIndex | null;
+  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
+  preservedFailedStagingPath: string | null;
+  lastProgress: CrawlProgress | null;
+  concurrency: number;
+}) {
+  const diag = crawledIndex?.extractionDiagnostics;
+  const covDiag = crawledIndex?.coverageDiagnostics;
+  const finishedAt = new Date().toISOString();
+  const elapsedMs = Date.parse(finishedAt) - Date.parse(startedAt);
+  return {
+    runId: logger.runId,
+    startedAt,
+    finishedAt,
+    elapsedMs,
+    cacheDir: targetCacheDir,
+    stagingDir,
+    logFile: logger.logFile,
+    attemptedPages: crawledIndex?.attemptedPageCount ?? 0,
+    savedPages: crawledIndex?.pageCount ?? 0,
+    failedPages: crawledIndex?.failedPageCount ?? 0,
+    failedRoutes: crawledIndex?.failedUrls ?? [],
+    skippedBlogCount: covDiag?.skippedBlogCount ?? 0,
+    tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
+    tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
+    tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
+    tokenTablesRendered: diag?.tokenTablesSuccessfullyRendered ?? 0,
+    tokenTablesRenderedAsPlaceholder: diag?.tokenTablesRenderedAsPlaceholder ?? 0,
+    tokenTablesUnsupportedSchema: diag?.tokenTablesUnsupportedSchema ?? 0,
+    statusTablesRequested: diag?.statusTablesRequested ?? 0,
+    statusTablesResolved: diag?.statusTablesResolved ?? 0,
+    statusTablesDecoded: diag?.statusTablesDecoded ?? 0,
+    statusTablesRendered: diag?.statusTablesRendered ?? 0,
+    statusTablesRenderedAsPlaceholder: diag?.statusTablesRenderedAsPlaceholder ?? 0,
+    statusTablesUnsupportedSchema: diag?.unsupportedStatusTableSchemaCount ?? 0,
+    resourceChunksRequested: diag?.resourceChunksRequested ?? 0,
+    resourceChunksResolved: diag?.resourceChunksResolved ?? 0,
+    resourceChunksDecoded: diag?.resourceChunksDecoded ?? 0,
+    resourceChunksRendered: diag?.resourceChunksRendered ?? 0,
+    resourceChunksPlaceholder: diag?.resourceChunksPlaceholder ?? 0,
+    promotionDecision,
+    hasPreviousCache: previousIndex !== null,
+    preservedFailedStagingPath,
+    coverageHealth: covDiag?.coverageHealth ?? null,
+    lastPhase: lastProgress?.phase ?? null,
+    concurrency,
+    lastRatePagesPerSecond: lastProgress?.ratePagesPerSecond ?? null,
+    lastEstimatedRemainingMs: lastProgress?.estimatedRemainingMs ?? null,
+    lastActiveWorkerCount: lastProgress?.activeWorkerCount ?? null,
+    lastQueuedPageCount: lastProgress?.queuedPageCount ?? null,
+    directJsonAttemptedPageCount: lastProgress?.directJsonAttemptedPageCount ?? null,
+    browserAttemptedPageCount: lastProgress?.browserAttemptedPageCount ?? null,
+    lastCurrentUrls: lastProgress?.currentUrls ?? null,
+    latestProgress: lastProgress ? {
+      phase: lastProgress.phase,
+      elapsedMs: lastProgress.elapsedMs,
+      estimatedRemainingMs: lastProgress.estimatedRemainingMs,
+      ratePagesPerSecond: lastProgress.ratePagesPerSecond,
+      savedPageCount: lastProgress.savedPageCount,
+      failedPageCount: lastProgress.failedPageCount,
+      attemptedPageCount: lastProgress.attemptedPageCount,
+      directJsonAttemptedPageCount: lastProgress.directJsonAttemptedPageCount,
+      browserAttemptedPageCount: lastProgress.browserAttemptedPageCount,
+      queuedPageCount: lastProgress.queuedPageCount,
+      activeWorkerCount: lastProgress.activeWorkerCount,
+      concurrency: lastProgress.concurrency,
+      currentUrls: lastProgress.currentUrls,
+      targetPageCount: lastProgress.targetPageCount
+    } : null
+  };
+}
+
+function buildPromotionFailureError(
+  originalError: unknown,
+  index: MaterialIndex | null,
+  previousIndex: MaterialIndex | null,
+  preservedStagingPath: string | null,
+  logFile?: string,
+  diagnosticsFile?: string,
+  lastProgress?: CrawlProgress | null
+): Error {
+  const base = originalError instanceof Error ? originalError.message : String(originalError);
+  const hasPreviousCache = previousIndex !== null;
+  const cacheStatus = hasPreviousCache
+    ? 'The previous cache has been left unchanged.'
+    : 'No previous cache exists; no cache is available.';
+
+  let progressContext = '';
+  if (lastProgress) {
+    const elapsed = formatDurationMs(lastProgress.elapsedMs);
+    const etaStr = lastProgress.estimatedRemainingMs !== null
+      ? `eta=${formatDurationMs(lastProgress.estimatedRemainingMs)}`
+      : 'eta=unknown';
+    progressContext = `\nFailed at: phase=${lastProgress.phase} elapsed=${elapsed} ${etaStr} active=${lastProgress.activeWorkerCount} queued=${lastProgress.queuedPageCount}`;
+  }
+
+  let diagnostics = '';
+  if (index !== null) {
+    const failed = index.failedPageCount;
+    const attempted = index.attemptedPageCount;
+    const saved = index.pageCount;
+    const failedPct = attempted > 0 ? ((failed / attempted) * 100).toFixed(1) : '0.0';
+    const allowedPct = (DEFAULT_MAX_FAILED_PAGE_RATIO * 100).toFixed(0);
+    const failedRoutes = index.failedUrls ?? [];
+    const coreSpecsFailures = failedRoutes.filter((u) => u.includes('/specs')).length;
+    const cacheKept = previousIndex !== null ? 'yes (previous cache unchanged)' : 'no (no previous cache existed)';
+
+    const parts: string[] = [
+      `Attempted: ${attempted} | Saved: ${saved} | Failed: ${failed} (${failedPct}%) | Allowed failure rate: ${allowedPct}%`,
+      `Existing cache kept: ${cacheKept}`,
+    ];
+    if (coreSpecsFailures > 0) parts.push(`Core specs failures (*/specs routes): ${coreSpecsFailures}`);
+    if (failedRoutes.length > 0 && failedRoutes.length <= 20) {
+      parts.push(`Failed routes:\n  ${failedRoutes.join('\n  ')}`);
+    } else if (failedRoutes.length > 20) {
+      parts.push(`Failed routes (first 20 of ${failedRoutes.length}):\n  ${failedRoutes.slice(0, 20).join('\n  ')}`);
+    }
+    diagnostics = `\n${parts.join('\n')}`;
+  }
+
+  const stagingNote = preservedStagingPath
+    ? `\nFailed staging output preserved at: ${preservedStagingPath}`
+    : '';
+
+  const logNote = logFile ? `\nUpdate log: ${logFile}` : '';
+  const diagNote = diagnosticsFile ? `\nDiagnostics: ${diagnosticsFile}` : '';
+
+  // Strip the generic "Keeping the existing cache." so we can append the correct message.
+  const cleanedBase = base.replace(/\s*Keeping the existing cache\.\s*$/, '').trim();
+  return new Error(`${cleanedBase}\n${cacheStatus}${progressContext}${diagnostics}${stagingNote}${logNote}${diagNote}`);
 }
 
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
@@ -776,10 +1099,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const maxPages = options.maxPages ?? 250;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
   const signal = options.signal;
+  const includeBlog = options.includeBlog ?? false;
   const startedAt = new Date().toISOString();
   const currentUrls = new Map<number, string>();
+  const directJsonActiveUrls = new Set<string>();
   let lastSavedUrl: string | null = null;
   let lastFailedUrl: string | null = null;
+  let crawlPhase: CrawlPhase = 'discovering';
+  let knownTargetPageCount: number | null = null;
   throwIfAborted(signal);
 
   const reusableBlogPages = buildReusableBlogPageMap(previousIndex);
@@ -805,27 +1132,50 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const angularRoutePublicDocPaths = new Set<string>();
   const previousCacheRoutePublicDocPaths = new Set<string>();
   const acceptedPublicDocPaths = new Set<string>();
+  const policySkippedDocPaths = new Set<string>();
   const waiters: Array<() => void> = [];
   let activeWorkers = 0;
   let aborted = false;
   let dsdbAttemptedCount = 0;
   const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
+  const verbose = options.verbose ?? false;
+  const logError = (msg: string): void => { options.onBeforeLog?.(); console.error(msg); };
+  const logVerbose = (msg: string): void => { if (verbose) { options.onBeforeLog?.(); console.error(msg); } };
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
+    const nowMs = Date.now();
+    const startMs = Date.parse(startedAt);
+    const elapsedMs = Math.max(0, nowMs - startMs);
+    const processedPageCount = pages.length + failedUrls.length;
+    const eta = knownTargetPageCount !== null
+      ? computeEta(processedPageCount, knownTargetPageCount, elapsedMs)
+      : null;
     const completedAt = running ? null : new Date().toISOString();
+    const activeCount = crawlPhase === 'direct-json' ? directJsonActiveUrls.size : activeWorkers;
+    const activeUrlsList = crawlPhase === 'direct-json'
+      ? Array.from(directJsonActiveUrls).sort()
+      : Array.from(currentUrls.values()).sort();
     const progress: CrawlProgress = {
+      phase: running ? crawlPhase : (error ? crawlPhase : 'complete'),
       startedAt,
       updatedAt: new Date().toISOString(),
       completedAt,
       running,
       maxPages,
       concurrency,
+      elapsedMs,
+      processedPageCount,
+      targetPageCount: knownTargetPageCount,
       attemptedPageCount: dsdbAttemptedCount + seen.size,
+      directJsonAttemptedPageCount: dsdbAttemptedCount,
+      browserAttemptedPageCount: seen.size,
       savedPageCount: pages.length,
       failedPageCount: failedUrls.length,
       queuedPageCount: queue.length,
-      activeWorkerCount: activeWorkers,
-      currentUrls: Array.from(currentUrls.values()).sort(),
+      activeWorkerCount: activeCount,
+      ratePagesPerSecond: eta?.ratePagesPerSecond ?? null,
+      estimatedRemainingMs: eta?.estimatedRemainingMs ?? null,
+      currentUrls: activeUrlsList,
       lastSavedUrl,
       lastFailedUrl,
       error
@@ -878,11 +1228,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     statusTablesRenderedAsPlaceholder = 0,
     unsupportedStatusTableSchemaCount = 0,
     statusTableDiagnostics = [],
+    tokenTablesResolved = 0,
+    tokenTablesDecoded = 0,
+    tokenTablesRenderedAsPlaceholder = 0,
+    tokenTablesUnsupportedSchema = 0,
+    statusTablesDecoded = 0,
+    resourceChunksRequested = 0,
+    resourceChunksResolved = 0,
+    resourceChunksDecoded = 0,
+    resourceChunksRendered = 0,
+    resourceChunksPlaceholder = 0,
     missingRequestedTokenSets = [],
     unknownJsonResourceCount = 0,
     capturedJsonResponseCounts = {},
-    rawJsonDebugFilesWritten = 0
-    ,
+    rawJsonDebugFilesWritten = 0,
     routeMetadataWarnings = [],
     candidateSelectionReasons = []
   }: {
@@ -903,12 +1262,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables?: number;
     tokenTablesRendered?: number;
     tokenTablesRequested?: number;
+    tokenTablesResolved?: number;
+    tokenTablesDecoded?: number;
+    tokenTablesRenderedAsPlaceholder?: number;
+    tokenTablesUnsupportedSchema?: number;
     tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
     statusTablesRequested?: number;
     statusTablesResolved?: number;
+    statusTablesDecoded?: number;
     statusTablesRenderedAsPlaceholder?: number;
     unsupportedStatusTableSchemaCount?: number;
     statusTableDiagnostics?: ExtractionRouteDiagnostic['statusTableDiagnostics'];
+    resourceChunksRequested?: number;
+    resourceChunksResolved?: number;
+    resourceChunksDecoded?: number;
+    resourceChunksRendered?: number;
+    resourceChunksPlaceholder?: number;
     missingRequestedTokenSets?: string[];
     unknownJsonResourceCount?: number;
     capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -938,12 +1307,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables,
     tokenTablesRendered,
     tokenTablesRequested,
+    tokenTablesResolved,
+    tokenTablesDecoded,
+    tokenTablesRenderedAsPlaceholder,
+    tokenTablesUnsupportedSchema,
     tokenContextDiagnostics,
     statusTablesRequested,
     statusTablesResolved,
+    statusTablesDecoded,
     statusTablesRenderedAsPlaceholder,
     unsupportedStatusTableSchemaCount,
     statusTableDiagnostics,
+    resourceChunksRequested,
+    resourceChunksResolved,
+    resourceChunksDecoded,
+    resourceChunksRendered,
+    resourceChunksPlaceholder,
     missingRequestedTokenSets,
     unknownJsonResourceCount,
     capturedJsonResponseCounts,
@@ -953,6 +1332,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   });
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
+  emitProgress(true);
   const jsonExtractedSlugs = new Set<string>();
   {
     if (typeof fetch === 'function') {
@@ -972,20 +1352,24 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
     } catch (err) {
       if (signal?.aborted) throw err;
-      console.error(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
+      logError(`DSDB config fetch failed, falling back to browser-only crawl: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     if (dsdbConfig) {
       addDiscoveredPaths(dsdbConfig.routes.map((route) => normalizeMaterialPublicDocPath(`/${route.slug}`, baseUrl)).filter((value): value is string => Boolean(value)), angularRoutePublicDocPaths);
       const capturedAt = new Date().toISOString();
-      const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
       const routes = dsdbConfig.routes;
-      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += dsdbBatchSize) {
+      knownTargetPageCount = Math.min(maxPages, routes.length);
+      crawlPhase = 'direct-json';
+      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += concurrency) {
         throwIfAborted(signal);
-        const batch = routes.slice(i, i + dsdbBatchSize);
+        const batch = routes.slice(i, i + concurrency);
         await Promise.all(batch.map(async (route) => {
           if (pages.length >= maxPages || signal?.aborted) return;
           dsdbAttemptedCount += 1;
+          const routeUrl = new URL(`/${route.slug}`, baseUrl).toString();
+          directJsonActiveUrls.add(routeUrl);
+          emitProgress(true);
           try {
             throwIfAborted(signal);
             const bundle = await fetchJsonPageBundle(baseUrl, dsdbConfig!.carbonVersion, {
@@ -1000,7 +1384,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             if (!bundle.pageData && !bundle.contentPage) {
               jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
               recordRouteDiagnostic(createRouteDiagnostic({
-                url: new URL(`/${route.slug}`, baseUrl).toString(),
+                url: routeUrl,
                 path: routePath,
                 sourceUsed: 'failed',
                 finalMethod: null,
@@ -1010,7 +1394,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               return;
             }
             const extraction = await extractContentPageToMaterialPage({
-              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              url: routeUrl,
               pageData: bundle.pageData,
               contentPage: bundle.contentPage,
               capturedAt,
@@ -1030,14 +1414,23 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
+                tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+                tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+                tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
                 tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
                 statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
                 statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
                 unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
                 statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
-                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
-                ,
+                resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+                resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+                resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+                resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+                resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
                 routeMetadataWarnings: route.metadataWarnings ?? []
               }));
               return;
@@ -1060,12 +1453,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
+                tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+                tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+                tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
                 tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
                 statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
                 statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
                 unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
                 statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+                resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+                resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+                resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+                resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+                resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
                 rawJsonDebugFilesWritten,
                 routeMetadataWarnings: route.metadataWarnings ?? [],
@@ -1081,14 +1484,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             if (signal?.aborted) return;
             jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
             recordRouteDiagnostic(createRouteDiagnostic({
-              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              url: routeUrl,
               path: routePathFromSlug(route.slug),
               sourceUsed: 'failed',
               finalMethod: null,
               directJsonAttempted: true,
               fallbackReasons: ['json-fetch-failed']
             }));
-            console.error(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+            logVerbose(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          } finally {
+            directJsonActiveUrls.delete(routeUrl);
+            emitProgress(true);
           }
         }));
       }
@@ -1113,6 +1519,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
   if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+    crawlPhase = 'browser-crawl';
+    knownTargetPageCount = maxPages;
     let browser: Browser | null = null;
     try {
       browser = await launchChromium(options.headless ?? true);
@@ -1161,6 +1569,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   }
 
+  crawlPhase = 'finalizing';
   const capturedAt = new Date().toISOString();
   for (const diagnostic of routeDiagnosticsByPath.values()) pushRouteDiagnostic(extractionDiagnostics, diagnostic);
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);
@@ -1170,18 +1579,35 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.renderedNavUrlCount = renderedNavPublicDocPaths.size;
   coverageDiagnostics.angularRouteHintCount = angularRoutePublicDocPaths.size;
   coverageDiagnostics.previousCacheRouteHintCount = previousCacheRoutePublicDocPaths.size;
-  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath)).sort();
+  coverageDiagnostics.includeBlog = includeBlog;
+  coverageDiagnostics.crawlPriorityPolicyVersion = CRAWL_PRIORITY_POLICY_VERSION;
+  const skippedByPolicyUrls = Array.from(policySkippedDocPaths).sort(compareMaterialRoutePriority);
+  const skippedBlogCount = skippedByPolicyUrls.filter((p) => isBlogPath(p)).length;
+  coverageDiagnostics.skippedByPolicyCount = policySkippedDocPaths.size;
+  coverageDiagnostics.skippedBlogCount = skippedBlogCount;
+  coverageDiagnostics.skippedByPolicyUrls = skippedByPolicyUrls;
+  if (skippedBlogCount > 0) {
+    logError(`[crawl-priority] Skipped ${skippedBlogCount} blog route(s) by policy (use --include-blog to include them).`);
+  }
+  // Uncrawled = discovered - accepted - intentionally skipped by policy
+  const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath) && !policySkippedDocPaths.has(docPath)).sort();
   coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
   coverageDiagnostics.uncrawledDiscoveredUrlCount = uncrawledDiscoveredUrls.length;
   coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath) && isDsdbCoveredPath(docPath.replace(/^\/+/, ''), jsonExtractedSlugs)).length;
   coverageDiagnostics.skippedBecauseMaxPagesCount = pages.length >= maxPages ? uncrawledDiscoveredUrls.length : 0;
+  if (policySkippedDocPaths.size > 0) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-policy-skip:blog=${skippedBlogCount}:total=${policySkippedDocPaths.size}:includeBlog=${includeBlog}`);
+  }
+  // For gap/regression checks, treat policy-skipped routes as effectively covered
+  const effectiveDiscovered = coverageDiagnostics.discoveredPublicUrlCount;
+  const effectiveAccepted = coverageDiagnostics.acceptedPageCount + policySkippedDocPaths.size;
   if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
     coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
   }
   if (coverageDiagnostics.skippedBecauseMaxPagesCount > 0) {
     coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${coverageDiagnostics.skippedBecauseMaxPagesCount}`);
   }
-  if (hasSignificantCoverageGap(coverageDiagnostics.discoveredPublicUrlCount, coverageDiagnostics.acceptedPageCount)) {
+  if (hasSignificantCoverageGap(effectiveDiscovered, effectiveAccepted)) {
     coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
   }
   const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
@@ -1207,6 +1633,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
+  crawlPhase = 'promoting';
+  emitProgress(true);
   emitProgress(false);
   return index;
 
@@ -1236,7 +1664,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         failedUrls.push(url);
         lastFailedUrl = url;
         emitProgress(true);
-        console.error(`Failed to crawl ${url}:`, error instanceof Error ? error.message : String(error));
+        logVerbose(`Failed to crawl ${url}: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         activeWorkers -= 1;
         currentUrls.delete(workerIndex);
@@ -1350,7 +1778,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         failedUrls.push(url);
         lastFailedUrl = url;
         emitProgress(true);
-        console.error(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
+        logVerbose(`Rejected crawled ${url}: ${error.rejectedRoute.reason}`);
         return;
       }
       throw error;
@@ -1405,12 +1833,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTables: networkExtraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
           tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+          tokenTablesResolved: networkExtraction.pageDiagnostic.tokenTablesResolved ?? 0,
+          tokenTablesDecoded: networkExtraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+          tokenTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+          tokenTablesUnsupportedSchema: networkExtraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
           tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
           statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
           statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+          statusTablesDecoded: networkExtraction.pageDiagnostic.statusTablesDecoded ?? 0,
           statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
           unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
           statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
+          resourceChunksRequested: networkExtraction.pageDiagnostic.resourceChunksRequested ?? 0,
+          resourceChunksResolved: networkExtraction.pageDiagnostic.resourceChunksResolved ?? 0,
+          resourceChunksDecoded: networkExtraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+          resourceChunksRendered: networkExtraction.pageDiagnostic.resourceChunksRendered ?? 0,
+          resourceChunksPlaceholder: networkExtraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
           missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
           unknownJsonResourceCount,
           capturedJsonResponseCounts,
@@ -1516,7 +1954,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       failedUrls.push(url);
       lastFailedUrl = url;
       emitProgress(true);
-      console.error(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
+      logVerbose(`Rejected crawled ${url}: ${suspiciousResult.reason}`);
       return;
     }
     if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
@@ -1631,11 +2069,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   function enqueue(raw: string): void {
     const link = normalizeMaterialCrawlUrl(raw, baseUrl);
     if (!link || seen.has(link) || queued.has(link)) return;
-    const linkPath = new URL(link).pathname.replace(/^\/+|\/+$/g, '');
+    const linkPathname = new URL(link).pathname;
+    const linkPath = linkPathname.replace(/^\/+|\/+$/g, '');
+    if (!includeBlog && isBlogPath(linkPathname)) {
+      const docPath = `/${linkPath}`;
+      policySkippedDocPaths.add(docPath);
+      return;
+    }
     if (isDsdbCoveredPath(linkPath, jsonExtractedSlugs)) return;
     if (queue.length + seen.size >= maxPages * MAX_DISCOVERED_LINK_FACTOR) return;
     queue.push(link);
-    queue.sort(compareMaterialCrawlPriority);
+    queue.sort(compareMaterialCrawlUrlPriority);
     queued.add(link);
     emitProgress(true);
     wakeWorkers();
@@ -1699,21 +2143,6 @@ async function extractBlogListingYears(page: Page, baseUrl: string): Promise<Arr
   }, origin);
 }
 
-function compareMaterialCrawlPriority(a: string, b: string): number {
-  return materialCrawlPriority(a) - materialCrawlPriority(b) || a.localeCompare(b);
-}
-
-function materialCrawlPriority(url: string): number {
-  const path = new URL(url).pathname;
-  if (path === '/') return 0;
-  if (path.startsWith('/get-started')) return 1;
-  if (path.startsWith('/components')) return 2;
-  if (path.startsWith('/foundations')) return 3;
-  if (path.startsWith('/styles')) return 4;
-  if (path.startsWith('/develop')) return 5;
-  if (path.startsWith('/blog')) return 6;
-  return 7;
-}
 
 function duplicateContentGroups(pages: MaterialPage[]): DuplicateContentGroup[] {
   const groups = new Map<string, MaterialPage[]>();

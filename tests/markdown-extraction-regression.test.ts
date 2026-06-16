@@ -41,7 +41,7 @@ function makeTokenSystem() {
             contextTags: [LIGHT_TAG, ANDROID_TAG, AUDIENCE_3P_TAG],
             referenceTree: {
               tokenName: 'md.comp.button.container.color',
-              childNodes: [{ tokenName: 'md.sys.color.primary', childNodes: [{ tokenName: 'md.ref.palette.primary40' }] }],
+              childNodes: [{ tokenName: 'md.sys.color.primary', childNodes: [{ tokenName: 'md.ref.palette.primary40', childNodes: [] }] }],
             },
             resolvedValue: { color: { red: 0.38, green: 0.0, blue: 0.93, alpha: 1 } },
           },
@@ -49,7 +49,7 @@ function makeTokenSystem() {
             contextTags: [DARK_TAG, ANDROID_TAG, AUDIENCE_3P_TAG],
             referenceTree: {
               tokenName: 'md.comp.button.container.color',
-              childNodes: [{ tokenName: 'md.sys.color.primary', childNodes: [{ tokenName: 'md.ref.palette.primary80' }] }],
+              childNodes: [{ tokenName: 'md.sys.color.primary', childNodes: [{ tokenName: 'md.ref.palette.primary80', childNodes: [] }] }],
             },
             resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1, alpha: 1 } },
           },
