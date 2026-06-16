@@ -1,8 +1,29 @@
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
+import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
+
+const DiagnosticsDsdbFieldsSchema = z.object({
+  directJsonEnabled: z.boolean().nullish(),
+  browserOnlyFallback: z.boolean().nullish(),
+  directJsonDisabledReason: z.string().nullish(),
+  dsdbConfigSource: z.union([z.literal('bundle'), z.literal('browser-network')]).nullish(),
+  bundleDiscoveryFailed: z.boolean().nullish(),
+  networkRecoveryAttempted: z.boolean().nullish(),
+  networkRecoverySucceeded: z.boolean().nullish()
+}).passthrough();
+
+async function readDsdbFieldsFromDiagnostics(diagPath: string): Promise<z.output<typeof DiagnosticsDsdbFieldsSchema> | null> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(diagPath, 'utf8'));
+    const result = DiagnosticsDsdbFieldsSchema.safeParse(raw);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
 
 async function pathIfExists(filePath: string): Promise<string | null> {
   try {
@@ -127,9 +148,11 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
   const index = await readIndex(cacheDir);
   const ageMs = await cacheAgeMs(cacheDir);
   const coverageHealth = index?.coverageDiagnostics?.coverageHealth;
-  const [latestLogFile, latestDiagnosticsFile] = await Promise.all([
+  const diagPath = latestDiagnosticsPath(cacheDir);
+  const [latestLogFile, latestDiagnosticsFile, dsdbFields] = await Promise.all([
     pathIfExists(latestLogPath(cacheDir)),
-    pathIfExists(latestDiagnosticsPath(cacheDir))
+    pathIfExists(diagPath),
+    readDsdbFieldsFromDiagnostics(diagPath)
   ]);
   return {
     cacheDir,
@@ -145,7 +168,14 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
     ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
     latestLogFile,
-    latestDiagnosticsFile
+    latestDiagnosticsFile,
+    ...(dsdbFields?.directJsonEnabled != null ? { directJsonEnabled: dsdbFields.directJsonEnabled } : {}),
+    ...(dsdbFields?.browserOnlyFallback != null ? { browserOnlyFallback: dsdbFields.browserOnlyFallback } : {}),
+    ...(dsdbFields?.directJsonDisabledReason != null ? { directJsonDisabledReason: dsdbFields.directJsonDisabledReason } : {}),
+    ...(dsdbFields?.dsdbConfigSource != null ? { dsdbConfigSource: dsdbFields.dsdbConfigSource } : {}),
+    ...(dsdbFields?.bundleDiscoveryFailed != null ? { bundleDiscoveryFailed: dsdbFields.bundleDiscoveryFailed } : {}),
+    ...(dsdbFields?.networkRecoveryAttempted != null ? { networkRecoveryAttempted: dsdbFields.networkRecoveryAttempted } : {}),
+    ...(dsdbFields?.networkRecoverySucceeded != null ? { networkRecoverySucceeded: dsdbFields.networkRecoverySucceeded } : {})
   };
 }
 

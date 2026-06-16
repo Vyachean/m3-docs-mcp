@@ -272,6 +272,8 @@ export type MaterialIndex = {
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
+export type DsdbConfigSource = 'bundle' | 'browser-network' | null;
+
 export type CacheStatus = {
   cacheDir: string;
   hasCache: boolean;
@@ -287,6 +289,13 @@ export type CacheStatus = {
   coverageDiagnostics?: CoverageDiagnostics;
   latestLogFile: string | null;
   latestDiagnosticsFile: string | null;
+  directJsonEnabled?: boolean;
+  browserOnlyFallback?: boolean;
+  directJsonDisabledReason?: string;
+  dsdbConfigSource?: DsdbConfigSource;
+  bundleDiscoveryFailed?: boolean;
+  networkRecoveryAttempted?: boolean;
+  networkRecoverySucceeded?: boolean;
 };
 
 export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';

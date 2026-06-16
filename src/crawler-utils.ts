@@ -21,6 +21,10 @@ export function normalizeMaterialUrl(raw: string, baseUrl: string): string | nul
     url.hash = '';
     url.search = '';
     if (SKIP_EXTENSIONS.test(url.pathname)) return null;
+    // Canonicalize /m3/pages/... aliases to their public doc paths
+    if (url.pathname.startsWith('/m3/pages/')) {
+      url.pathname = url.pathname.slice('/m3/pages'.length);
+    }
     return url.toString().replace(/\/$/, '');
   } catch {
     return null;

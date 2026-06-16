@@ -48,6 +48,14 @@ export type UpdateRunDiagnostics = {
   browserAttemptedPageCount?: number | null;
   lastCurrentUrls?: string[] | null;
   latestProgress?: ProgressSnapshot | null;
+  directJsonEnabled?: boolean | null;
+  browserOnlyFallback?: boolean | null;
+  directJsonDisabledReason?: string | null;
+  dsdbConfigSource?: 'bundle' | 'browser-network' | null;
+  bundleDiscoveryFailed?: boolean | null;
+  networkRecoveryAttempted?: boolean | null;
+  networkRecoverySucceeded?: boolean | null;
+  networkRecoveryFailureReason?: string | null;
 };
 
 export type ProgressSnapshot = {
@@ -154,6 +162,11 @@ export class UpdateLogger {
 
   async flush(): Promise<void> {
     await this.writeQueue;
+  }
+
+  async writeIntermediateDiagnostics(partial: Partial<UpdateRunDiagnostics>): Promise<void> {
+    const content = JSON.stringify({ ...partial, runId: this.runId, cacheDir: this.cacheDir, logFile: this.logFile, finishedAt: null }, null, 2);
+    await writeFile(this.diagnosticsFile, `${content}\n`, 'utf8').catch(() => undefined);
   }
 
   async writeFinalDiagnostics(diag: UpdateRunDiagnostics): Promise<void> {

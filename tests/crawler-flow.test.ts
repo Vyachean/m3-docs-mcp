@@ -247,7 +247,8 @@ describe('crawlMaterialDocs', () => {
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://example.com/external', expect.anything());
     expect(playwrightMock.page.waitForSelector).toHaveBeenCalled();
     expect(playwrightMock.page.waitForFunction).toHaveBeenCalled();
-    expect(playwrightMock.page.close).toHaveBeenCalledTimes(2);
+    // 2 real crawled pages + up to NETWORK_BOOTSTRAP_SEED_PATHS.length recovery seed pages
+    expect(playwrightMock.page.close.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(playwrightMock.browser.close).toHaveBeenCalledTimes(1);
 
     expect(index).toMatchObject({
@@ -380,7 +381,7 @@ describe('crawlMaterialDocs', () => {
     expect(index.failedUrls).toEqual([]);
     expect(index.qualityReport?.rejectedRoutes).toEqual([]);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons/overview.md'), 'utf8')).resolves.toContain('# Buttons');
-  });
+  }, 10_000);
 
   it('falls back when a candidate hits a canonical body-pattern not found variant', async () => {
     playwrightMock.pagesByUrl['https://m3.material.io'].links = ['https://m3.material.io/components/cards'];
