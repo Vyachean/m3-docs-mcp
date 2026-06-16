@@ -5,6 +5,17 @@ import { extractContentPageToMaterialPage } from '../src/json-extraction/extract
 import { parseStatusTable, decodeStatusTableResource } from '../src/json-extraction/schemas.js';
 import type { ExtractionPageDiagnostic } from '../src/types.js';
 
+// Routes observed failing in the wild with: Cannot read properties of undefined (reading 'slice')
+const FAILING_SPECS_ROUTES = [
+  'https://m3.material.io/components/app-bars/specs',
+  'https://m3.material.io/components/badges/specs',
+  'https://m3.material.io/components/bottom-sheets/specs',
+  'https://m3.material.io/components/button-groups/specs',
+  'https://m3.material.io/components/buttons/specs',
+  'https://m3.material.io/components/cards/specs',
+  'https://m3.material.io/components/carousel/specs',
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function emptyPageDiagnostic(): ExtractionPageDiagnostic {
@@ -1224,5 +1235,207 @@ describe('extractContentPageToMaterialPage – malformed token/status resources'
     expect(result.pageDiagnostic.statusTablesRequested).toBe(1);
     expect(result.pageDiagnostic.statusTablesResolved).toBe(1);
     expect(result.pageDiagnostic.unsupportedStatusTableSchemaCount).toBe(1);
+  });
+});
+
+// ─── Regression: specs page .slice crash ─────────────────────────────────────
+//
+// The crawler extracted the design-system-data attribute from token-viewer elements
+// and passed raw JSON directly to renderTokenTableWithDiagnostics without zod
+// normalization. Real-world specs pages can have contextTags: null inside
+// contextualReferenceTree entries, causing `undefined.slice()` to throw.
+//
+// These tests verify that the extraction path is tolerant of those shapes and
+// produces structured output (tokens or placeholders) instead of throwing.
+
+describe('specs page regression – contextTags: null in raw design-system-data', () => {
+  // Represents the shape of `design-system-data` attribute JSON from a specs page.
+  // The `contextTags` field may be null instead of [] in real-world payloads.
+  function makeSpecsSystemWithNullContextTags() {
+    return {
+      system: {
+        tokens: [
+          {
+            name: 'designSystems/ds/tokenSets/ts/tokens/tok1',
+            tokenName: 'md.comp.button.container.color',
+            displayName: 'Container color',
+            tokenValueType: 'COLOR',
+            state: 'ACTIVE',
+          },
+        ],
+        tokenSets: [{ name: 'designSystems/ds/tokenSets/ts', displayName: 'Button - Common', tokenSetName: 'md.comp.button' }],
+        tags: [
+          { name: 'ds/tags/light', displayName: 'Light', tagName: 'light' },
+          { name: 'ds/tags/dark', displayName: 'Dark', tagName: 'dark' },
+        ],
+        contextTagGroups: [],
+        contextualReferenceTrees: {
+          'designSystems/ds/tokenSets/ts/tokens/tok1': {
+            contextualReferenceTree: [
+              // contextTags is null — the exact shape that caused the .slice crash
+              {
+                contextTags: null,
+                referenceTree: { tokenName: 'md.comp.button.container.color', childNodes: [] },
+                resolvedValue: { color: { red: 0.38, green: 0.0, blue: 0.93, alpha: 1 } },
+              },
+              {
+                contextTags: null,
+                referenceTree: { tokenName: 'md.comp.button.container.color', childNodes: [] },
+                resolvedValue: { color: { red: 0.82, green: 0.68, blue: 1, alpha: 1 } },
+              },
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  it('normalizeTokenTableSystem does not throw when contextTags is null', () => {
+    const raw = makeSpecsSystemWithNullContextTags();
+    expect(() => normalizeTokenTableSystem(raw.system)).not.toThrow();
+  });
+
+  it('normalizeTokenTableSystem normalizes null contextTags to empty array', () => {
+    const raw = makeSpecsSystemWithNullContextTags();
+    const system = normalizeTokenTableSystem(raw.system);
+    expect(system).not.toBeNull();
+    const tree = system!.contextualReferenceTrees['designSystems/ds/tokenSets/ts/tokens/tok1'];
+    expect(tree).toBeDefined();
+    // Each entry must have contextTags as [] after normalization, never null/undefined
+    for (const entry of tree!.contextualReferenceTree) {
+      expect(Array.isArray(entry.contextTags)).toBe(true);
+    }
+  });
+
+  it('renderTokenTableWithDiagnostics does not throw when raw system had contextTags: null', () => {
+    const raw = makeSpecsSystemWithNullContextTags();
+    const system = normalizeTokenTableSystem(raw.system)!;
+    expect(() => renderTokenTableWithDiagnostics(system, ['Button - Common'])).not.toThrow();
+  });
+
+  it('renderTokenTableWithDiagnostics returns string (not throws) – regression for undefined.slice', () => {
+    const raw = makeSpecsSystemWithNullContextTags();
+    const system = normalizeTokenTableSystem(raw.system)!;
+    const { markdown } = renderTokenTableWithDiagnostics(system, ['Button - Common']);
+    expect(typeof markdown).toBe('string');
+  });
+
+  it.each(FAILING_SPECS_ROUTES)(
+    'extractContentPageToMaterialPage does not throw for %s with null contextTags in token resource',
+    async (url) => {
+      const rawSystem = makeSpecsSystemWithNullContextTags().system;
+      const contentPage = {
+        title: url.split('/').at(-2) ?? 'Component',
+        sections: [
+          {
+            name: 'Specifications',
+            contentBlocks: [
+              {
+                contentChunks: [
+                  {
+                    contentChunkType: 'RESOURCE',
+                    libraryModuleType: 'TOKEN_TABLE',
+                    resourceName: 'designSystems/ds/components/component',
+                    moduleConfiguration: { tokenSets: ['Button - Common'] },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+      const result = await extractContentPageToMaterialPage({
+        url,
+        pageData: null,
+        contentPage,
+        fetchResource: async () => ({ system: rawSystem }),
+      });
+      expect(typeof result.page.markdown).toBe('string');
+      // Must not throw; result is either tokens or a structured placeholder — never a raw TypeError
+    }
+  );
+});
+
+describe('specs page regression – contextTags: undefined in raw design-system-data', () => {
+  function makeSpecsSystemWithUndefinedContextTags() {
+    return {
+      system: {
+        tokens: [
+          {
+            name: 'designSystems/ds/tokenSets/ts/tokens/tok1',
+            tokenName: 'md.comp.card.container.color',
+            displayName: 'Card container color',
+            tokenValueType: 'COLOR',
+            state: 'ACTIVE',
+          },
+        ],
+        tokenSets: [{ name: 'designSystems/ds/tokenSets/ts', displayName: 'Card - Common', tokenSetName: 'md.comp.card' }],
+        tags: [],
+        contextTagGroups: [],
+        contextualReferenceTrees: {
+          'designSystems/ds/tokenSets/ts/tokens/tok1': {
+            // The whole contextualReferenceTree array is present but entries have no contextTags field
+            contextualReferenceTree: [
+              {
+                referenceTree: { tokenName: 'md.comp.card.container.color', childNodes: [] },
+                resolvedValue: { color: { red: 1, green: 1, blue: 1, alpha: 1 } },
+              },
+            ],
+          },
+        },
+      },
+    };
+  }
+
+  it('normalizeTokenTableSystem handles missing contextTags field (normalizes to [])', () => {
+    const raw = makeSpecsSystemWithUndefinedContextTags();
+    const system = normalizeTokenTableSystem(raw.system);
+    expect(system).not.toBeNull();
+    const tree = system!.contextualReferenceTrees['designSystems/ds/tokenSets/ts/tokens/tok1'];
+    const entry = tree!.contextualReferenceTree[0]!;
+    expect(Array.isArray(entry.contextTags)).toBe(true);
+  });
+
+  it('renderTokenTableWithDiagnostics does not throw when contextTags field was absent', () => {
+    const raw = makeSpecsSystemWithUndefinedContextTags();
+    const system = normalizeTokenTableSystem(raw.system)!;
+    expect(() => renderTokenTableWithDiagnostics(system, ['Card - Common'])).not.toThrow();
+  });
+});
+
+describe('specs page regression – passing raw (un-normalized) system to normalizeTokenTableSystem', () => {
+  it('normalizeTokenTableSystem(raw.system) is safe for all real-world shapes with null contextTags', () => {
+    const shapes = [
+      // All entries have null contextTags
+      {
+        tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'T', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+        tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+        contextualReferenceTrees: {
+          'ds/ts/tok': {
+            contextualReferenceTree: [{ contextTags: null, referenceTree: { tokenName: 'md.tok' }, resolvedValue: {} }],
+          },
+        },
+      },
+      // Mixed null and valid contextTags in same tree
+      {
+        tokens: [{ name: 'ds/ts/tok', tokenName: 'md.tok', displayName: 'T', tokenValueType: 'COLOR', state: 'ACTIVE' }],
+        tokenSets: [{ name: 'ds/ts', displayName: 'Set', tokenSetName: 'md.set' }],
+        contextualReferenceTrees: {
+          'ds/ts/tok': {
+            contextualReferenceTree: [
+              { contextTags: null, referenceTree: { tokenName: 'md.tok' }, resolvedValue: {} },
+              { contextTags: ['ds/tags/light'], referenceTree: { tokenName: 'md.tok' }, resolvedValue: { v: 1 } },
+            ],
+          },
+        },
+      },
+    ];
+    for (const shape of shapes) {
+      expect(() => normalizeTokenTableSystem(shape)).not.toThrow();
+      const system = normalizeTokenTableSystem(shape);
+      if (system) {
+        expect(() => renderTokenTableWithDiagnostics(system, ['Set'])).not.toThrow();
+      }
+    }
   });
 });

@@ -5,7 +5,7 @@ import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
 
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
-const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
+export const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
 
 export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {

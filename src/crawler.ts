@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { DEFAULT_MAX_FAILED_PAGE_RATIO, assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
 import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
@@ -13,11 +13,15 @@ import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnost
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
-import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
+import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
 import type { CoverageDiagnostics, CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
@@ -377,7 +381,7 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
   });
   if (!tokenTableUrl) return undefined;
 
-  const rawData = await page.evaluate(async (url) => {
+  const rawData: unknown = await page.evaluate(async (url) => {
     try {
       const resp = await fetch(url);
       return resp.ok ? (resp.json() as Promise<unknown>) : null;
@@ -385,11 +389,9 @@ async function extractTokenSystem(page: Page, html: string): Promise<TokenTableS
       return null;
     }
   }, tokenTableUrl);
-  if (!rawData || typeof rawData !== 'object') return undefined;
 
-  const system = (rawData as { system?: unknown }).system;
-  if (!system || typeof system !== 'object') return undefined;
-  return system as TokenTableSystem;
+  const system: unknown = isRecord(rawData) ? rawData['system'] : undefined;
+  return normalizeTokenTableSystem(system) ?? undefined;
 }
 
 async function extract(page: Page, url: string): Promise<MaterialPage> {
@@ -449,8 +451,8 @@ async function extract(page: Page, url: string): Promise<MaterialPage> {
   if (content.tokenSystemJson) {
     try {
       const parsed: unknown = JSON.parse(content.tokenSystemJson);
-      const sys = (parsed as { system?: unknown })?.system;
-      if (sys && typeof sys === 'object') tokenSystem = sys as TokenTableSystem;
+      const sys: unknown = isRecord(parsed) ? parsed['system'] : undefined;
+      tokenSystem = normalizeTokenTableSystem(sys) ?? undefined;
     } catch { /* ignore */ }
   }
   if (!tokenSystem) {
@@ -764,17 +766,72 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
   const previousIndex = await readIndex(targetCacheDir);
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
+  let crawledIndex: MaterialIndex | null = null;
 
   try {
-    const index = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
-    assertValidIndex(index, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
-    assertSafeCachePromotion(index, previousIndex, { force: options.force });
+    crawledIndex = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
+    assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
+    assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
-    return index;
+    return crawledIndex;
   } catch (error) {
-    await rm(stagingCacheDir, { recursive: true, force: true });
-    throw error;
+    const failedStagingDir = `${targetCacheDir}.failed-staging`;
+    let preservedPath: string | null = null;
+    try {
+      await rm(failedStagingDir, { recursive: true, force: true });
+      await rename(stagingCacheDir, failedStagingDir);
+      preservedPath = failedStagingDir;
+    } catch {
+      await rm(stagingCacheDir, { recursive: true, force: true });
+    }
+    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath);
   }
+}
+
+function buildPromotionFailureError(
+  originalError: unknown,
+  index: MaterialIndex | null,
+  previousIndex: MaterialIndex | null,
+  preservedStagingPath: string | null
+): Error {
+  const base = originalError instanceof Error ? originalError.message : String(originalError);
+  // Replace the generic trailing phrase with a context-aware one
+  const hasPreviousCache = previousIndex !== null;
+  const cacheStatus = hasPreviousCache
+    ? 'The previous cache has been left unchanged.'
+    : 'No previous cache exists; no cache is available.';
+
+  let diagnostics = '';
+  if (index !== null) {
+    const failed = index.failedPageCount;
+    const attempted = index.attemptedPageCount;
+    const saved = index.pageCount;
+    const failedPct = attempted > 0 ? ((failed / attempted) * 100).toFixed(1) : '0.0';
+    const allowedPct = (DEFAULT_MAX_FAILED_PAGE_RATIO * 100).toFixed(0);
+    const failedRoutes = index.failedUrls ?? [];
+    const coreSpecsFailures = failedRoutes.filter((u) => u.includes('/specs')).length;
+    const cacheKept = previousIndex !== null ? 'yes (previous cache unchanged)' : 'no (no previous cache existed)';
+
+    const parts: string[] = [
+      `Attempted: ${attempted} | Saved: ${saved} | Failed: ${failed} (${failedPct}%) | Allowed failure rate: ${allowedPct}%`,
+      `Existing cache kept: ${cacheKept}`,
+    ];
+    if (coreSpecsFailures > 0) parts.push(`Core specs failures (*/specs routes): ${coreSpecsFailures}`);
+    if (failedRoutes.length > 0 && failedRoutes.length <= 20) {
+      parts.push(`Failed routes:\n  ${failedRoutes.join('\n  ')}`);
+    } else if (failedRoutes.length > 20) {
+      parts.push(`Failed routes (first 20 of ${failedRoutes.length}):\n  ${failedRoutes.slice(0, 20).join('\n  ')}`);
+    }
+    diagnostics = `\n${parts.join('\n')}`;
+  }
+
+  const stagingNote = preservedStagingPath
+    ? `\nFailed staging output preserved at: ${preservedStagingPath}`
+    : '';
+
+  // Strip the generic "Keeping the existing cache." so we can append the correct message.
+  const cleanedBase = base.replace(/\s*Keeping the existing cache\.\s*$/, '').trim();
+  return new Error(`${cleanedBase}\n${cacheStatus}${diagnostics}${stagingNote}`);
 }
 
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
@@ -1185,6 +1242,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.skippedByPolicyCount = policySkippedDocPaths.size;
   coverageDiagnostics.skippedBlogCount = skippedBlogCount;
   coverageDiagnostics.skippedByPolicyUrls = skippedByPolicyUrls;
+  if (skippedBlogCount > 0) {
+    console.error(`[crawl-priority] Skipped ${skippedBlogCount} blog route(s) by policy (use --include-blog to include them).`);
+  }
   // Uncrawled = discovered - accepted - intentionally skipped by policy
   const uncrawledDiscoveredUrls = Array.from(discoveredPublicDocPaths).filter((docPath) => !acceptedPublicDocPaths.has(docPath) && !policySkippedDocPaths.has(docPath)).sort();
   coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
@@ -1657,10 +1717,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const linkPath = linkPathname.replace(/^\/+|\/+$/g, '');
     if (!includeBlog && isBlogPath(linkPathname)) {
       const docPath = `/${linkPath}`;
-      if (!policySkippedDocPaths.has(docPath)) {
-        policySkippedDocPaths.add(docPath);
-        console.error(`[crawl-priority] Skipping blog route by policy: ${linkPathname}`);
-      }
+      policySkippedDocPaths.add(docPath);
       return;
     }
     if (isDsdbCoveredPath(linkPath, jsonExtractedSlugs)) return;
