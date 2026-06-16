@@ -417,8 +417,8 @@ describe('DSDB recovery integration', () => {
     });
 
     expect(index.pageCount).toBeGreaterThanOrEqual(1);
-    // direct-json phase must have been entered when recovery succeeded
-    expect(phases).toContain('direct-json');
+    // fetch-page-data phase must have been entered when recovery succeeded
+    expect(phases).toContain('fetch-page-data');
 
     const diagPath = path.join(cacheDir, 'diagnostics', 'latest-update.json');
     const raw = JSON.parse(await readFile(diagPath, 'utf8')) as Record<string, unknown>;

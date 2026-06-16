@@ -51,7 +51,9 @@ export type UpdateRunDiagnostics = {
   directJsonEnabled?: boolean | null;
   browserOnlyFallback?: boolean | null;
   directJsonDisabledReason?: string | null;
-  dsdbConfigSource?: 'bundle' | 'browser-network' | null;
+  dsdbConfigSource?: 'site-meta' | 'bundle' | 'browser-network' | null;
+  siteMetaFetched?: boolean | null;
+  siteMetaFailed?: boolean | null;
   bundleDiscoveryFailed?: boolean | null;
   networkRecoveryAttempted?: boolean | null;
   networkRecoverySucceeded?: boolean | null;

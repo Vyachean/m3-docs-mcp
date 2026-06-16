@@ -203,6 +203,16 @@ export type CoverageDiagnostics = {
   renderedNavUrlCount: number;
   angularRouteHintCount: number;
   previousCacheRouteHintCount: number;
+  /** Routes discovered from site_meta.js (primary source). */
+  siteMetaRouteCount?: number;
+  /** Public, non-redirect routes from site_meta. */
+  siteMetaPublicRouteCount?: number;
+  /** Private routes skipped from site_meta. */
+  siteMetaPrivateRouteCount?: number;
+  /** External-redirect routes skipped from site_meta. */
+  siteMetaRedirectRouteCount?: number;
+  /** Alias (other_routes) entries from site_meta. */
+  siteMetaAliasCount?: number;
   acceptedPageCount: number;
   uncrawledDiscoveredUrlCount: number;
   uncrawledDiscoveredUrls: string[];
@@ -272,7 +282,7 @@ export type MaterialIndex = {
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
-export type DsdbConfigSource = 'bundle' | 'browser-network' | null;
+export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;
 
 export type CacheStatus = {
   cacheDir: string;
@@ -293,13 +303,31 @@ export type CacheStatus = {
   browserOnlyFallback?: boolean;
   directJsonDisabledReason?: string;
   dsdbConfigSource?: DsdbConfigSource;
+  siteMetaFetched?: boolean;
+  siteMetaFailed?: boolean;
   bundleDiscoveryFailed?: boolean;
   networkRecoveryAttempted?: boolean;
   networkRecoverySucceeded?: boolean;
   networkRecoveryFailureReason?: string | null;
 };
 
-export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';
+export type CrawlPhase =
+  | 'fetch-shell'
+  | 'fetch-site-meta'
+  | 'enumerate-routes'
+  | 'fetch-page-data'
+  | 'fetch-carbon'
+  | 'extract-markdown'
+  | 'validate-cache'
+  | 'browser-network-recovery'
+  | 'browser-dom-fallback'
+  | 'promoting'
+  | 'complete'
+  // Legacy aliases kept for backwards compatibility with existing diagnostics/logs
+  | 'discovering'
+  | 'direct-json'
+  | 'browser-crawl'
+  | 'finalizing';
 
 export type CrawlProgress = {
   phase: CrawlPhase;

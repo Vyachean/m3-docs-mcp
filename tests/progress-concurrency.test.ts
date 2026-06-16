@@ -209,7 +209,7 @@ describe('progress phase reporting', () => {
     await rm(cacheDir, { recursive: true, force: true });
   });
 
-  it('emits discovering and direct-json phases via onProgress', async () => {
+  it('emits fetch-shell and fetch-page-data phases via onProgress', async () => {
     vi.stubGlobal('fetch', makeDsdbFetchStub());
 
     const { crawlMaterialDocs } = await import('../src/crawler.js');
@@ -223,8 +223,8 @@ describe('progress phase reporting', () => {
       onProgress: (p) => phases.push(p.phase)
     });
 
-    expect(phases).toContain('discovering');
-    expect(phases).toContain('direct-json');
+    expect(phases).toContain('fetch-shell');
+    expect(phases).toContain('fetch-page-data');
     expect(phases[phases.length - 1]).toBe('complete');
   }, 10_000);
 
@@ -489,7 +489,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: 3,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+        if (p.phase === 'fetch-page-data') activeCounts.push(p.activeWorkerCount);
       }
     });
 
@@ -509,7 +509,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: 3,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json' && p.currentUrls.length > 0) {
+        if (p.phase === 'fetch-page-data' && p.currentUrls.length > 0) {
           allCurrentUrls.push(p.currentUrls);
         }
       }
@@ -560,7 +560,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: requestedConcurrency,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+        if (p.phase === 'fetch-page-data') activeCounts.push(p.activeWorkerCount);
       }
     });
 

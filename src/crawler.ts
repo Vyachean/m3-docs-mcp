@@ -13,6 +13,7 @@ import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './js
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
+import { SiteMetaParseError, buildSiteMetaRouteDescriptors, fetchSiteMeta } from './json-extraction/fetch-site-meta.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
 import { computeEta, formatDurationMs } from './progress.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
@@ -1169,6 +1170,8 @@ function buildRunDiagnostics({
     directJsonEnabled: dsdbState?.directJsonEnabled ?? null,
     browserOnlyFallback: dsdbState ? (!dsdbState.directJsonEnabled && dsdbState.bundleDiscoveryFailed) : null,
     directJsonDisabledReason: dsdbState?.directJsonDisabledReason ?? null,
+    siteMetaFetched: dsdbState?.siteMetaFetched ?? null,
+    siteMetaFailed: dsdbState?.siteMetaFailed ?? null,
     bundleDiscoveryFailed: dsdbState?.bundleDiscoveryFailed ?? null,
     networkRecoveryAttempted: dsdbState?.networkRecoveryAttempted ?? null,
     networkRecoverySucceeded: dsdbState?.networkRecoverySucceeded ?? null,
@@ -1237,9 +1240,11 @@ function buildPromotionFailureError(
 }
 
 type DsdbDiscoveryState = {
-  dsdbConfigSource: 'bundle' | 'browser-network' | null;
+  dsdbConfigSource: 'site-meta' | 'bundle' | 'browser-network' | null;
   directJsonEnabled: boolean;
   directJsonDisabledReason: string | null;
+  siteMetaFetched: boolean;
+  siteMetaFailed: boolean;
   bundleDiscoveryFailed: boolean;
   networkRecoveryAttempted: boolean;
   networkRecoverySucceeded: boolean;
@@ -1257,14 +1262,16 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const directJsonActiveUrls = new Set<string>();
   let lastSavedUrl: string | null = null;
   let lastFailedUrl: string | null = null;
-  let crawlPhase: CrawlPhase = 'discovering';
+  let crawlPhase: CrawlPhase = 'fetch-shell';
   let knownTargetPageCount: number | null = null;
   throwIfAborted(signal);
 
   // DSDB discovery lifecycle state
-  let dsdbConfigSource: 'bundle' | 'browser-network' | null = null;
+  let dsdbConfigSource: 'site-meta' | 'bundle' | 'browser-network' | null = null;
   let directJsonEnabled = false;
   let directJsonDisabledReason: string | null = null;
+  let siteMetaFetched = false;
+  let siteMetaFailed = false;
   let bundleDiscoveryFailed = false;
   let networkRecoveryAttempted = false;
   let networkRecoverySucceeded = false;
@@ -1312,8 +1319,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       ? computeEta(processedPageCount, knownTargetPageCount, elapsedMs)
       : null;
     const completedAt = running ? null : new Date().toISOString();
-    const activeCount = crawlPhase === 'direct-json' ? directJsonActiveUrls.size : activeWorkers;
-    const activeUrlsList = crawlPhase === 'direct-json'
+    const isDirectJsonPhase = crawlPhase === 'fetch-page-data' || crawlPhase === 'direct-json';
+    const activeCount = isDirectJsonPhase ? directJsonActiveUrls.size : activeWorkers;
+    const activeUrlsList = isDirectJsonPhase
       ? Array.from(directJsonActiveUrls).sort()
       : Array.from(currentUrls.values()).sort();
     const progress: CrawlProgress = {
@@ -1492,10 +1500,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     ...(candidateSelectionReasons.length > 0 ? { candidateSelectionReasons } : {})
   });
 
-  // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
+  // ── Phase 1: fetch-shell + fetch-site-meta + enumerate-routes + fetch-page-data ──
   emitProgress(true);
   const jsonExtractedSlugs = new Set<string>();
   {
+    // fetch-shell: fetch the HTML landing page for link discovery
+    crawlPhase = 'fetch-shell';
+    emitProgress(true);
     if (typeof fetch === 'function') {
       try {
         const shellResponse = await fetch(baseUrl, { signal });
@@ -1507,44 +1518,173 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
     addDiscoveredPaths(await discoverSitemapDocPaths(baseUrl), sitemapPublicDocPaths);
 
-    let dsdbConfig: DsdbSiteConfig | null = null;
-    try {
-      throwIfAborted(signal);
-      logger?.log('info', 'dsdb-config:bundle-started', { phase: 'discovering', baseUrl });
-      dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
-      dsdbConfigSource = 'bundle';
-      directJsonEnabled = true;
-      logger?.log('info', 'dsdb-config:bundle-succeeded', {
-        phase: 'discovering',
-        carbonVersion: dsdbConfig.carbonVersion,
-        routeCount: dsdbConfig.routes.length
-      });
-    } catch (err) {
-      if (signal?.aborted) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      bundleDiscoveryFailed = true;
-      directJsonEnabled = false;
-      directJsonDisabledReason = reason;
-      logError(`DSDB config fetch failed, will attempt browser-network recovery: ${reason}`);
-      logger?.log('warn', 'dsdb-config:bundle-failed', {
-        phase: 'discovering',
-        reason,
-        networkRecoveryWillAttempt: true
-      });
-      await logger?.writeIntermediateDiagnostics({
-        promotionDecision: 'pending',
-        startedAt,
-        bundleDiscoveryFailed: true,
-        directJsonEnabled: false,
-        directJsonDisabledReason: reason,
-        dsdbConfigSource: null,
-        networkRecoveryAttempted: false,
-        networkRecoverySucceeded: false
-      });
+    // fetch-site-meta: primary route discovery from /site_meta.js
+    crawlPhase = 'fetch-site-meta';
+    emitProgress(true);
+
+    let siteMetaRoutes: DsdbRoute[] = [];
+    let carbonVersionFromSiteMeta: string | null = null;
+
+    if (typeof fetch === 'function') {
+      try {
+        throwIfAborted(signal);
+        logger?.log('info', 'site-meta:fetch-started', { phase: 'fetch-site-meta', baseUrl });
+        const siteMeta = await fetchSiteMeta(baseUrl, signal);
+        siteMetaFetched = true;
+
+        // enumerate-routes: filter and deduplicate routes
+        crawlPhase = 'enumerate-routes';
+        emitProgress(true);
+
+        const { routes: siteMetaDescriptors, publicCount, privateCount, redirectCount, aliasCount } = buildSiteMetaRouteDescriptors(siteMeta);
+        coverageDiagnostics.siteMetaRouteCount = siteMeta.routes.length;
+        coverageDiagnostics.siteMetaPublicRouteCount = publicCount;
+        coverageDiagnostics.siteMetaPrivateRouteCount = privateCount;
+        coverageDiagnostics.siteMetaRedirectRouteCount = redirectCount;
+        coverageDiagnostics.siteMetaAliasCount = aliasCount;
+
+        logger?.log('info', 'site-meta:routes-enumerated', {
+          phase: 'enumerate-routes',
+          totalRoutes: siteMeta.routes.length,
+          publicRoutes: publicCount,
+          privateSkipped: privateCount,
+          redirectSkipped: redirectCount,
+          aliases: aliasCount
+        });
+
+        // Convert site_meta descriptors to DsdbRoute format
+        for (const descriptor of siteMetaDescriptors) {
+          const slug = descriptor.route.replace(/^\/+|\/+$/g, '');
+          if (!slug) continue;
+          siteMetaRoutes.push({
+            slug,
+            documentId: descriptor.documentId,
+            collectionId: descriptor.collectionId,
+            pageCanonId: undefined,
+            exportedCarbonFileId: undefined,
+            collectionName: undefined,
+            metadataWarnings: [
+              ...(!descriptor.documentId ? ['missing-document-id'] : []),
+              ...(!descriptor.collectionId ? ['missing-collection-id'] : [])
+            ].filter(Boolean).length > 0
+              ? [
+                  ...(!descriptor.documentId ? ['missing-document-id'] : []),
+                  ...(!descriptor.collectionId ? ['missing-collection-id'] : [])
+                ]
+              : undefined
+          });
+          addDiscoveredPaths([descriptor.route], angularRoutePublicDocPaths);
+          // Register aliases so they are not crawled as separate pages
+          for (const alias of descriptor.otherRoutes) {
+            addDiscoveredPaths([alias], angularRoutePublicDocPaths);
+          }
+        }
+
+        logger?.log('info', 'site-meta:fetch-succeeded', {
+          phase: 'enumerate-routes',
+          routeCount: siteMetaRoutes.length
+        });
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        const isSiteMetaError = err instanceof SiteMetaParseError;
+        siteMetaFailed = true;
+        // Log site_meta failure silently (structured logger only) when falling back to bundle.
+        // Only emit to stderr when the format was recognized but broken (not a simple HTTP 404).
+        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError });
+        if (verbose) {
+          logVerbose(`site_meta.js unavailable (${reason}); falling back to Angular bundle for route discovery`);
+        }
+      }
     }
 
-    if (dsdbConfig) {
-      await runDirectJsonBatch(dsdbConfig);
+    // Try Angular bundle: primary when site_meta failed (gets routes+version), fallback for carbonVersion when site_meta succeeded
+    let dsdbConfig: DsdbSiteConfig | null = null;
+    const siteMetaProvidedRoutes = siteMetaRoutes.length > 0;
+
+    if (!siteMetaProvidedRoutes || carbonVersionFromSiteMeta === null) {
+      try {
+        throwIfAborted(signal);
+        logger?.log('info', 'dsdb-config:bundle-started', {
+          phase: siteMetaProvidedRoutes ? 'enumerate-routes' : 'fetch-site-meta',
+          baseUrl,
+          purpose: siteMetaProvidedRoutes ? 'carbonVersion-only' : 'routes-and-version'
+        });
+        dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
+        if (!siteMetaProvidedRoutes) {
+          // site_meta failed: use bundle routes as primary
+          dsdbConfigSource = 'bundle';
+        }
+        directJsonEnabled = true;
+        logger?.log('info', 'dsdb-config:bundle-succeeded', {
+          phase: 'enumerate-routes',
+          carbonVersion: dsdbConfig.carbonVersion,
+          routeCount: dsdbConfig.routes.length,
+          usedForRoutes: !siteMetaProvidedRoutes
+        });
+        if (siteMetaProvidedRoutes && !dsdbConfigSource) {
+          dsdbConfigSource = 'site-meta';
+        }
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        bundleDiscoveryFailed = true;
+        if (!siteMetaProvidedRoutes) {
+          directJsonEnabled = false;
+          directJsonDisabledReason = reason;
+        }
+        logError(`DSDB config fetch failed${siteMetaProvidedRoutes ? ' (site_meta routes available, will recover carbonVersion via browser)' : ', will attempt browser-network recovery'}: ${reason}`);
+        logger?.log('warn', 'dsdb-config:bundle-failed', {
+          phase: 'enumerate-routes',
+          reason,
+          siteMetaProvidedRoutes,
+          networkRecoveryWillAttempt: true
+        });
+        await logger?.writeIntermediateDiagnostics({
+          promotionDecision: 'pending',
+          startedAt,
+          siteMetaFetched,
+          siteMetaFailed,
+          bundleDiscoveryFailed: true,
+          directJsonEnabled: siteMetaProvidedRoutes,
+          directJsonDisabledReason: siteMetaProvidedRoutes ? null : reason,
+          dsdbConfigSource: siteMetaProvidedRoutes ? 'site-meta' : null,
+          networkRecoveryAttempted: false,
+          networkRecoverySucceeded: false
+        });
+      }
+    }
+
+    // Build final config: prefer site_meta routes + bundle carbonVersion
+    let finalConfig: DsdbSiteConfig | null = null;
+    if (siteMetaProvidedRoutes && dsdbConfig) {
+      // Best case: site_meta routes + bundle carbonVersion
+      finalConfig = { carbonVersion: dsdbConfig.carbonVersion, routes: siteMetaRoutes };
+      if (!dsdbConfigSource) dsdbConfigSource = 'site-meta';
+      directJsonEnabled = true;
+    } else if (!siteMetaProvidedRoutes && dsdbConfig) {
+      // Fallback: bundle routes + bundle carbonVersion (old behavior)
+      finalConfig = dsdbConfig;
+      if (!dsdbConfigSource) dsdbConfigSource = 'bundle';
+      directJsonEnabled = true;
+    } else if (siteMetaProvidedRoutes && !dsdbConfig) {
+      // site_meta routes available but no carbonVersion yet — deferred to browser network recovery
+      if (!dsdbConfigSource) dsdbConfigSource = 'site-meta';
+      directJsonEnabled = false;
+      directJsonDisabledReason = directJsonDisabledReason ?? 'carbonVersion-unavailable';
+      logger?.log('warn', 'direct-json:deferred', {
+        phase: 'enumerate-routes',
+        reason: 'carbonVersion-unavailable',
+        siteMetaRouteCount: siteMetaRoutes.length
+      });
+    }
+    // else: both failed — old browser-only fallback path
+
+    // fetch-page-data: run direct JSON extraction with available config
+    if (finalConfig) {
+      crawlPhase = 'fetch-page-data';
+      emitProgress(true);
+      await runDirectJsonBatch(finalConfig);
     }
   }
 
@@ -1565,7 +1705,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
   if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
-    crawlPhase = 'browser-crawl';
+    crawlPhase = 'browser-dom-fallback';
     knownTargetPageCount = maxPages;
     let browser: Browser | null = null;
     try {
@@ -1587,21 +1727,29 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     } else {
     browserContext = await browser.newContext({ viewport: { width: 1440, height: 1400 } });
 
-    // ── Browser-network DSDB config recovery ─────────────────────────────────
-    if (bundleDiscoveryFailed && !signal?.aborted) {
+    // ── browser-network-recovery: recover carbonVersion when bundle failed ────
+    // Attempt recovery when: bundle failed AND (site_meta has no routes OR site_meta routes need carbonVersion)
+    const needsCarbonVersionRecovery = bundleDiscoveryFailed && !directJsonEnabled;
+    if (needsCarbonVersionRecovery && !signal?.aborted) {
+      crawlPhase = 'browser-network-recovery';
+      emitProgress(true);
       networkRecoveryAttempted = true;
       logger?.log('info', 'dsdb-config:network-bootstrap-started', {
-        phase: 'browser-crawl',
+        phase: 'browser-network-recovery',
         seedPaths: NETWORK_BOOTSTRAP_SEED_PATHS,
-        bundleDiscoveryFailed
+        bundleDiscoveryFailed,
+        siteMetaFetched,
+        hasSiteMetaRoutes: jsonExtractedSlugs.size === 0
       });
       await logger?.writeIntermediateDiagnostics({
         promotionDecision: 'pending',
         startedAt,
+        siteMetaFetched,
+        siteMetaFailed,
         bundleDiscoveryFailed: true,
         directJsonEnabled: false,
         directJsonDisabledReason,
-        dsdbConfigSource: null,
+        dsdbConfigSource: dsdbConfigSource ?? null,
         networkRecoveryAttempted: true,
         networkRecoverySucceeded: false
       });
@@ -1622,7 +1770,11 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
       if (recoveryResult) {
         const recoveredVersion = recoveryResult.carbonVersion;
-        const recoveredRoutes = buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths);
+        // Use site_meta routes if available; otherwise fall back to slug-only routes from discovery
+        const siteMetaRouteSet = Array.from(angularRoutePublicDocPaths).map((p) => p.replace(/^\/+|\/+$/g, '')).filter(Boolean);
+        const recoveredRoutes = siteMetaRouteSet.length > 0
+          ? siteMetaRouteSet.map((slug): DsdbRoute => ({ slug }))
+          : buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths);
         const recoveredConfig: DsdbSiteConfig = { carbonVersion: recoveredVersion, routes: recoveredRoutes };
         dsdbConfigSource = 'browser-network';
         directJsonEnabled = true;
@@ -1633,19 +1785,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           logger?.log('debug', 'dsdb-config:network-url-observed', { url });
         }
         logger?.log('info', 'dsdb-config:network-succeeded', {
-          phase: 'browser-crawl',
+          phase: 'browser-network-recovery',
           carbonVersion: recoveredVersion,
           routeCount: recoveredRoutes.length,
-          observedUrlCount: recoveryResult.observedUrls.length
+          observedUrlCount: recoveryResult.observedUrls.length,
+          routeSource: siteMetaRouteSet.length > 0 ? 'site-meta' : 'slug-only'
         });
         logger?.log('info', 'direct-json:enabled', {
-          phase: 'browser-crawl',
+          phase: 'browser-network-recovery',
           source: 'browser-network',
           carbonVersion: recoveredVersion
         });
         await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
+          siteMetaFetched,
+          siteMetaFailed,
           bundleDiscoveryFailed: true,
           directJsonEnabled: true,
           directJsonDisabledReason: null,
@@ -1654,9 +1809,11 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           networkRecoverySucceeded: true
         });
 
-        // Run direct JSON with the recovered config before browser crawl workers start
+        // Run direct JSON with the recovered config before browser DOM workers start
+        crawlPhase = 'fetch-page-data';
+        emitProgress(true);
         await runDirectJsonBatch(recoveredConfig);
-        crawlPhase = 'browser-crawl';
+        crawlPhase = 'browser-dom-fallback';
         knownTargetPageCount = maxPages;
         emitProgress(true);
       } else {
@@ -1666,17 +1823,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         directJsonDisabledReason = reason;
         logError(`DSDB network recovery failed (${reason}); continuing with browser-only crawl`);
         logger?.log('warn', 'dsdb-config:network-failed', {
-          phase: 'browser-crawl',
+          phase: 'browser-network-recovery',
           reason,
           observedUrlCount: 0
         });
         logger?.log('warn', 'direct-json:disabled', {
-          phase: 'browser-crawl',
+          phase: 'browser-network-recovery',
           reason,
           directJsonEnabled: false
         });
         logger?.log('warn', 'browser-only-fallback:enabled', {
-          phase: 'browser-crawl',
+          phase: 'browser-network-recovery',
           bundleDiscoveryFailed,
           networkRecoveryAttempted,
           networkRecoverySucceeded: false,
@@ -1685,18 +1842,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
+          siteMetaFetched,
+          siteMetaFailed,
           bundleDiscoveryFailed: true,
           directJsonEnabled: false,
           directJsonDisabledReason: reason,
-          dsdbConfigSource: null,
+          dsdbConfigSource: dsdbConfigSource ?? null,
           networkRecoveryAttempted: true,
           networkRecoverySucceeded: false,
           networkRecoveryFailureReason: reason,
           browserOnlyFallback: true
         });
       }
-    } else if (!bundleDiscoveryFailed) {
-      logger?.log('info', 'direct-json:enabled', { phase: 'browser-crawl', source: dsdbConfigSource });
+    } else if (!bundleDiscoveryFailed || directJsonEnabled) {
+      logger?.log('info', 'direct-json:enabled', { phase: 'browser-dom-fallback', source: dsdbConfigSource });
     }
 
     const onAbort = () => {
@@ -1800,6 +1959,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       dsdbConfigSource,
       directJsonEnabled,
       directJsonDisabledReason,
+      siteMetaFetched,
+      siteMetaFailed,
       bundleDiscoveryFailed,
       networkRecoveryAttempted,
       networkRecoverySucceeded,
@@ -1816,7 +1977,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const capturedAt = new Date().toISOString();
     const routes = config.routes;
     knownTargetPageCount = Math.min(maxPages, pages.length + routes.length);
-    crawlPhase = 'direct-json';
+    crawlPhase = 'fetch-page-data';
     emitProgress(true);
     for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += concurrency) {
       throwIfAborted(signal);

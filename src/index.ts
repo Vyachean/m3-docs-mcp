@@ -152,7 +152,7 @@ export function createCliProgressRenderer(): {
     lastRenderMs = nowMs;
 
     const elapsed = formatDurationMs(progress.elapsedMs);
-    const etaPrefix = progress.phase === 'browser-crawl' ? 'eta≈' : 'eta=';
+    const etaPrefix = (progress.phase === 'browser-dom-fallback' || progress.phase === 'browser-crawl') ? 'eta≈' : 'eta=';
     const etaStr = progress.estimatedRemainingMs !== null
       ? `${etaPrefix}${formatDurationMs(progress.estimatedRemainingMs)}`
       : 'eta=calculating';
