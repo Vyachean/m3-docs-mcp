@@ -773,13 +773,16 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     verbose: options.verbose ?? false
   });
   await logger.init();
+  options.onLoggerReady?.(logger.logFile, logger.diagnosticsFile);
   logger.log('info', 'update:start', {
     phase: 'init',
     message: 'Material 3 docs cache refresh starting',
     maxPages: options.maxPages,
     concurrency: options.concurrency,
     includeBlog: options.includeBlog ?? false,
-    force: options.force ?? false
+    force: options.force ?? false,
+    logFile: logger.logFile,
+    diagnosticsFile: logger.diagnosticsFile
   });
 
   const previousIndex = await readIndex(targetCacheDir);
@@ -788,26 +791,91 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' = 'pending';
   let lastProgress: CrawlProgress | null = null;
   const originalOnProgress = options.onProgress;
+
+  let lastProgressLogMs = 0;
+  const PROGRESS_LOG_THROTTLE_MS = 5_000;
+
   const trackingOptions: CrawlOptions = {
     ...options,
-    onProgress: (p) => { lastProgress = p; originalOnProgress?.(p); }
+    onProgress: (p) => {
+      lastProgress = p;
+      originalOnProgress?.(p);
+      const nowMs = Date.now();
+      if (nowMs - lastProgressLogMs >= PROGRESS_LOG_THROTTLE_MS) {
+        lastProgressLogMs = nowMs;
+        logger.log('info', 'update:progress', {
+          phase: p.phase,
+          elapsedMs: p.elapsedMs,
+          estimatedRemainingMs: p.estimatedRemainingMs,
+          ratePagesPerSecond: p.ratePagesPerSecond,
+          savedPageCount: p.savedPageCount,
+          failedPageCount: p.failedPageCount,
+          attemptedPageCount: p.attemptedPageCount,
+          directJsonAttemptedPageCount: p.directJsonAttemptedPageCount,
+          browserAttemptedPageCount: p.browserAttemptedPageCount,
+          queuedPageCount: p.queuedPageCount,
+          activeWorkerCount: p.activeWorkerCount,
+          concurrency: p.concurrency,
+          currentUrls: p.currentUrls,
+          targetPageCount: p.targetPageCount
+        });
+      }
+    }
+  };
+
+  const emitFinalProgressSnapshot = (): void => {
+    if (lastProgress) {
+      logger.log('info', 'update:progress', {
+        phase: lastProgress.phase,
+        elapsedMs: lastProgress.elapsedMs,
+        estimatedRemainingMs: lastProgress.estimatedRemainingMs,
+        ratePagesPerSecond: lastProgress.ratePagesPerSecond,
+        savedPageCount: lastProgress.savedPageCount,
+        failedPageCount: lastProgress.failedPageCount,
+        attemptedPageCount: lastProgress.attemptedPageCount,
+        directJsonAttemptedPageCount: lastProgress.directJsonAttemptedPageCount,
+        browserAttemptedPageCount: lastProgress.browserAttemptedPageCount,
+        queuedPageCount: lastProgress.queuedPageCount,
+        activeWorkerCount: lastProgress.activeWorkerCount,
+        concurrency: lastProgress.concurrency,
+        currentUrls: lastProgress.currentUrls,
+        targetPageCount: lastProgress.targetPageCount,
+        final: true
+      });
+    }
   };
 
   try {
     crawledIndex = await crawlIntoCache(stagingCacheDir, trackingOptions, previousIndex, targetCacheDir);
     assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
+    logger.log('info', 'update:promoting', {
+      phase: 'promoting',
+      message: 'Promoting staging cache to production',
+      savedPages: crawledIndex.pageCount,
+      failedPages: crawledIndex.failedPageCount
+    });
+    // Flush pending log writes, then move logs and diagnostics into the staging dir
+    // before promotion. promoteStagingCache deletes .previous after swapping, so any
+    // files still in targetCacheDir at promotion time are lost. By moving them into
+    // staging first, they become part of the new targetCacheDir after the rename.
+    await logger.flush();
+    await rename(logsDir(targetCacheDir), logsDir(stagingCacheDir)).catch(() => undefined);
+    await rename(diagnosticsDir(targetCacheDir), diagnosticsDir(stagingCacheDir)).catch(() => undefined);
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
     promotionDecision = 'promoted';
     const diag = crawledIndex.extractionDiagnostics;
     emitRouteEvents(logger, crawledIndex);
+    emitFinalProgressSnapshot();
     logger.log('info', 'update:complete', {
-      phase: 'promotion',
+      phase: 'promoting',
       message: `Cache promoted: ${crawledIndex.pageCount} pages saved, ${crawledIndex.failedPageCount} failed`,
       savedPages: crawledIndex.pageCount,
       failedPages: crawledIndex.failedPageCount,
       attemptedPages: crawledIndex.attemptedPageCount,
       coverageHealth: crawledIndex.coverageDiagnostics?.coverageHealth ?? null,
+      logFile: logger.logFile,
+      diagnosticsFile: logger.diagnosticsFile,
       tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
       tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
       tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
@@ -832,8 +900,11 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
       await rm(stagingCacheDir, { recursive: true, force: true });
     }
     if (crawledIndex) emitRouteEvents(logger, crawledIndex);
+    // Capture phase before emitFinalProgressSnapshot (which also closes over lastProgress).
+    const failurePhase = (lastProgress as CrawlProgress | null)?.phase ?? 'unknown';
+    emitFinalProgressSnapshot();
     logger.log('error', 'update:failed', {
-      phase: 'promotion',
+      phase: failurePhase,
       message: error instanceof Error ? error.message : String(error),
       errorName: error instanceof Error ? error.name : undefined,
       promotionDecision,
@@ -940,7 +1011,26 @@ function buildRunDiagnostics({
     lastRatePagesPerSecond: lastProgress?.ratePagesPerSecond ?? null,
     lastEstimatedRemainingMs: lastProgress?.estimatedRemainingMs ?? null,
     lastActiveWorkerCount: lastProgress?.activeWorkerCount ?? null,
-    lastQueuedPageCount: lastProgress?.queuedPageCount ?? null
+    lastQueuedPageCount: lastProgress?.queuedPageCount ?? null,
+    directJsonAttemptedPageCount: lastProgress?.directJsonAttemptedPageCount ?? null,
+    browserAttemptedPageCount: lastProgress?.browserAttemptedPageCount ?? null,
+    lastCurrentUrls: lastProgress?.currentUrls ?? null,
+    latestProgress: lastProgress ? {
+      phase: lastProgress.phase,
+      elapsedMs: lastProgress.elapsedMs,
+      estimatedRemainingMs: lastProgress.estimatedRemainingMs,
+      ratePagesPerSecond: lastProgress.ratePagesPerSecond,
+      savedPageCount: lastProgress.savedPageCount,
+      failedPageCount: lastProgress.failedPageCount,
+      attemptedPageCount: lastProgress.attemptedPageCount,
+      directJsonAttemptedPageCount: lastProgress.directJsonAttemptedPageCount,
+      browserAttemptedPageCount: lastProgress.browserAttemptedPageCount,
+      queuedPageCount: lastProgress.queuedPageCount,
+      activeWorkerCount: lastProgress.activeWorkerCount,
+      concurrency: lastProgress.concurrency,
+      currentUrls: lastProgress.currentUrls,
+      targetPageCount: lastProgress.targetPageCount
+    } : null
   };
 }
 
@@ -1012,6 +1102,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const includeBlog = options.includeBlog ?? false;
   const startedAt = new Date().toISOString();
   const currentUrls = new Map<number, string>();
+  const directJsonActiveUrls = new Set<string>();
   let lastSavedUrl: string | null = null;
   let lastFailedUrl: string | null = null;
   let crawlPhase: CrawlPhase = 'discovering';
@@ -1060,6 +1151,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       ? computeEta(processedPageCount, knownTargetPageCount, elapsedMs)
       : null;
     const completedAt = running ? null : new Date().toISOString();
+    const activeCount = crawlPhase === 'direct-json' ? directJsonActiveUrls.size : activeWorkers;
+    const activeUrlsList = crawlPhase === 'direct-json'
+      ? Array.from(directJsonActiveUrls).sort()
+      : Array.from(currentUrls.values()).sort();
     const progress: CrawlProgress = {
       phase: running ? crawlPhase : (error ? crawlPhase : 'complete'),
       startedAt,
@@ -1072,13 +1167,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       processedPageCount,
       targetPageCount: knownTargetPageCount,
       attemptedPageCount: dsdbAttemptedCount + seen.size,
+      directJsonAttemptedPageCount: dsdbAttemptedCount,
+      browserAttemptedPageCount: seen.size,
       savedPageCount: pages.length,
       failedPageCount: failedUrls.length,
       queuedPageCount: queue.length,
-      activeWorkerCount: activeWorkers,
+      activeWorkerCount: activeCount,
       ratePagesPerSecond: eta?.ratePagesPerSecond ?? null,
       estimatedRemainingMs: eta?.estimatedRemainingMs ?? null,
-      currentUrls: Array.from(currentUrls.values()).sort(),
+      currentUrls: activeUrlsList,
       lastSavedUrl,
       lastFailedUrl,
       error
@@ -1270,6 +1367,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         await Promise.all(batch.map(async (route) => {
           if (pages.length >= maxPages || signal?.aborted) return;
           dsdbAttemptedCount += 1;
+          const routeUrl = new URL(`/${route.slug}`, baseUrl).toString();
+          directJsonActiveUrls.add(routeUrl);
+          emitProgress(true);
           try {
             throwIfAborted(signal);
             const bundle = await fetchJsonPageBundle(baseUrl, dsdbConfig!.carbonVersion, {
@@ -1284,7 +1384,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             if (!bundle.pageData && !bundle.contentPage) {
               jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
               recordRouteDiagnostic(createRouteDiagnostic({
-                url: new URL(`/${route.slug}`, baseUrl).toString(),
+                url: routeUrl,
                 path: routePath,
                 sourceUsed: 'failed',
                 finalMethod: null,
@@ -1294,7 +1394,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               return;
             }
             const extraction = await extractContentPageToMaterialPage({
-              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              url: routeUrl,
               pageData: bundle.pageData,
               contentPage: bundle.contentPage,
               capturedAt,
@@ -1384,7 +1484,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             if (signal?.aborted) return;
             jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
             recordRouteDiagnostic(createRouteDiagnostic({
-              url: new URL(`/${route.slug}`, baseUrl).toString(),
+              url: routeUrl,
               path: routePathFromSlug(route.slug),
               sourceUsed: 'failed',
               finalMethod: null,
@@ -1392,6 +1492,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               fallbackReasons: ['json-fetch-failed']
             }));
             logVerbose(`JSON extraction failed for ${route.slug}: ${err instanceof Error ? err.message : String(err)}`);
+          } finally {
+            directJsonActiveUrls.delete(routeUrl);
+            emitProgress(true);
           }
         }));
       }
@@ -1530,6 +1633,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
+  crawlPhase = 'promoting';
+  emitProgress(true);
   emitProgress(false);
   return index;
 

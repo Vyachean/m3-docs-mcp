@@ -289,7 +289,7 @@ export type CacheStatus = {
   latestDiagnosticsFile: string | null;
 };
 
-export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'complete';
+export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';
 
 export type CrawlProgress = {
   phase: CrawlPhase;
@@ -303,6 +303,8 @@ export type CrawlProgress = {
   processedPageCount: number;
   targetPageCount: number | null;
   attemptedPageCount: number;
+  directJsonAttemptedPageCount: number;
+  browserAttemptedPageCount: number;
   savedPageCount: number;
   failedPageCount: number;
   queuedPageCount: number;
@@ -331,6 +333,8 @@ export type CrawlOptions = {
   /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
    *  Use this to clear a TTY progress line so error messages are not interleaved with it. */
   onBeforeLog?: () => void;
+  /** Called once the update logger is ready with the log file path and diagnostics file path. */
+  onLoggerReady?: (logFile: string, diagnosticsFile: string) => void;
   logDir?: string;
   verbose?: boolean;
 };

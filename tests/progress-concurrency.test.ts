@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -306,6 +306,8 @@ function makeProgress(overrides: Partial<CrawlProgress> = {}): CrawlProgress {
     processedPageCount: 10,
     targetPageCount: 100,
     attemptedPageCount: 10,
+    directJsonAttemptedPageCount: 10,
+    browserAttemptedPageCount: 0,
     savedPageCount: 8,
     failedPageCount: 2,
     queuedPageCount: 90,
@@ -454,5 +456,288 @@ describe('verbose-only per-route log behavior', () => {
     // In non-verbose mode, per-route failures (all routes return null bundle)
     // should not trigger onBeforeLog
     expect(beforeLogCalls.length).toBe(0);
+  }, 10_000);
+});
+
+// ── Direct JSON active tracking ───────────────────────────────────────────────
+// Uses the same fetchJsonConcurrencyTracker mock (20 ms delay, returns null data).
+// Progress snapshots captured during direct-json phase reflect real active state.
+
+describe('direct JSON progress tracking', () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-djprogress-test-'));
+    fetchJsonConcurrencyTracker.reset();
+    fetchJsonConcurrencyTracker.fn.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('active count is non-zero while direct JSON tasks are in flight', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    const activeCounts: number[] = [];
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 3,
+      force: true,
+      onProgress: (p) => {
+        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+      }
+    });
+
+    // At least some snapshots during direct-json phase should have active > 0
+    expect(activeCounts.some((c) => c > 0)).toBe(true);
+  }, 10_000);
+
+  it('currentUrls includes route URLs during direct-json phase', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    const allCurrentUrls: string[][] = [];
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 3,
+      force: true,
+      onProgress: (p) => {
+        if (p.phase === 'direct-json' && p.currentUrls.length > 0) {
+          allCurrentUrls.push(p.currentUrls);
+        }
+      }
+    });
+
+    expect(allCurrentUrls.length).toBeGreaterThan(0);
+    // All recorded URLs should be valid m3.material.io URLs
+    for (const urls of allCurrentUrls) {
+      for (const url of urls) {
+        expect(url).toMatch(/^https:\/\/m3\.material\.io\//);
+      }
+    }
+  }, 10_000);
+
+  it('directJsonAttemptedPageCount counts direct JSON routes separately', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    let finalProgress: import('../src/types.js').CrawlProgress | null = null;
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 2,
+      force: true,
+      onProgress: (p) => { finalProgress = p; }
+    });
+
+    expect(finalProgress).not.toBeNull();
+    // All routes went through direct JSON → directJsonAttemptedPageCount = ROUTE_COUNT
+    expect(finalProgress!.directJsonAttemptedPageCount).toBe(ROUTE_COUNT);
+    // No browser crawl ran → browserAttemptedPageCount = 0
+    expect(finalProgress!.browserAttemptedPageCount).toBe(0);
+    // Aggregate includes direct JSON attempts
+    expect(finalProgress!.attemptedPageCount).toBeGreaterThanOrEqual(ROUTE_COUNT);
+  }, 10_000);
+
+  it('active count never exceeds requested concurrency during direct-json phase', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    const activeCounts: number[] = [];
+    const requestedConcurrency = 4;
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: requestedConcurrency,
+      force: true,
+      onProgress: (p) => {
+        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+      }
+    });
+
+    expect(activeCounts.every((c) => c <= requestedConcurrency)).toBe(true);
+  }, 10_000);
+});
+
+// ── Progress JSONL logging ────────────────────────────────────────────────────
+
+describe('progress JSONL logging', () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-jsonl-test-'));
+    fetchJsonConcurrencyTracker.reset();
+    fetchJsonConcurrencyTracker.fn.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('JSONL log file contains update:progress events after a successful crawl', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    let logFile: string | null = null;
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 2,
+      force: true,
+      onLoggerReady: (lf) => { logFile = lf; }
+    });
+
+    expect(logFile).not.toBeNull();
+    const content = await readFile(logFile!, 'utf8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    const progressEvents = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((e) => e.event === 'update:progress');
+
+    expect(progressEvents.length).toBeGreaterThan(0);
+    const firstProgress = progressEvents[0]!;
+    expect(typeof firstProgress.phase).toBe('string');
+    expect(typeof firstProgress.elapsedMs).toBe('number');
+    expect(typeof firstProgress.savedPageCount).toBe('number');
+    expect(typeof firstProgress.directJsonAttemptedPageCount).toBe('number');
+    expect(typeof firstProgress.browserAttemptedPageCount).toBe('number');
+  }, 10_000);
+
+  it('final update:progress event has final=true', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    let logFile: string | null = null;
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 2,
+      force: true,
+      onLoggerReady: (lf) => { logFile = lf; }
+    });
+
+    expect(logFile).not.toBeNull();
+    const content = await readFile(logFile!, 'utf8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    const finalEvents = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .filter((e) => e.event === 'update:progress' && e.final === true);
+
+    expect(finalEvents.length).toBeGreaterThan(0);
+  }, 10_000);
+
+  it('JSONL log survives even when the crawl fails (diagnostics are preserved)', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    let logFile: string | null = null;
+
+    await expect(
+      crawlMaterialDocs({
+        cacheDir,
+        maxPages: ROUTE_COUNT,
+        minPageCount: 999, // impossibly high — forces a rejection
+        concurrency: 2,
+        force: false,
+        onLoggerReady: (lf) => { logFile = lf; }
+      })
+    ).rejects.toThrow();
+
+    expect(logFile).not.toBeNull();
+    const content = await readFile(logFile!, 'utf8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    const hasProgressEvent = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .some((e) => e.event === 'update:progress' || e.event === 'update:failed');
+    expect(hasProgressEvent).toBe(true);
+  }, 10_000);
+});
+
+// ── CLI onLoggerReady path output ─────────────────────────────────────────────
+
+describe('CLI onLoggerReady path reporting', () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-cli-paths-test-'));
+    fetchJsonConcurrencyTracker.reset();
+    fetchJsonConcurrencyTracker.fn.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('onLoggerReady is called with valid log file and diagnostics paths', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    let receivedLogFile: string | null = null;
+    let receivedDiagnosticsFile: string | null = null;
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 1,
+      force: true,
+      onLoggerReady: (logFile, diagnosticsFile) => {
+        receivedLogFile = logFile;
+        receivedDiagnosticsFile = diagnosticsFile;
+      }
+    });
+
+    expect(receivedLogFile).not.toBeNull();
+    expect(receivedLogFile).toMatch(/update-.*\.jsonl$/);
+    expect(receivedLogFile).toContain(cacheDir);
+
+    expect(receivedDiagnosticsFile).not.toBeNull();
+    expect(receivedDiagnosticsFile).toMatch(/latest-update\.json$/);
+    expect(receivedDiagnosticsFile).toContain(cacheDir);
+  }, 10_000);
+});
+
+// ── Promoting phase ───────────────────────────────────────────────────────────
+
+describe('promoting phase', () => {
+  let cacheDir: string;
+
+  beforeEach(async () => {
+    cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-promoting-test-'));
+    fetchJsonConcurrencyTracker.reset();
+    fetchJsonConcurrencyTracker.fn.mockClear();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await rm(cacheDir, { recursive: true, force: true });
+  });
+
+  it('emits promoting phase before complete', async () => {
+    vi.stubGlobal('fetch', makeDsdbFetchStub());
+    const { crawlMaterialDocs } = await import('../src/crawler.js');
+    const phases: import('../src/types.js').CrawlProgress['phase'][] = [];
+    await crawlMaterialDocs({
+      cacheDir,
+      maxPages: ROUTE_COUNT,
+      minPageCount: 0,
+      concurrency: 1,
+      force: true,
+      onProgress: (p) => phases.push(p.phase)
+    });
+
+    expect(phases).toContain('promoting');
+    const promotingIdx = phases.lastIndexOf('promoting');
+    const completeIdx = phases.lastIndexOf('complete');
+    expect(promotingIdx).toBeLessThan(completeIdx);
   }, 10_000);
 });

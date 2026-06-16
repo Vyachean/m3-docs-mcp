@@ -51,7 +51,9 @@ program.command('update')
     const abortController = new AbortController();
     const removeSignalHandlers = installAbortSignalHandlers(abortController);
     const { onProgress, onBeforeLog } = createCliProgressRenderer();
-    console.error(`Starting Material 3 docs cache refresh: maxPages=${maxPages}, minPages=${minPageCount}, concurrency=${concurrency}, includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
+    let updateLogFile: string | null = null;
+    let updateDiagnosticsFile: string | null = null;
+    console.error(`Starting Material 3 docs cache refresh: cacheDir=${cacheDir} maxPages=${maxPages} minPages=${minPageCount} concurrency=${concurrency} includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir,
@@ -64,11 +66,19 @@ program.command('update')
         signal: abortController.signal,
         onProgress,
         onBeforeLog,
+        onLoggerReady: (logFile, diagnosticsFile) => {
+          updateLogFile = logFile;
+          updateDiagnosticsFile = diagnosticsFile;
+          console.error(`Update log: ${logFile}`);
+          console.error(`Diagnostics: ${diagnosticsFile}`);
+        },
         logDir: options.logDir,
         verbose: options.verbose ?? false
       });
       onProgress(null);
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);
+      if (updateLogFile) console.error(`Update log: ${updateLogFile}`);
+      if (updateDiagnosticsFile) console.error(`Diagnostics: ${updateDiagnosticsFile}`);
       console.log(JSON.stringify({
         cacheDir,
         capturedAt: index.capturedAt,

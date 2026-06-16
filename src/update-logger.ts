@@ -44,6 +44,27 @@ export type UpdateRunDiagnostics = {
   lastEstimatedRemainingMs?: number | null;
   lastActiveWorkerCount?: number | null;
   lastQueuedPageCount?: number | null;
+  directJsonAttemptedPageCount?: number | null;
+  browserAttemptedPageCount?: number | null;
+  lastCurrentUrls?: string[] | null;
+  latestProgress?: ProgressSnapshot | null;
+};
+
+export type ProgressSnapshot = {
+  phase: string;
+  elapsedMs: number;
+  estimatedRemainingMs: number | null;
+  ratePagesPerSecond: number | null;
+  savedPageCount: number;
+  failedPageCount: number;
+  attemptedPageCount: number;
+  directJsonAttemptedPageCount: number;
+  browserAttemptedPageCount: number;
+  queuedPageCount: number;
+  activeWorkerCount: number;
+  concurrency: number;
+  currentUrls: string[];
+  targetPageCount: number | null;
 };
 
 const MAX_STRING_LEN = 500;
