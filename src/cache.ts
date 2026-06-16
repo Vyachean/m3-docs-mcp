@@ -4,6 +4,15 @@ import path from 'node:path';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
 
+async function pathIfExists(filePath: string): Promise<string | null> {
+  try {
+    await stat(filePath);
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
 export const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
@@ -50,6 +59,22 @@ export function getDefaultCacheDir(): string {
 
 export function pagesDir(cacheDir = getDefaultCacheDir()): string {
   return path.join(cacheDir, 'pages');
+}
+
+export function logsDir(cacheDir = getDefaultCacheDir()): string {
+  return path.join(cacheDir, 'logs');
+}
+
+export function diagnosticsDir(cacheDir = getDefaultCacheDir()): string {
+  return path.join(cacheDir, 'diagnostics');
+}
+
+export function latestLogPath(cacheDir = getDefaultCacheDir()): string {
+  return path.join(logsDir(cacheDir), 'latest.jsonl');
+}
+
+export function latestDiagnosticsPath(cacheDir = getDefaultCacheDir()): string {
+  return path.join(diagnosticsDir(cacheDir), 'latest-update.json');
 }
 
 export function indexPath(cacheDir = getDefaultCacheDir()): string {
@@ -102,6 +127,10 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
   const index = await readIndex(cacheDir);
   const ageMs = await cacheAgeMs(cacheDir);
   const coverageHealth = index?.coverageDiagnostics?.coverageHealth;
+  const [latestLogFile, latestDiagnosticsFile] = await Promise.all([
+    pathIfExists(latestLogPath(cacheDir)),
+    pathIfExists(latestDiagnosticsPath(cacheDir))
+  ]);
   return {
     cacheDir,
     hasCache: Boolean(index),
@@ -114,7 +143,9 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     isFresh: isCacheFresh(ageMs, maxAgeHours),
     ...(coverageHealth !== undefined ? { coverageHealth } : {}),
     ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
-    ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {})
+    ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
+    latestLogFile,
+    latestDiagnosticsFile
   };
 }
 

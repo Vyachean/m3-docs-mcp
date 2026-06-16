@@ -50,6 +50,8 @@ const mocks = vi.hoisted(() => {
     failedUrls: [],
     ageMs: 60_000,
     isFresh: true,
+    latestLogFile: null,
+    latestDiagnosticsFile: null,
     ...overrides
   });
 

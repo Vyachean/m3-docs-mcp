@@ -55,8 +55,11 @@ export async function renderDsdbResourceChunk(
   fetchResource: DsdbResourceFetcher,
   pageDiagnostic: ExtractionPageDiagnostic
 ): Promise<string> {
+  pageDiagnostic.resourceChunksRequested = (pageDiagnostic.resourceChunksRequested ?? 0) + 1;
+
   if (isUnsupportedResourceChunk(chunk)) {
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('UNKNOWN_RESOURCE', {
       reason: 'malformed-resource-chunk',
       issues: chunk.issues
@@ -74,15 +77,21 @@ export async function renderDsdbResourceChunk(
     pageDiagnostic.statusTablesRequested = (pageDiagnostic.statusTablesRequested ?? 0) + 1;
     const resource = resourceName ? await fetchResource(resourceName, libraryModuleType) : null;
     const resourceFound = Boolean(resource);
-    if (resourceFound) pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
+    if (resourceFound) {
+      pageDiagnostic.statusTablesResolved = (pageDiagnostic.statusTablesResolved ?? 0) + 1;
+      pageDiagnostic.resourceChunksResolved = (pageDiagnostic.resourceChunksResolved ?? 0) + 1;
+    }
 
     const statusDecoded = decodeStatusTableResource(resource);
     const statusTableDiagnostics = pageDiagnostic.statusTableDiagnostics ?? (pageDiagnostic.statusTableDiagnostics = []);
 
     if (!isUnsupportedStatusTable(statusDecoded)) {
+      pageDiagnostic.statusTablesDecoded = (pageDiagnostic.statusTablesDecoded ?? 0) + 1;
+      pageDiagnostic.resourceChunksDecoded = (pageDiagnostic.resourceChunksDecoded ?? 0) + 1;
       const rendered = renderStatusTableMarkdown(statusDecoded);
       if (rendered) {
         pageDiagnostic.statusTablesRendered = (pageDiagnostic.statusTablesRendered ?? 0) + 1;
+        pageDiagnostic.resourceChunksRendered = (pageDiagnostic.resourceChunksRendered ?? 0) + 1;
         statusTableDiagnostics.push({
           resourceName,
           requested: true,
@@ -97,6 +106,7 @@ export async function renderDsdbResourceChunk(
 
     const unsupportedSchema = resourceFound;
     pageDiagnostic.statusTablesRenderedAsPlaceholder = (pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     if (unsupportedSchema) pageDiagnostic.unsupportedStatusTableSchemaCount = (pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0) + 1;
     statusTableDiagnostics.push({
       resourceName,
@@ -118,6 +128,7 @@ export async function renderDsdbResourceChunk(
   if (libraryModuleType !== 'TOKEN_TABLE') {
     if (libraryModuleType !== 'UNKNOWN_RESOURCE') pageDiagnostic.unknownResourceTypes.push(libraryModuleType);
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder(libraryModuleType, {
       type: libraryModuleType,
       resource: extractResourceNameFromChunk(chunk),
@@ -131,22 +142,38 @@ export async function renderDsdbResourceChunk(
   if (!resourceName) {
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-resource-name', tokenSets: requestedTokenSets });
   }
 
   const resource = await fetchResource(resourceName, libraryModuleType);
+  if (resource !== null && resource !== undefined) {
+    pageDiagnostic.tokenTablesResolved = (pageDiagnostic.tokenTablesResolved ?? 0) + 1;
+    pageDiagnostic.resourceChunksResolved = (pageDiagnostic.resourceChunksResolved ?? 0) + 1;
+  }
   const system = extractTokenTableSystem(resource);
   if (!system) {
+    if (resource !== null && resource !== undefined) {
+      pageDiagnostic.tokenTablesUnsupportedSchema = (pageDiagnostic.tokenTablesUnsupportedSchema ?? 0) + 1;
+    }
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-token-system', resource: resourceName, tokenSets: requestedTokenSets });
   }
+
+  pageDiagnostic.tokenTablesDecoded = (pageDiagnostic.tokenTablesDecoded ?? 0) + 1;
+  pageDiagnostic.resourceChunksDecoded = (pageDiagnostic.resourceChunksDecoded ?? 0) + 1;
 
   let tokenRender: ReturnType<typeof renderTokenTableWithDiagnostics>;
   try {
     tokenRender = renderTokenTableWithDiagnostics(system, requestedTokenSets);
   } catch (error) {
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', {
       reason: 'render-error',
       phase: 'render-token-table',
@@ -167,13 +194,17 @@ export async function renderDsdbResourceChunk(
   if (!rendered.trim()) {
     if (missingTokenSetNote) {
       pageDiagnostic.tokenTablesRendered += 1;
+      pageDiagnostic.resourceChunksRendered = (pageDiagnostic.resourceChunksRendered ?? 0) + 1;
       return missingTokenSetNote;
     }
     pageDiagnostic.unresolvedResourceCount += 1;
+    pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-requested-token-sets', resource: resourceName, tokenSets: requestedTokenSets });
   }
 
   pageDiagnostic.tokenTablesRendered += 1;
+  pageDiagnostic.resourceChunksRendered = (pageDiagnostic.resourceChunksRendered ?? 0) + 1;
   return `${rendered.replace(/^\n*## Design Tokens\n\n/, '')}${missingTokenSetNote ? `\n\n${missingTokenSetNote}` : ''}`;
 }
 

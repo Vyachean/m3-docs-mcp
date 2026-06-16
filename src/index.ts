@@ -40,6 +40,8 @@ program.command('update')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--headed', 'Run browser in headed mode')
   .option('--include-blog', 'Include blog, news, and article routes in the crawl (excluded by default)')
+  .option('--log-dir <path>', 'Directory for update log files (default: <cache-dir>/logs)')
+  .option('--verbose', 'Enable verbose/debug log output in the log file')
   .action(async (options) => {
     const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
@@ -59,7 +61,9 @@ program.command('update')
         force: options.force,
         includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
-        onProgress: renderProgress
+        onProgress: renderProgress,
+        logDir: options.logDir,
+        verbose: options.verbose ?? false
       });
       renderProgress(null);
       console.error(`Material 3 docs cache refresh completed: saved ${index.pageCount} pages, failed ${index.failedPageCount} URLs.`);

@@ -63,13 +63,23 @@ export type ExtractionPageDiagnostic = {
   unknownResourceTypes: string[];
   tokenTables: number;
   tokenTablesRendered: number;
+  tokenTablesResolved?: number;
+  tokenTablesDecoded?: number;
+  tokenTablesRenderedAsPlaceholder?: number;
+  tokenTablesUnsupportedSchema?: number;
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesDecoded?: number;
   statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
+  resourceChunksRequested?: number;
+  resourceChunksResolved?: number;
+  resourceChunksDecoded?: number;
+  resourceChunksRendered?: number;
+  resourceChunksPlaceholder?: number;
   missingRequestedTokenSets: string[];
   suspiciousReasons: string[];
   imageCount: number;
@@ -106,13 +116,23 @@ export type ExtractionRouteDiagnostic = {
   tokenTables: number;
   tokenTablesRendered: number;
   tokenTablesRequested?: number;
+  tokenTablesResolved?: number;
+  tokenTablesDecoded?: number;
+  tokenTablesRenderedAsPlaceholder?: number;
+  tokenTablesUnsupportedSchema?: number;
   tokenContextDiagnostics?: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
+  statusTablesDecoded?: number;
   statusTablesRendered?: number;
   statusTablesRenderedAsPlaceholder?: number;
   unsupportedStatusTableSchemaCount?: number;
   statusTableDiagnostics?: StatusTableDiagnostic[];
+  resourceChunksRequested?: number;
+  resourceChunksResolved?: number;
+  resourceChunksDecoded?: number;
+  resourceChunksRendered?: number;
+  resourceChunksPlaceholder?: number;
   missingRequestedTokenSets: string[];
   unknownJsonResourceCount?: number;
   capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -142,7 +162,11 @@ export type ExtractionDiagnostics = {
   unknownJsonResourceCount: number;
   pagesWithTokenTables: number;
   tokenTablesRequested: number;
+  tokenTablesResolved: number;
+  tokenTablesDecoded: number;
   tokenTablesSuccessfullyRendered: number;
+  tokenTablesRenderedAsPlaceholder: number;
+  tokenTablesUnsupportedSchema: number;
   tokenTablesFailedToRender: number;
   tokenTablesMissingRequestedTokenSets: number;
   tokenContextDiagnosticsRecorded: number;
@@ -151,9 +175,15 @@ export type ExtractionDiagnostics = {
   tokenTablesWithUnresolvedTokens: number;
   statusTablesRequested: number;
   statusTablesResolved: number;
+  statusTablesDecoded: number;
   statusTablesRendered: number;
   statusTablesRenderedAsPlaceholder: number;
   unsupportedStatusTableSchemaCount: number;
+  resourceChunksRequested: number;
+  resourceChunksResolved: number;
+  resourceChunksDecoded: number;
+  resourceChunksRendered: number;
+  resourceChunksPlaceholder: number;
   pagesWithSuspiciouslyShortMarkdown: number;
   pagesWithNoSections: number;
   pagesWithNoHeadings: number;
@@ -255,6 +285,8 @@ export type CacheStatus = {
   coverageHealth?: CoverageHealth;
   extractionDiagnostics?: ExtractionDiagnostics;
   coverageDiagnostics?: CoverageDiagnostics;
+  latestLogFile: string | null;
+  latestDiagnosticsFile: string | null;
 };
 
 export type CrawlProgress = {
@@ -288,6 +320,8 @@ export type CrawlOptions = {
   includeBlog?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
+  logDir?: string;
+  verbose?: boolean;
 };
 
 export type RefreshOptions = {

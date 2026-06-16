@@ -22,7 +22,11 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     unknownJsonResourceCount: 0,
     pagesWithTokenTables: 0,
     tokenTablesRequested: 0,
+    tokenTablesResolved: 0,
+    tokenTablesDecoded: 0,
     tokenTablesSuccessfullyRendered: 0,
+    tokenTablesRenderedAsPlaceholder: 0,
+    tokenTablesUnsupportedSchema: 0,
     tokenTablesFailedToRender: 0,
     tokenTablesMissingRequestedTokenSets: 0,
     tokenContextDiagnosticsRecorded: 0,
@@ -31,9 +35,15 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     tokenTablesWithUnresolvedTokens: 0,
     statusTablesRequested: 0,
     statusTablesResolved: 0,
+    statusTablesDecoded: 0,
     statusTablesRendered: 0,
     statusTablesRenderedAsPlaceholder: 0,
     unsupportedStatusTableSchemaCount: 0,
+    resourceChunksRequested: 0,
+    resourceChunksResolved: 0,
+    resourceChunksDecoded: 0,
+    resourceChunksRendered: 0,
+    resourceChunksPlaceholder: 0,
     pagesWithSuspiciouslyShortMarkdown: 0,
     pagesWithNoSections: 0,
     pagesWithNoHeadings: 0,
@@ -88,14 +98,24 @@ export function pushRouteDiagnostic(
   diagnostics.unknownJsonResourceCount += routeDiagnostic.unknownJsonResourceCount ?? 0;
   if (routeDiagnostic.tokenTables > 0) diagnostics.pagesWithTokenTables += 1;
   diagnostics.tokenTablesRequested += routeDiagnostic.tokenTablesRequested ?? routeDiagnostic.tokenTables;
+  diagnostics.tokenTablesResolved += routeDiagnostic.tokenTablesResolved ?? 0;
+  diagnostics.tokenTablesDecoded += routeDiagnostic.tokenTablesDecoded ?? 0;
   diagnostics.tokenTablesSuccessfullyRendered += routeDiagnostic.tokenTablesRendered;
+  diagnostics.tokenTablesRenderedAsPlaceholder += routeDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0;
+  diagnostics.tokenTablesUnsupportedSchema += routeDiagnostic.tokenTablesUnsupportedSchema ?? 0;
   diagnostics.tokenTablesFailedToRender += Math.max(0, routeDiagnostic.tokenTables - routeDiagnostic.tokenTablesRendered);
   diagnostics.tokenTablesMissingRequestedTokenSets += routeDiagnostic.missingRequestedTokenSets.length;
   diagnostics.statusTablesRequested += routeDiagnostic.statusTablesRequested ?? 0;
   diagnostics.statusTablesResolved += routeDiagnostic.statusTablesResolved ?? 0;
+  diagnostics.statusTablesDecoded += routeDiagnostic.statusTablesDecoded ?? 0;
   diagnostics.statusTablesRendered += routeDiagnostic.statusTablesRendered ?? 0;
   diagnostics.statusTablesRenderedAsPlaceholder += routeDiagnostic.statusTablesRenderedAsPlaceholder ?? 0;
   diagnostics.unsupportedStatusTableSchemaCount += routeDiagnostic.unsupportedStatusTableSchemaCount ?? 0;
+  diagnostics.resourceChunksRequested += routeDiagnostic.resourceChunksRequested ?? 0;
+  diagnostics.resourceChunksResolved += routeDiagnostic.resourceChunksResolved ?? 0;
+  diagnostics.resourceChunksDecoded += routeDiagnostic.resourceChunksDecoded ?? 0;
+  diagnostics.resourceChunksRendered += routeDiagnostic.resourceChunksRendered ?? 0;
+  diagnostics.resourceChunksPlaceholder += routeDiagnostic.resourceChunksPlaceholder ?? 0;
   diagnostics.tokenContextDiagnosticsRecorded += routeDiagnostic.tokenContextDiagnostics?.length ?? 0;
   diagnostics.tokenTablesUsingFallbackContext += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.usedFallbackContext).length ?? 0;
   diagnostics.tokenTablesWithMultipleContextVariants += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.multipleContextVariantsAvailable).length ?? 0;

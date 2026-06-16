@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { DEFAULT_MAX_FAILED_PAGE_RATIO, assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, getDefaultCacheDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { DEFAULT_MAX_FAILED_PAGE_RATIO, assertSafeCachePromotion, assertValidIndex, computeCoverageHealth, createStagingCacheDir, diagnosticsDir, getDefaultCacheDir, logsDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from './cache.js';
+import { UpdateLogger } from './update-logger.js';
 import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
@@ -764,17 +765,56 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
 
 export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<MaterialIndex> {
   const targetCacheDir = options.cacheDir ?? getDefaultCacheDir();
+  const startedAt = new Date().toISOString();
+  const logger = new UpdateLogger({
+    cacheDir: targetCacheDir,
+    logDir: options.logDir ?? logsDir(targetCacheDir),
+    diagnosticsDir: diagnosticsDir(targetCacheDir),
+    verbose: options.verbose ?? false
+  });
+  await logger.init();
+  logger.log('info', 'update:start', {
+    phase: 'init',
+    message: 'Material 3 docs cache refresh starting',
+    maxPages: options.maxPages,
+    concurrency: options.concurrency,
+    includeBlog: options.includeBlog ?? false,
+    force: options.force ?? false
+  });
+
   const previousIndex = await readIndex(targetCacheDir);
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
   let crawledIndex: MaterialIndex | null = null;
+  let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' = 'pending';
 
   try {
     crawledIndex = await crawlIntoCache(stagingCacheDir, options, previousIndex, targetCacheDir);
     assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
     await promoteStagingCache(stagingCacheDir, targetCacheDir);
+    promotionDecision = 'promoted';
+    const diag = crawledIndex.extractionDiagnostics;
+    emitRouteEvents(logger, crawledIndex);
+    logger.log('info', 'update:complete', {
+      phase: 'promotion',
+      message: `Cache promoted: ${crawledIndex.pageCount} pages saved, ${crawledIndex.failedPageCount} failed`,
+      savedPages: crawledIndex.pageCount,
+      failedPages: crawledIndex.failedPageCount,
+      attemptedPages: crawledIndex.attemptedPageCount,
+      coverageHealth: crawledIndex.coverageDiagnostics?.coverageHealth ?? null,
+      tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
+      tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
+      tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
+      tokenTablesRendered: diag?.tokenTablesSuccessfullyRendered ?? 0,
+      tokenTablesRenderedAsPlaceholder: diag?.tokenTablesRenderedAsPlaceholder ?? 0
+    });
+    await logger.writeFinalDiagnostics(buildRunDiagnostics({
+      logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: null
+    }));
     return crawledIndex;
   } catch (error) {
+    promotionDecision = promotionDecision === 'pending' ? 'rejected' : 'error';
     const failedStagingDir = `${targetCacheDir}.failed-staging`;
     let preservedPath: string | null = null;
     try {
@@ -784,15 +824,114 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     } catch {
       await rm(stagingCacheDir, { recursive: true, force: true });
     }
-    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath);
+    if (crawledIndex) emitRouteEvents(logger, crawledIndex);
+    logger.log('error', 'update:failed', {
+      phase: 'promotion',
+      message: error instanceof Error ? error.message : String(error),
+      errorName: error instanceof Error ? error.name : undefined,
+      promotionDecision,
+      preservedFailedStagingPath: preservedPath,
+      hasPreviousCache: previousIndex !== null,
+      logFile: logger.logFile,
+      diagnosticsFile: logger.diagnosticsFile
+    });
+    await logger.writeFinalDiagnostics(buildRunDiagnostics({
+      logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
+      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: preservedPath
+    }));
+    throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath, logger.logFile, logger.diagnosticsFile);
   }
+}
+
+function emitRouteEvents(logger: UpdateLogger, index: MaterialIndex): void {
+  const routeDiagnostics = index.extractionDiagnostics?.routeDiagnostics ?? [];
+  for (const route of routeDiagnostics) {
+    const hasTokenActivity = (route.tokenTablesRequested ?? route.tokenTables) > 0;
+    const hasStatusActivity = (route.statusTablesRequested ?? 0) > 0;
+    const hasFailed = route.sourceUsed === 'failed';
+    if (!hasTokenActivity && !hasStatusActivity && !hasFailed) continue;
+    logger.log('info', 'update:route:diagnostics', {
+      phase: 'extraction',
+      route: route.url,
+      path: route.path,
+      source: route.sourceUsed,
+      fallbackReasons: route.fallbackReasons ?? [],
+      tokenTablesRequested: route.tokenTablesRequested ?? route.tokenTables,
+      tokenTablesResolved: route.tokenTablesResolved ?? 0,
+      tokenTablesDecoded: route.tokenTablesDecoded ?? 0,
+      tokenTablesRendered: route.tokenTablesRendered,
+      tokenTablesRenderedAsPlaceholder: route.tokenTablesRenderedAsPlaceholder ?? 0,
+      tokenTablesUnsupportedSchema: route.tokenTablesUnsupportedSchema ?? 0,
+      statusTablesRequested: route.statusTablesRequested ?? 0,
+      statusTablesResolved: route.statusTablesResolved ?? 0,
+      statusTablesDecoded: route.statusTablesDecoded ?? 0,
+      statusTablesRendered: route.statusTablesRendered ?? 0,
+      statusTablesRenderedAsPlaceholder: route.statusTablesRenderedAsPlaceholder ?? 0,
+      resourceChunksRequested: route.resourceChunksRequested ?? 0,
+      resourceChunksRendered: route.resourceChunksRendered ?? 0,
+      resourceChunksPlaceholder: route.resourceChunksPlaceholder ?? 0,
+      missingRequestedTokenSets: route.missingRequestedTokenSets
+    });
+  }
+}
+
+function buildRunDiagnostics({
+  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath
+}: {
+  logger: UpdateLogger;
+  startedAt: string;
+  targetCacheDir: string;
+  stagingDir: string | null;
+  crawledIndex: MaterialIndex | null;
+  previousIndex: MaterialIndex | null;
+  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
+  preservedFailedStagingPath: string | null;
+}) {
+  const diag = crawledIndex?.extractionDiagnostics;
+  const covDiag = crawledIndex?.coverageDiagnostics;
+  return {
+    runId: logger.runId,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    cacheDir: targetCacheDir,
+    stagingDir,
+    logFile: logger.logFile,
+    attemptedPages: crawledIndex?.attemptedPageCount ?? 0,
+    savedPages: crawledIndex?.pageCount ?? 0,
+    failedPages: crawledIndex?.failedPageCount ?? 0,
+    failedRoutes: crawledIndex?.failedUrls ?? [],
+    skippedBlogCount: covDiag?.skippedBlogCount ?? 0,
+    tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
+    tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
+    tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
+    tokenTablesRendered: diag?.tokenTablesSuccessfullyRendered ?? 0,
+    tokenTablesRenderedAsPlaceholder: diag?.tokenTablesRenderedAsPlaceholder ?? 0,
+    tokenTablesUnsupportedSchema: diag?.tokenTablesUnsupportedSchema ?? 0,
+    statusTablesRequested: diag?.statusTablesRequested ?? 0,
+    statusTablesResolved: diag?.statusTablesResolved ?? 0,
+    statusTablesDecoded: diag?.statusTablesDecoded ?? 0,
+    statusTablesRendered: diag?.statusTablesRendered ?? 0,
+    statusTablesRenderedAsPlaceholder: diag?.statusTablesRenderedAsPlaceholder ?? 0,
+    statusTablesUnsupportedSchema: diag?.unsupportedStatusTableSchemaCount ?? 0,
+    resourceChunksRequested: diag?.resourceChunksRequested ?? 0,
+    resourceChunksResolved: diag?.resourceChunksResolved ?? 0,
+    resourceChunksDecoded: diag?.resourceChunksDecoded ?? 0,
+    resourceChunksRendered: diag?.resourceChunksRendered ?? 0,
+    resourceChunksPlaceholder: diag?.resourceChunksPlaceholder ?? 0,
+    promotionDecision,
+    hasPreviousCache: previousIndex !== null,
+    preservedFailedStagingPath,
+    coverageHealth: covDiag?.coverageHealth ?? null
+  };
 }
 
 function buildPromotionFailureError(
   originalError: unknown,
   index: MaterialIndex | null,
   previousIndex: MaterialIndex | null,
-  preservedStagingPath: string | null
+  preservedStagingPath: string | null,
+  logFile?: string,
+  diagnosticsFile?: string
 ): Error {
   const base = originalError instanceof Error ? originalError.message : String(originalError);
   // Replace the generic trailing phrase with a context-aware one
@@ -829,9 +968,12 @@ function buildPromotionFailureError(
     ? `\nFailed staging output preserved at: ${preservedStagingPath}`
     : '';
 
+  const logNote = logFile ? `\nUpdate log: ${logFile}` : '';
+  const diagNote = diagnosticsFile ? `\nDiagnostics: ${diagnosticsFile}` : '';
+
   // Strip the generic "Keeping the existing cache." so we can append the correct message.
   const cleanedBase = base.replace(/\s*Keeping the existing cache\.\s*$/, '').trim();
-  return new Error(`${cleanedBase}\n${cacheStatus}${diagnostics}${stagingNote}`);
+  return new Error(`${cleanedBase}\n${cacheStatus}${diagnostics}${stagingNote}${logNote}${diagNote}`);
 }
 
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir): Promise<MaterialIndex> {
@@ -943,11 +1085,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     statusTablesRenderedAsPlaceholder = 0,
     unsupportedStatusTableSchemaCount = 0,
     statusTableDiagnostics = [],
+    tokenTablesResolved = 0,
+    tokenTablesDecoded = 0,
+    tokenTablesRenderedAsPlaceholder = 0,
+    tokenTablesUnsupportedSchema = 0,
+    statusTablesDecoded = 0,
+    resourceChunksRequested = 0,
+    resourceChunksResolved = 0,
+    resourceChunksDecoded = 0,
+    resourceChunksRendered = 0,
+    resourceChunksPlaceholder = 0,
     missingRequestedTokenSets = [],
     unknownJsonResourceCount = 0,
     capturedJsonResponseCounts = {},
-    rawJsonDebugFilesWritten = 0
-    ,
+    rawJsonDebugFilesWritten = 0,
     routeMetadataWarnings = [],
     candidateSelectionReasons = []
   }: {
@@ -968,12 +1119,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables?: number;
     tokenTablesRendered?: number;
     tokenTablesRequested?: number;
+    tokenTablesResolved?: number;
+    tokenTablesDecoded?: number;
+    tokenTablesRenderedAsPlaceholder?: number;
+    tokenTablesUnsupportedSchema?: number;
     tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
     statusTablesRequested?: number;
     statusTablesResolved?: number;
+    statusTablesDecoded?: number;
     statusTablesRenderedAsPlaceholder?: number;
     unsupportedStatusTableSchemaCount?: number;
     statusTableDiagnostics?: ExtractionRouteDiagnostic['statusTableDiagnostics'];
+    resourceChunksRequested?: number;
+    resourceChunksResolved?: number;
+    resourceChunksDecoded?: number;
+    resourceChunksRendered?: number;
+    resourceChunksPlaceholder?: number;
     missingRequestedTokenSets?: string[];
     unknownJsonResourceCount?: number;
     capturedJsonResponseCounts?: Partial<Record<JsonResponseType, number>>;
@@ -1003,12 +1164,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables,
     tokenTablesRendered,
     tokenTablesRequested,
+    tokenTablesResolved,
+    tokenTablesDecoded,
+    tokenTablesRenderedAsPlaceholder,
+    tokenTablesUnsupportedSchema,
     tokenContextDiagnostics,
     statusTablesRequested,
     statusTablesResolved,
+    statusTablesDecoded,
     statusTablesRenderedAsPlaceholder,
     unsupportedStatusTableSchemaCount,
     statusTableDiagnostics,
+    resourceChunksRequested,
+    resourceChunksResolved,
+    resourceChunksDecoded,
+    resourceChunksRendered,
+    resourceChunksPlaceholder,
     missingRequestedTokenSets,
     unknownJsonResourceCount,
     capturedJsonResponseCounts,
@@ -1095,14 +1266,23 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
+                tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+                tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+                tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
                 tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
                 statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
                 statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
                 unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
                 statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
-                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets
-                ,
+                resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+                resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+                resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+                resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+                resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
+                missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
                 routeMetadataWarnings: route.metadataWarnings ?? []
               }));
               return;
@@ -1125,12 +1305,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
                 tokenTables: extraction.pageDiagnostic.tokenTables,
                 tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
                 tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+                tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
+                tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+                tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+                tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
                 tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
                 statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
                 statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+                statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
                 statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
                 unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
                 statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+                resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+                resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+                resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+                resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+                resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
                 missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
                 rawJsonDebugFilesWritten,
                 routeMetadataWarnings: route.metadataWarnings ?? [],
@@ -1487,12 +1677,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTables: networkExtraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
           tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
+          tokenTablesResolved: networkExtraction.pageDiagnostic.tokenTablesResolved ?? 0,
+          tokenTablesDecoded: networkExtraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+          tokenTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+          tokenTablesUnsupportedSchema: networkExtraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
           tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
           statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
           statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
+          statusTablesDecoded: networkExtraction.pageDiagnostic.statusTablesDecoded ?? 0,
           statusTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
           unsupportedStatusTableSchemaCount: networkExtraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
           statusTableDiagnostics: networkExtraction.pageDiagnostic.statusTableDiagnostics ?? [],
+          resourceChunksRequested: networkExtraction.pageDiagnostic.resourceChunksRequested ?? 0,
+          resourceChunksResolved: networkExtraction.pageDiagnostic.resourceChunksResolved ?? 0,
+          resourceChunksDecoded: networkExtraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+          resourceChunksRendered: networkExtraction.pageDiagnostic.resourceChunksRendered ?? 0,
+          resourceChunksPlaceholder: networkExtraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
           missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
           unknownJsonResourceCount,
           capturedJsonResponseCounts,
