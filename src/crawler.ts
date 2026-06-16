@@ -1537,7 +1537,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         emitProgress(true);
 
         const { routes: siteMetaDescriptors, publicCount, privateCount, redirectCount, aliasCount } = buildSiteMetaRouteDescriptors(siteMeta);
-        coverageDiagnostics.siteMetaRouteCount = siteMeta.routes.length;
+        const siteMetaTotalRouteCount = Object.keys(siteMeta.routes).length;
+        coverageDiagnostics.siteMetaRouteCount = siteMetaTotalRouteCount;
         coverageDiagnostics.siteMetaPublicRouteCount = publicCount;
         coverageDiagnostics.siteMetaPrivateRouteCount = privateCount;
         coverageDiagnostics.siteMetaRedirectRouteCount = redirectCount;
@@ -1545,7 +1546,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
         logger?.log('info', 'site-meta:routes-enumerated', {
           phase: 'enumerate-routes',
-          totalRoutes: siteMeta.routes.length,
+          totalRoutes: siteMetaTotalRouteCount,
           publicRoutes: publicCount,
           privateSkipped: privateCount,
           redirectSkipped: redirectCount,
@@ -1588,9 +1589,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         if (signal?.aborted) throw err;
         const reason = err instanceof Error ? err.message : String(err);
         const isSiteMetaError = err instanceof SiteMetaParseError;
+        const isFormatError = isSiteMetaError && err.isFormatError;
+        // Schema/format errors mean site_meta.js was fetched but has an unexpected structure.
+        // This is not a transient failure — rethrow so the refresh fails visibly instead of
+        // silently falling back to slug-only routes that produce broken direct JSON.
+        if (isFormatError) {
+          logger?.log('error', 'site-meta:format-error', { phase: 'fetch-site-meta', reason });
+          logError(`site_meta.js schema error (${reason}). Update the schema to match the current site structure.`);
+          throw err;
+        }
         siteMetaFailed = true;
-        // Log site_meta failure silently (structured logger only) when falling back to bundle.
-        // Only emit to stderr when the format was recognized but broken (not a simple HTTP 404).
+        // Network/HTTP errors: fall back to bundle discovery silently.
         logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError });
         if (verbose) {
           logVerbose(`site_meta.js unavailable (${reason}); falling back to Angular bundle for route discovery`);
@@ -1770,11 +1779,21 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
       if (recoveryResult) {
         const recoveredVersion = recoveryResult.carbonVersion;
-        // Use site_meta routes if available; otherwise fall back to slug-only routes from discovery
-        const siteMetaRouteSet = Array.from(angularRoutePublicDocPaths).map((p) => p.replace(/^\/+|\/+$/g, '')).filter(Boolean);
+        // Use site_meta routes if available; otherwise fall back to slug-only routes from discovery.
+        // Filter blog routes when includeBlog is false.
+        const siteMetaRouteSet = Array.from(angularRoutePublicDocPaths)
+          .map((p) => p.replace(/^\/+|\/+$/g, ''))
+          .filter((slug) => {
+            if (!slug) return false;
+            if (!includeBlog && isBlogPath(`/${slug}`)) {
+              policySkippedDocPaths.add(`/${slug}`);
+              return false;
+            }
+            return true;
+          });
         const recoveredRoutes = siteMetaRouteSet.length > 0
           ? siteMetaRouteSet.map((slug): DsdbRoute => ({ slug }))
-          : buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths);
+          : buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths).filter((r) => includeBlog || !isBlogPath(`/${r.slug}`));
         const recoveredConfig: DsdbSiteConfig = { carbonVersion: recoveredVersion, routes: recoveredRoutes };
         dsdbConfigSource = 'browser-network';
         directJsonEnabled = true;
@@ -1936,13 +1955,25 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
+  // If a significant number of direct JSON attempts all failed, the extraction pipeline is broken.
+  // Use a minimum threshold to avoid false positives in small crawls where browser DOM compensates.
+  const MIN_DIRECT_JSON_ATTEMPTS_FOR_FAILURE_CHECK = 5;
+  if (dsdbAttemptedCount >= MIN_DIRECT_JSON_ATTEMPTS_FOR_FAILURE_CHECK && extractionDiagnostics.pagesAcceptedFromDirectJson === 0) {
+    coverageDiagnostics.coverageWarnings.push(
+      `direct-json-failure:attempted=${dsdbAttemptedCount}:saved=0`
+    );
+    coverageDiagnostics.coverageVerified = false;
+  }
   coverageDiagnostics.coverageHealth = computeCoverageHealth(coverageDiagnostics);
+  // failedPageCount includes both browser crawl failures and direct JSON route failures
+  // so the reported count is consistent with routeDiagnostics entries with sourceUsed:'failed'.
+  const directJsonFailedCount = extractionDiagnostics.pagesFailed;
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,
     pageCount: pages.length,
     attemptedPageCount: dsdbAttemptedCount + seen.size,
-    failedPageCount: failedUrls.length,
+    failedPageCount: failedUrls.length + directJsonFailedCount,
     failedUrls,
     qualityReport,
     extractionDiagnostics,
@@ -1975,7 +2006,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       angularRoutePublicDocPaths
     );
     const capturedAt = new Date().toISOString();
-    const routes = config.routes;
+    // Filter blog routes when includeBlog is false, recording them as policy-skipped.
+    const eligibleRoutes = includeBlog
+      ? config.routes
+      : config.routes.filter((route) => {
+          if (isBlogPath(`/${route.slug}`)) {
+            policySkippedDocPaths.add(`/${route.slug}`);
+            return false;
+          }
+          return true;
+        });
+    // Pre-limit to remaining page budget so we don't schedule hundreds of fetches
+    // when maxPages is small and none have been saved yet.
+    const remainingBudget = Math.max(0, maxPages - pages.length);
+    const routes = eligibleRoutes.slice(0, remainingBudget);
     knownTargetPageCount = Math.min(maxPages, pages.length + routes.length);
     crawlPhase = 'fetch-page-data';
     emitProgress(true);

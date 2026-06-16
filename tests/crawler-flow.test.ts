@@ -897,4 +897,78 @@ describe('crawlMaterialDocs', () => {
       expect.stringMatching(/^coverage-partial:max-pages-limited:/)
     ]));
   }, 10_000);
+
+  it('includeBlog:false does not attempt /blog routes during direct JSON extraction', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    // Bundle has one real route and three blog routes
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"blog/2025/some-post","documentId":"doc-blog-1","collectionId":"BlogM3","collectionName":"BlogM3","pageCanonId":"blog-post-1","exportedCarbonFileId":"blog-post-1.json"',
+      '"slug":"blog/2025/another-post","documentId":"doc-blog-2","collectionId":"BlogM3","collectionName":"BlogM3","pageCanonId":"blog-post-2","exportedCarbonFileId":"blog-post-2.json"',
+      '"slug":"blog/2024/old-post","documentId":"doc-blog-3","collectionId":"BlogM3","collectionName":"BlogM3","pageCanonId":"blog-post-3","exportedCarbonFileId":"blog-post-3.json"'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 10, minPageCount: 1, includeBlog: false });
+
+    // No /blog routes should have been attempted via direct JSON
+    const directJsonAttempted = index.extractionDiagnostics?.routeDiagnostics?.filter((d) => d.directJsonAttempted) ?? [];
+    const blogAttempted = directJsonAttempted.filter((d) => d.path.startsWith('blog/'));
+    expect(blogAttempted).toHaveLength(0);
+
+    // Blog routes should be counted as policy-skipped
+    expect(index.coverageDiagnostics?.skippedBlogCount).toBeGreaterThanOrEqual(3);
+    expect(index.coverageDiagnostics?.includeBlog).toBe(false);
+
+    // The real route should have been extracted
+    expect(index.extractionDiagnostics?.pagesAcceptedFromDirectJson).toBeGreaterThanOrEqual(1);
+  }, 10_000);
+
+  it('maxPages limits the number of direct JSON extraction attempts', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    // Bundle has 10 routes — far more than maxPages:3
+    const slugs = Array.from({ length: 10 }, (_, i) => `components/item-${i}/overview`);
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      ...slugs.map((slug, i) =>
+        `"slug":"${slug}","documentId":"doc-${i}","collectionId":"ComponentsM3","collectionName":"ComponentsM3","pageCanonId":"canon-${i}","exportedCarbonFileId":"canon-${i}.json"`
+      )
+    ].join(',');
+
+    // Only the first route gets page data (so it saves); others 404
+    const pageData = { result: { pageContext: { title: 'Item 0', documentId: 'doc-0', pageCanonId: 'canon-0', slug: slugs[0] } } };
+    const contentPage = {
+      title: 'Item 0',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Item 0 provides useful information with enough text for crawler validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-0.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/canon-0.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 3, minPageCount: 1 });
+
+    // With maxPages:3 and pre-limiting, at most 3 direct JSON routes should be attempted
+    const directJsonAttempted = index.extractionDiagnostics?.routeDiagnostics?.filter((d) => d.directJsonAttempted) ?? [];
+    expect(directJsonAttempted.length).toBeLessThanOrEqual(3);
+  }, 10_000);
 });

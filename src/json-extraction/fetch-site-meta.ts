@@ -8,19 +8,31 @@ const SiteMetaReferenceSchema = z.object({
   repo_id: z.string().optional(),
 }).passthrough();
 
-export const SiteMetaRouteSchema = z.object({
-  route: z.string(),
+/**
+ * Schema for the value of each entry in the site_meta.routes object map.
+ * The route path is the key; this schema describes the value.
+ */
+export const SiteMetaRouteValueSchema = z.object({
   other_routes: z.array(z.string()).optional().default([]),
   public: z.boolean().optional(),
   redirect_external_url: z.string().nullable().optional(),
   reference: SiteMetaReferenceSchema.optional(),
 }).passthrough();
 
+/**
+ * The real site_meta.routes shape is a map keyed by route path:
+ *   { "/components/buttons/specs": { public: true, reference: { collection_id: "...", document_id: "..." } }, ... }
+ */
 export const SiteMetaSchema = z.object({
-  routes: z.array(SiteMetaRouteSchema),
+  routes: z.record(z.string(), SiteMetaRouteValueSchema),
 }).passthrough();
 
-export type SiteMetaRoute = z.infer<typeof SiteMetaRouteSchema>;
+/** @deprecated Use SiteMetaRouteValueSchema */
+export const SiteMetaRouteSchema = SiteMetaRouteValueSchema;
+
+export type SiteMetaRouteValue = z.infer<typeof SiteMetaRouteValueSchema>;
+/** @deprecated Use SiteMetaRouteValue */
+export type SiteMetaRoute = SiteMetaRouteValue;
 export type SiteMeta = z.infer<typeof SiteMetaSchema>;
 
 export type SiteMetaRouteDescriptor = {
@@ -40,9 +52,12 @@ export type SiteMetaParseResult =
 // ── Public API ────────────────────────────────────────────────────────────────
 
 export class SiteMetaParseError extends Error {
-  constructor(message: string, cause?: unknown) {
-    super(message, { cause });
+  /** True when the JS was fetched and parsed but the schema/shape was wrong. */
+  readonly isFormatError: boolean;
+  constructor(message: string, options?: { isFormatError?: boolean; cause?: unknown }) {
+    super(message, { cause: options?.cause });
     this.name = 'SiteMetaParseError';
+    this.isFormatError = options?.isFormatError ?? false;
   }
 }
 
@@ -58,7 +73,7 @@ export async function fetchSiteMeta(
   try {
     response = await fetchImpl(url, { signal });
   } catch (err) {
-    throw new SiteMetaParseError(`site_meta.js fetch failed: ${err instanceof Error ? err.message : String(err)}`, err);
+    throw new SiteMetaParseError(`site_meta.js fetch failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
   if (!response.ok) {
     throw new SiteMetaParseError(`site_meta.js fetch failed: HTTP ${response.status} ${response.statusText}`);
@@ -70,6 +85,9 @@ export async function fetchSiteMeta(
 /**
  * Parses /site_meta.js text and extracts the site_meta object.
  * Throws SiteMetaParseError if the shape is not recognized or validation fails.
+ *
+ * The real format uses routes as an object map keyed by route path:
+ *   window.site_meta = { routes: { "/path": { public: true, reference: { ... } } } }
  */
 export function parseSiteMetaJs(text: string): SiteMeta {
   const extracted = extractJsonObjectFromJs(text, 'site_meta');
@@ -86,23 +104,25 @@ export function parseSiteMetaJs(text: string): SiteMeta {
   } catch (err) {
     throw new SiteMetaParseError(
       `site_meta.js: JSON.parse failed on extracted object: ${err instanceof Error ? err.message : String(err)}`,
-      err
+      { cause: err }
     );
   }
 
   const result = SiteMetaSchema.safeParse(raw);
   if (!result.success) {
     throw new SiteMetaParseError(
-      `site_meta.js: schema validation failed — routes array missing or malformed. ` +
+      `site_meta.js: schema validation failed — routes must be an object map keyed by route path. ` +
       `Zod error: ${result.error.message}. ` +
-      'This indicates the site has changed its site_meta structure. Update the schema.'
+      'Update the schema if the site has changed its site_meta structure.',
+      { isFormatError: true }
     );
   }
 
-  if (result.data.routes.length === 0) {
+  if (Object.keys(result.data.routes).length === 0) {
     throw new SiteMetaParseError(
-      'site_meta.js: parsed successfully but routes array is empty. ' +
-      'This is unexpected and likely indicates a site structure change.'
+      'site_meta.js: parsed successfully but routes object is empty. ' +
+      'This is unexpected and likely indicates a site structure change.',
+      { isFormatError: true }
     );
   }
 
@@ -110,7 +130,7 @@ export function parseSiteMetaJs(text: string): SiteMeta {
 }
 
 /**
- * Converts raw site_meta routes into normalized descriptors.
+ * Converts raw site_meta routes (object map) into normalized descriptors.
  * Filters: public-only, excludes external redirects.
  * Deduplicates via other_routes aliasing.
  * Returns diagnostics alongside the filtered list.
@@ -130,7 +150,7 @@ export function buildSiteMetaRouteDescriptors(siteMeta: SiteMeta): {
   const routes: SiteMetaRouteDescriptor[] = [];
   const seenRoutes = new Set<string>();
 
-  for (const raw of siteMeta.routes) {
+  for (const [routePath, raw] of Object.entries(siteMeta.routes)) {
     const isPublic = raw.public !== false;
     const hasExternalRedirect = Boolean(raw.redirect_external_url);
 
@@ -143,7 +163,7 @@ export function buildSiteMetaRouteDescriptors(siteMeta: SiteMeta): {
       continue;
     }
 
-    const canonicalRoute = raw.route;
+    const canonicalRoute = routePath;
     if (seenRoutes.has(canonicalRoute)) continue;
     seenRoutes.add(canonicalRoute);
 

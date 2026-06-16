@@ -195,7 +195,7 @@ export type ExtractionDiagnostics = {
   pageDiagnostics: ExtractionPageDiagnostic[];
 };
 
-export type CoverageHealth = 'verified' | 'partial' | 'unverified' | 'failed';
+export type CoverageHealth = 'verified' | 'partial' | 'unverified' | 'failed' | 'broken';
 
 export type CoverageDiagnostics = {
   discoveredPublicUrlCount: number;

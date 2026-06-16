@@ -46,8 +46,11 @@ export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth
   const hasRegression = warnings.some((w) => w.startsWith('coverage-regression:'));
   const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
   const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
+  const hasDirectJsonFailure = warnings.some((w) => w.startsWith('direct-json-failure:'));
   // Regression always means failed regardless of partial flag
   if (hasRegression) return 'failed';
+  // Every direct JSON attempt failing means the extraction pipeline is broken
+  if (hasDirectJsonFailure) return 'broken';
   // An unexpected coverage gap (no max-pages explanation) is a failure
   if (hasGap && !hasPartial) return 'failed';
   if (diag.coverageVerified) return 'verified';
@@ -222,8 +225,46 @@ export function assertValidIndex(index: MaterialIndex, minPageCount: number): vo
   }
 }
 
+const REQUIRED_SAMPLE_SLUGS = [
+  'components/buttons/specs',
+  'components/lists/specs',
+  'styles/color/roles',
+  'foundations/design-tokens/overview',
+];
+
 export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex: MaterialIndex | null, options: CachePromotionSafetyOptions = {}): void {
   if (options.force) return;
+
+  // Fail if the direct JSON extraction pipeline is completely broken.
+  const warnings = nextIndex.coverageDiagnostics?.coverageWarnings ?? [];
+  if (warnings.some((w) => w.startsWith('direct-json-failure:'))) {
+    throw new Error(
+      'Direct JSON extraction was attempted but produced 0 accepted pages. ' +
+      'The extraction pipeline appears broken. Keeping the existing cache. Use --force to promote anyway.'
+    );
+  }
+
+  // Fail if any required sample routes were selected and failed.
+  const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
+  const failedRequired = REQUIRED_SAMPLE_SLUGS.filter((slug) => {
+    const diag = routeDiagnostics.find((d) => d.path === slug);
+    return diag !== undefined && diag.sourceUsed === 'failed';
+  });
+  if (failedRequired.length > 0) {
+    throw new Error(
+      `Required sample routes failed JSON extraction: ${failedRequired.join(', ')}. ` +
+      'Keeping the existing cache. Use --force to promote anyway.'
+    );
+  }
+
+  // Fail if token/spec tables were expected but none were rendered.
+  const diag = nextIndex.extractionDiagnostics;
+  if (diag && diag.tokenTablesRequested > 0 && diag.tokenTablesSuccessfullyRendered === 0) {
+    throw new Error(
+      `Token tables were requested (${diag.tokenTablesRequested}) but none rendered successfully. ` +
+      'Keeping the existing cache. Use --force to promote anyway.'
+    );
+  }
 
   if (nextIndex.qualityReport?.duplicateContent.length) {
     const duplicate = nextIndex.qualityReport.duplicateContent[0];
