@@ -615,7 +615,7 @@ export async function fetchDsdbSiteConfig(baseUrl: string, signal?: AbortSignal)
   }
 }
 
-const DSDB_CONTENT_VERSION_RE = /\/_dsm\/content\/m3\/([^/?#]+)\//i;
+const DSDB_VERSION_URL_RE = /\/_dsm\/(?:content\/m3|data\/dsdb-m3)\/([^/?#]+)\//i;
 const NETWORK_BOOTSTRAP_SEED_PATHS = [
   '/',
   '/components/buttons/specs',
@@ -625,20 +625,23 @@ const NETWORK_BOOTSTRAP_SEED_PATHS = [
 ];
 
 /**
- * Extracts carbonVersion by observing `/_dsm/content/m3/{version}/` URLs captured
- * from a set of browser-navigated seed pages. Returns null if no match is found.
+ * Extracts carbonVersion by observing `/_dsm/content/m3/{version}/` or
+ * `/_dsm/data/dsdb-m3/{version}/` URLs captured from a set of browser-navigated
+ * seed pages. Returns null if no match is found.
  */
 export async function bootstrapCarbonVersionFromBrowser(
   browserContext: BrowserContext,
   baseUrl: string,
   seedPaths: string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  logger?: UpdateLogger
 ): Promise<{ carbonVersion: string; observedUrls: string[] } | null> {
   const observedUrls: string[] = [];
 
   for (const seedPath of seedPaths) {
     if (signal?.aborted) return null;
     const seedUrl = new URL(seedPath, baseUrl).toString();
+    logger?.log('info', 'dsdb-config:network-seed-started', { seedPath, seedUrl });
     let page: Page | null = null;
     const listener = (response: { url: () => string; ok: () => boolean }) => {
       const url = response.url();
@@ -648,10 +651,17 @@ export async function bootstrapCarbonVersionFromBrowser(
     try {
       page = await browserContext.newPage();
       page.on('response', listener);
-      await page.goto(seedUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await Promise.all([
+        page.goto(seedUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }),
+        page.waitForResponse(
+          (r) => r.url().includes('/_dsm/') || r.url().includes('/page-data/'),
+          { timeout: 8_000 }
+        ).catch(() => undefined)
+      ]);
       for (const url of observedUrls) {
-        const match = url.match(DSDB_CONTENT_VERSION_RE);
+        const match = url.match(DSDB_VERSION_URL_RE);
         if (match?.[1]) {
+          logger?.log('info', 'dsdb-config:network-candidate-detected', { url, carbonVersion: match[1], seedPath });
           return { carbonVersion: match[1], observedUrls };
         }
       }
@@ -685,7 +695,7 @@ export function buildSlugOnlyRoutesFromDocPaths(docPaths: Iterable<string>): Dsd
 
 export function extractCarbonVersionFromNetworkUrls(urls: string[]): string | null {
   for (const url of urls) {
-    const match = url.match(DSDB_CONTENT_VERSION_RE);
+    const match = url.match(DSDB_VERSION_URL_RE);
     if (match?.[1]) return match[1];
   }
   return null;
@@ -1477,7 +1487,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         reason,
         networkRecoveryWillAttempt: true
       });
-      void logger?.writeIntermediateDiagnostics({
+      await logger?.writeIntermediateDiagnostics({
         promotionDecision: 'pending',
         startedAt,
         bundleDiscoveryFailed: true,
@@ -1541,7 +1551,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         seedPaths: NETWORK_BOOTSTRAP_SEED_PATHS,
         bundleDiscoveryFailed
       });
-      void logger?.writeIntermediateDiagnostics({
+      await logger?.writeIntermediateDiagnostics({
         promotionDecision: 'pending',
         startedAt,
         bundleDiscoveryFailed: true,
@@ -1558,7 +1568,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           browserContext,
           baseUrl,
           NETWORK_BOOTSTRAP_SEED_PATHS,
-          signal
+          signal,
+          logger
         );
       } catch (err) {
         if (signal?.aborted) throw err;
@@ -1571,6 +1582,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         const recoveredConfig: DsdbSiteConfig = { carbonVersion: recoveredVersion, routes: recoveredRoutes };
         dsdbConfigSource = 'browser-network';
         directJsonEnabled = true;
+        directJsonDisabledReason = null;
         networkRecoverySucceeded = true;
 
         for (const url of recoveryResult.observedUrls) {
@@ -1587,11 +1599,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           source: 'browser-network',
           carbonVersion: recoveredVersion
         });
-        void logger?.writeIntermediateDiagnostics({
+        await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
           bundleDiscoveryFailed: true,
           directJsonEnabled: true,
+          directJsonDisabledReason: null,
           dsdbConfigSource: 'browser-network',
           networkRecoveryAttempted: true,
           networkRecoverySucceeded: true
@@ -1625,7 +1638,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           networkRecoverySucceeded: false,
           directJsonDisabledReason: reason
         });
-        void logger?.writeIntermediateDiagnostics({
+        await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
           bundleDiscoveryFailed: true,

@@ -8,6 +8,7 @@ import {
   extractCarbonVersionFromNetworkUrls
 } from '../src/crawler.js';
 import { normalizeMaterialUrl } from '../src/crawler-utils.js';
+import type { CrawlProgress } from '../src/types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Unit tests: pure helper functions
@@ -20,17 +21,23 @@ describe('extractCarbonVersionFromNetworkUrls', () => {
     ])).toBe('1.2.3');
   });
 
-  it('returns null when no matching URL is present', () => {
+  it('extracts carbonVersion from a /_dsm/data/dsdb-m3/{version}/ URL', () => {
+    expect(extractCarbonVersionFromNetworkUrls([
+      'https://m3.material.io/_dsm/data/dsdb-m3/4.5.6/TOKEN_TABLE.x.json'
+    ])).toBe('4.5.6');
+  });
+
+  it('returns null when no /_dsm/ version URL is present', () => {
     expect(extractCarbonVersionFromNetworkUrls([
       'https://m3.material.io/page-data/components/buttons/page-data.json',
-      'https://m3.material.io/_dsm/data/dsdb-m3/1.2.3/TOKEN_TABLE.x.json'
+      'https://m3.material.io/static/angular/main.abc.js'
     ])).toBeNull();
   });
 
   it('returns the first match when multiple URLs match', () => {
     expect(extractCarbonVersionFromNetworkUrls([
       'https://m3.material.io/_dsm/content/m3/1.0.0/first.json',
-      'https://m3.material.io/_dsm/content/m3/2.0.0/second.json'
+      'https://m3.material.io/_dsm/data/dsdb-m3/2.0.0/second.json'
     ])).toBe('1.0.0');
   });
 
@@ -69,23 +76,23 @@ describe('normalizeMaterialUrl - /m3/pages/ alias', () => {
   const base = 'https://m3.material.io';
 
   it('canonicalizes /m3/pages/components/buttons to /components/buttons', () => {
-    const result = normalizeMaterialUrl('https://m3.material.io/m3/pages/components/buttons', base);
-    expect(result).toBe('https://m3.material.io/components/buttons');
+    expect(normalizeMaterialUrl('https://m3.material.io/m3/pages/components/buttons', base))
+      .toBe('https://m3.material.io/components/buttons');
   });
 
   it('canonicalizes /m3/pages/styles/color to /styles/color', () => {
-    const result = normalizeMaterialUrl('/m3/pages/styles/color', base);
-    expect(result).toBe('https://m3.material.io/styles/color');
+    expect(normalizeMaterialUrl('/m3/pages/styles/color', base))
+      .toBe('https://m3.material.io/styles/color');
   });
 
   it('does not modify paths that do not start with /m3/pages/', () => {
-    const result = normalizeMaterialUrl('/components/buttons', base);
-    expect(result).toBe('https://m3.material.io/components/buttons');
+    expect(normalizeMaterialUrl('/components/buttons', base))
+      .toBe('https://m3.material.io/components/buttons');
   });
 
   it('does not modify /m3/ paths that are not /m3/pages/', () => {
-    const result = normalizeMaterialUrl('/m3/other/path', base);
-    expect(result).toBe('https://m3.material.io/m3/other/path');
+    expect(normalizeMaterialUrl('/m3/other/path', base))
+      .toBe('https://m3.material.io/m3/other/path');
   });
 });
 
@@ -93,65 +100,49 @@ describe('normalizeMaterialUrl - /m3/pages/ alias', () => {
 // Unit tests: bootstrapCarbonVersionFromBrowser
 // ────────────────────────────────────────────────────────────────────────────
 
-function makeBrowserContext(responseUrlsByPageUrl: Record<string, string[]>) {
+function makeMockPage(
+  responseUrls: string[] = [],
+  opts: { gotoThrows?: boolean } = {}
+) {
   type RawListener = (r: { url: () => string; ok: () => boolean }) => void;
   const listeners = new Set<RawListener>();
-
-  const makePage = (pageUrl: string) => ({
+  return {
     goto: vi.fn(async () => {
-      const responseUrls = responseUrlsByPageUrl[pageUrl] ?? [];
+      if (opts.gotoThrows) throw new Error('nav failed');
       for (const rUrl of responseUrls) {
         for (const l of listeners) l({ url: () => rUrl, ok: () => true });
       }
     }),
-    on: vi.fn((event: string, listener: RawListener) => {
-      if (event === 'response') listeners.add(listener);
-    }),
-    off: vi.fn((event: string, listener: RawListener) => {
-      if (event === 'response') listeners.delete(listener);
-    }),
-    close: vi.fn(async () => undefined)
-  });
-
-  return {
-    newPage: vi.fn(async () => makePage(/* filled per-call below */ '')),
-    _makePage: makePage,
-    _listeners: listeners,
+    on: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.add(l); }),
+    off: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.delete(l); }),
+    waitForResponse: vi.fn(async () => ({})),
     close: vi.fn(async () => undefined)
   };
 }
 
 describe('bootstrapCarbonVersionFromBrowser', () => {
-  it('returns carbonVersion when a seed page returns a matching /_dsm/content URL', async () => {
-    type RawListener = (r: { url: () => string; ok: () => boolean }) => void;
-    const listeners = new Set<RawListener>();
-    const page = {
-      goto: vi.fn(async () => {
-        for (const l of listeners) {
-          l({ url: () => 'https://m3.material.io/_dsm/content/m3/9.9.9/page.json', ok: () => true });
-        }
-      }),
-      on: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.add(l); }),
-      off: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.delete(l); }),
-      close: vi.fn(async () => undefined)
-    };
+  it('returns carbonVersion when a seed page returns a /_dsm/content/m3/ URL', async () => {
+    const page = makeMockPage(['https://m3.material.io/_dsm/content/m3/9.9.9/page.json']);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
     const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
 
-    expect(result).not.toBeNull();
     expect(result?.carbonVersion).toBe('9.9.9');
     expect(result?.observedUrls).toContain('https://m3.material.io/_dsm/content/m3/9.9.9/page.json');
     expect(page.close).toHaveBeenCalled();
   });
 
+  it('returns carbonVersion when a seed page returns a /_dsm/data/dsdb-m3/ URL', async () => {
+    const page = makeMockPage(['https://m3.material.io/_dsm/data/dsdb-m3/3.1.4/TOKEN_TABLE.colors.json']);
+    const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
+
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
+
+    expect(result?.carbonVersion).toBe('3.1.4');
+  });
+
   it('returns null when no seed page returns a matching URL', async () => {
-    const page = {
-      goto: vi.fn(async () => undefined),
-      on: vi.fn(),
-      off: vi.fn(),
-      close: vi.fn(async () => undefined)
-    };
+    const page = makeMockPage([]);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
     const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/seed1', '/seed2'], undefined);
@@ -161,12 +152,7 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
   });
 
   it('closes the page even when goto throws', async () => {
-    const page = {
-      goto: vi.fn(async () => { throw new Error('nav failed'); }),
-      on: vi.fn(),
-      off: vi.fn(),
-      close: vi.fn(async () => undefined)
-    };
+    const page = makeMockPage([], { gotoThrows: true });
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
     const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/fail'], undefined);
@@ -184,6 +170,15 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
 
     expect(result).toBeNull();
     expect(ctx.newPage).not.toHaveBeenCalled();
+  });
+
+  it('calls waitForResponse concurrently with goto for each seed', async () => {
+    const page = makeMockPage(['https://m3.material.io/_dsm/content/m3/1.0.0/x.json']);
+    const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
+
+    await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
+
+    expect(page.waitForResponse).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -234,6 +229,7 @@ const playwrightMock = vi.hoisted(() => {
       if (event === 'response') responseListeners.delete(listener);
     }),
     waitForSelector: vi.fn(async () => undefined),
+    waitForResponse: vi.fn(async () => ({})),
     waitForFunction: vi.fn(async (_fn: unknown, arg?: { minPageTextLength?: number; notFoundTitlePatterns?: unknown[]; notFoundBodyPatterns?: unknown[] }) => {
       const current = pagesByUrl[currentUrl];
       const minPageTextLength = arg?.minPageTextLength ?? 0;
@@ -295,10 +291,18 @@ const { crawlMaterialDocs } = await import('../src/crawler.js');
 
 let cacheDir: string;
 
+function makeFetchWithSitemap(sitemapContent: string) {
+  return vi.fn(async (url: string | URL) => {
+    if (String(url).includes('/sitemap')) {
+      return { ok: true, text: async () => sitemapContent, status: 200 };
+    }
+    return { ok: false, status: 404, text: async () => '' };
+  });
+}
+
 describe('DSDB recovery integration', () => {
   beforeEach(async () => {
     cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-docs-dsdb-recovery-test-'));
-    // Default: fetch fails (no Angular bundle → no carbonVersion)
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, text: async () => '' })));
     playwrightMock.chromium.launch.mockClear();
     playwrightMock.browser.close.mockClear();
@@ -310,6 +314,7 @@ describe('DSDB recovery integration', () => {
     playwrightMock.page.evaluate.mockClear();
     playwrightMock.page.waitForSelector.mockClear();
     playwrightMock.page.waitForFunction.mockClear();
+    playwrightMock.page.waitForResponse.mockClear();
     for (const key of Object.keys(playwrightMock.networkResponsesByUrl)) delete playwrightMock.networkResponsesByUrl[key];
     playwrightMock.responseListeners.clear();
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [];
@@ -327,8 +332,10 @@ describe('DSDB recovery integration', () => {
     await rm(cacheDir, { recursive: true, force: true });
   });
 
-  it('recovers carbonVersion from browser network when bundle discovery fails', async () => {
-    // Arrange: seed page emits a /_dsm/content/m3/ URL
+  it('produces phase=direct-json and directJsonAttemptedPageCount > 0 after network recovery succeeds', async () => {
+    // Sitemap populates discoveredPublicDocPaths so runDirectJsonBatch has routes to attempt
+    vi.stubGlobal('fetch', makeFetchWithSitemap('<urlset><url><loc>https://m3.material.io/components/buttons</loc></url></urlset>'));
+    // Seed page '/' emits a /_dsm/content/m3/ URL during browser navigation
     playwrightMock.networkResponsesByUrl['https://m3.material.io/'] = [
       { url: 'https://m3.material.io/_dsm/content/m3/5.0.0/recovered-page.json', payload: {} }
     ];
@@ -336,39 +343,33 @@ describe('DSDB recovery integration', () => {
       { url: 'https://m3.material.io/_dsm/content/m3/5.0.0/recovered-page.json', payload: {} }
     ];
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    const phases: string[] = [];
+    const index = await crawlMaterialDocs({
+      cacheDir,
+      maxPages: 3,
+      minPageCount: 1,
+      onProgress: (p: CrawlProgress) => { phases.push(p.phase); }
+    });
 
     expect(index.pageCount).toBeGreaterThanOrEqual(1);
-    // directJsonAttemptedPageCount > 0 is the key regression guard
-    const rawIndex = JSON.parse(await readFile(path.join(cacheDir, 'index.json'), 'utf8')) as { attemptedPageCount: number };
-    expect(rawIndex.attemptedPageCount).toBeGreaterThan(0);
-  }, 20_000);
-
-  it('completes a browser-only crawl when both bundle and network recovery fail', async () => {
-    // Arrange: no network responses match /_dsm/content/m3/
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
-
-    expect(index.pageCount).toBeGreaterThanOrEqual(1);
-    // Should still produce pages via browser crawl
-    const rawIndex = JSON.parse(await readFile(path.join(cacheDir, 'index.json'), 'utf8')) as { pageCount: number };
-    expect(rawIndex.pageCount).toBeGreaterThanOrEqual(1);
-  }, 20_000);
-
-  it('writes intermediate diagnostics with bundleDiscoveryFailed=true when bundle fetch fails', async () => {
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    // direct-json phase must have been entered when recovery succeeded
+    expect(phases).toContain('direct-json');
 
     const diagPath = path.join(cacheDir, 'diagnostics', 'latest-update.json');
     const raw = JSON.parse(await readFile(diagPath, 'utf8')) as Record<string, unknown>;
-    expect(raw['bundleDiscoveryFailed']).toBe(true);
-    expect(raw['promotionDecision']).toBe('promoted');
+    expect(raw['directJsonAttemptedPageCount']).toBeGreaterThan(0);
+    expect(raw['dsdbConfigSource']).toBe('browser-network');
+    expect(raw['directJsonEnabled']).toBe(true);
+    expect(raw['directJsonDisabledReason']).toBeNull();
   }, 20_000);
 
-  it('writes dsdbConfigSource=browser-network in diagnostics when network recovery succeeds', async () => {
+  it('extracts carbonVersion from /_dsm/data/dsdb-m3/ URLs during browser-network recovery', async () => {
+    // Use the dsdb-m3 DATA path instead of the content path
     playwrightMock.networkResponsesByUrl['https://m3.material.io/'] = [
-      { url: 'https://m3.material.io/_dsm/content/m3/7.0.0/x.json', payload: {} }
+      { url: 'https://m3.material.io/_dsm/data/dsdb-m3/6.0.0/TOKEN_TABLE.colors.json', payload: {} }
     ];
     playwrightMock.networkResponsesByUrl['https://m3.material.io'] = [
-      { url: 'https://m3.material.io/_dsm/content/m3/7.0.0/x.json', payload: {} }
+      { url: 'https://m3.material.io/_dsm/data/dsdb-m3/6.0.0/TOKEN_TABLE.colors.json', payload: {} }
     ];
 
     await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
@@ -377,17 +378,61 @@ describe('DSDB recovery integration', () => {
     const raw = JSON.parse(await readFile(diagPath, 'utf8')) as Record<string, unknown>;
     expect(raw['dsdbConfigSource']).toBe('browser-network');
     expect(raw['networkRecoverySucceeded']).toBe(true);
+  }, 20_000);
+
+  it('completes a browser-only crawl when both bundle and network recovery fail', async () => {
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+
+    expect(index.pageCount).toBeGreaterThanOrEqual(1);
+    const rawIndex = JSON.parse(await readFile(path.join(cacheDir, 'index.json'), 'utf8')) as { pageCount: number };
+    expect(rawIndex.pageCount).toBeGreaterThanOrEqual(1);
+  }, 20_000);
+
+  it('writes bundleDiscoveryFailed=true and promotionDecision=promoted when bundle fails but crawl completes', async () => {
+    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+
+    const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
+    expect(raw['bundleDiscoveryFailed']).toBe(true);
+    expect(raw['promotionDecision']).toBe('promoted');
+  }, 20_000);
+
+  it('writes dsdbConfigSource=browser-network when network recovery succeeds', async () => {
+    playwrightMock.networkResponsesByUrl['https://m3.material.io/'] = [
+      { url: 'https://m3.material.io/_dsm/content/m3/7.0.0/x.json', payload: {} }
+    ];
+    playwrightMock.networkResponsesByUrl['https://m3.material.io'] = [
+      { url: 'https://m3.material.io/_dsm/content/m3/7.0.0/x.json', payload: {} }
+    ];
+
+    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+
+    const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
+    expect(raw['dsdbConfigSource']).toBe('browser-network');
+    expect(raw['networkRecoverySucceeded']).toBe(true);
     expect(raw['directJsonEnabled']).toBe(true);
   }, 20_000);
 
-  it('writes dsdbConfigSource=null and browserOnlyFallback=true when both paths fail', async () => {
+  it('writes browserOnlyFallback=true when both bundle and network recovery fail', async () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
 
-    const diagPath = path.join(cacheDir, 'diagnostics', 'latest-update.json');
-    const raw = JSON.parse(await readFile(diagPath, 'utf8')) as Record<string, unknown>;
+    const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['bundleDiscoveryFailed']).toBe(true);
     expect(raw['networkRecoveryAttempted']).toBe(true);
     expect(raw['networkRecoverySucceeded']).toBe(false);
     expect(raw['browserOnlyFallback']).toBe(true);
+  }, 20_000);
+
+  it('clears directJsonDisabledReason after successful network recovery', async () => {
+    playwrightMock.networkResponsesByUrl['https://m3.material.io/'] = [
+      { url: 'https://m3.material.io/_dsm/content/m3/8.0.0/x.json', payload: {} }
+    ];
+    playwrightMock.networkResponsesByUrl['https://m3.material.io'] = [
+      { url: 'https://m3.material.io/_dsm/content/m3/8.0.0/x.json', payload: {} }
+    ];
+
+    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+
+    const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
+    expect(raw['directJsonDisabledReason']).toBeNull();
   }, 20_000);
 });
