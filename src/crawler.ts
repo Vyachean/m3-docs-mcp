@@ -14,8 +14,9 @@ import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnost
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
+import { computeEta } from './progress.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CoverageDiagnostics, CrawlOptions, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -28,7 +29,6 @@ const DEFAULT_MIN_PAGE_COUNT = 10;
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
 const BLOG_POST_REUSE_YEAR_LAG = 1;
 const DSDB_CONFIG_TIMEOUT_MS = 30_000;
-const DSDB_DEFAULT_CONCURRENCY = 8;
 const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
@@ -986,6 +986,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const currentUrls = new Map<number, string>();
   let lastSavedUrl: string | null = null;
   let lastFailedUrl: string | null = null;
+  let crawlPhase: CrawlPhase = 'discovering';
+  let knownTargetPageCount: number | null = null;
   throwIfAborted(signal);
 
   const reusableBlogPages = buildReusableBlogPageMap(previousIndex);
@@ -1019,19 +1021,32 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
 
   const emitProgress = (running: boolean, error: string | null = null): void => {
+    const nowMs = Date.now();
+    const startMs = Date.parse(startedAt);
+    const elapsedMs = Math.max(0, nowMs - startMs);
+    const processedPageCount = pages.length + failedUrls.length;
+    const eta = knownTargetPageCount !== null
+      ? computeEta(processedPageCount, knownTargetPageCount, elapsedMs)
+      : null;
     const completedAt = running ? null : new Date().toISOString();
     const progress: CrawlProgress = {
+      phase: running ? crawlPhase : (error ? crawlPhase : 'complete'),
       startedAt,
       updatedAt: new Date().toISOString(),
       completedAt,
       running,
       maxPages,
       concurrency,
+      elapsedMs,
+      processedPageCount,
+      targetPageCount: knownTargetPageCount,
       attemptedPageCount: dsdbAttemptedCount + seen.size,
       savedPageCount: pages.length,
       failedPageCount: failedUrls.length,
       queuedPageCount: queue.length,
       activeWorkerCount: activeWorkers,
+      ratePagesPerSecond: eta?.ratePagesPerSecond ?? null,
+      estimatedRemainingMs: eta?.estimatedRemainingMs ?? null,
       currentUrls: Array.from(currentUrls.values()).sort(),
       lastSavedUrl,
       lastFailedUrl,
@@ -1189,6 +1204,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   });
 
   // ── Phase 1: DSDB direct JSON fetch (no browser) ──────────────────────────
+  emitProgress(true);
   const jsonExtractedSlugs = new Set<string>();
   {
     if (typeof fetch === 'function') {
@@ -1214,11 +1230,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     if (dsdbConfig) {
       addDiscoveredPaths(dsdbConfig.routes.map((route) => normalizeMaterialPublicDocPath(`/${route.slug}`, baseUrl)).filter((value): value is string => Boolean(value)), angularRoutePublicDocPaths);
       const capturedAt = new Date().toISOString();
-      const dsdbBatchSize = DSDB_DEFAULT_CONCURRENCY;
       const routes = dsdbConfig.routes;
-      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += dsdbBatchSize) {
+      knownTargetPageCount = Math.min(maxPages, routes.length);
+      crawlPhase = 'direct-json';
+      for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += concurrency) {
         throwIfAborted(signal);
-        const batch = routes.slice(i, i + dsdbBatchSize);
+        const batch = routes.slice(i, i + concurrency);
         await Promise.all(batch.map(async (route) => {
           if (pages.length >= maxPages || signal?.aborted) return;
           dsdbAttemptedCount += 1;
@@ -1368,6 +1385,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
   if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+    crawlPhase = 'browser-crawl';
+    knownTargetPageCount = maxPages;
     let browser: Browser | null = null;
     try {
       browser = await launchChromium(options.headless ?? true);
@@ -1416,6 +1435,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   }
 
+  crawlPhase = 'finalizing';
   const capturedAt = new Date().toISOString();
   for (const diagnostic of routeDiagnosticsByPath.values()) pushRouteDiagnostic(extractionDiagnostics, diagnostic);
   const qualityReport = createCrawlQualityReport(pages, suspiciousPages);

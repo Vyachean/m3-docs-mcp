@@ -116,6 +116,16 @@ The default minimum is 10 pages, so interrupting the command or crawling fewer t
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. The default is 168 hours, or 7 days. It does not make read/search tool calls block on a refresh.
 
+`--concurrency` controls the maximum number of simultaneous page workers across **all** crawl phases — both the direct JSON fetch phase and the browser crawl fallback phase. The default is 1 (sequential). Values above 8 are rejected. A higher value speeds up the crawl at the cost of more network connections; the same limit applies uniformly to every phase so no single phase can silently exceed the requested cap.
+
+Progress output is printed to stderr throughout the crawl and shows which phase is active, how long the crawl has been running, the approximate ETA and pages/s rate, and how many pages have been saved, failed, and queued. Example:
+
+```
+Material 3 docs cache refresh: phase=browser-crawl elapsed=42s eta≈1m18s rate=0.42/s saved=12/20 failed=4 attempted=22 queued=58 active=6/6 current=https://m3.material.io/components/buttons/specs
+```
+
+ETA is calculated from the elapsed average rate and is only shown after at least 3 pages have been processed and 10 seconds have elapsed. During the browser-crawl phase, where the queue size is still growing, ETA is prefixed with `≈` to indicate it is approximate. When insufficient data is available the field shows `eta=calculating`.
+
 `update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
 By default, `update` excludes blog, news, and article routes (`/blog/**`, `/articles/**`, `/news/**`) from the crawl. The MCP server is primarily intended for Material 3 component specifications, guidelines, design tokens, styles, foundations, and implementation documentation. Blog content is secondary and is excluded by default so it does not consume crawl capacity ahead of core documentation routes. Pass `--include-blog` to include blog routes in the crawl for full-site archival.

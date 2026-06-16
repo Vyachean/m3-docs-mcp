@@ -5,6 +5,7 @@ import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.
 import { crawlMaterialDocs, installPlaywrightChromium } from './crawler.js';
 import { serveMcp } from './mcp-server.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
+import { formatDurationMs } from './progress.js';
 import type { CrawlProgress } from './types.js';
 
 const program = new Command();
@@ -114,23 +115,37 @@ program.parseAsync(process.argv).catch((error) => {
 
 function createCliProgressRenderer(): (progress: CrawlProgress | null) => void {
   let previousLength = 0;
+  let lastRenderMs = 0;
+  const THROTTLE_MS = 1000;
 
   return (progress) => {
     if (!progress) {
       if (process.stderr.isTTY && previousLength > 0) process.stderr.write('\n');
       previousLength = 0;
+      lastRenderMs = 0;
       return;
     }
 
-    const elapsedSeconds = Math.floor((Date.parse(progress.updatedAt) - Date.parse(progress.startedAt)) / 1000);
+    const nowMs = Date.now();
+    if (nowMs - lastRenderMs < THROTTLE_MS && progress.running) return;
+    lastRenderMs = nowMs;
+
+    const elapsed = formatDurationMs(progress.elapsedMs);
+    const etaPrefix = progress.phase === 'browser-crawl' ? 'eta≈' : 'eta=';
+    const etaStr = progress.estimatedRemainingMs !== null
+      ? `${etaPrefix}${formatDurationMs(progress.estimatedRemainingMs)}`
+      : 'eta=calculating';
+    const rateStr = progress.ratePagesPerSecond !== null
+      ? `rate=${progress.ratePagesPerSecond.toFixed(2)}/s`
+      : 'rate=calculating';
     const current = progress.currentUrls[0] ? ` current=${progress.currentUrls[0]}` : '';
-    const line = `Material 3 docs cache refresh: elapsed=${elapsedSeconds}s saved=${progress.savedPageCount}/${progress.maxPages} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount} concurrency=${progress.concurrency}${current}`;
+    const line = `Material 3 docs cache refresh: phase=${progress.phase} elapsed=${elapsed} ${etaStr} ${rateStr} saved=${progress.savedPageCount}/${progress.maxPages} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount}/${progress.concurrency}${current}`;
     if (process.stderr.isTTY) {
       const padding = previousLength > line.length ? ' '.repeat(previousLength - line.length) : '';
       process.stderr.write(`\r${line}${padding}`);
       previousLength = line.length;
     } else {
-      console.error(line);
+      process.stderr.write(`${line}\n`);
     }
   };
 }

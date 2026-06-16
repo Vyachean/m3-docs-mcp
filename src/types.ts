@@ -289,18 +289,26 @@ export type CacheStatus = {
   latestDiagnosticsFile: string | null;
 };
 
+export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'complete';
+
 export type CrawlProgress = {
+  phase: CrawlPhase;
   startedAt: string;
   updatedAt: string;
   completedAt: string | null;
   running: boolean;
   maxPages: number;
   concurrency: number;
+  elapsedMs: number;
+  processedPageCount: number;
+  targetPageCount: number | null;
   attemptedPageCount: number;
   savedPageCount: number;
   failedPageCount: number;
   queuedPageCount: number;
   activeWorkerCount: number;
+  ratePagesPerSecond: number | null;
+  estimatedRemainingMs: number | null;
   currentUrls: string[];
   lastSavedUrl: string | null;
   lastFailedUrl: string | null;
