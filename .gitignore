@@ -5,3 +5,4 @@ coverage/
 .env
 .m3-docs-cache/
 .stryker-tmp/
+tmp/

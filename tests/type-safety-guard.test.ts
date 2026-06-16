@@ -1,21 +1,18 @@
 /**
  * Static type-safety guard for src/json-extraction/**
  *
- * Fails if unsafe external-data type overrides reappear in the JSON extraction
+ * Fails if unsafe external-data type overrides appear in the JSON extraction
  * render/extract paths.
  *
- * Lines annotated with "// zod-boundary-internal-cast" are private schema/format
- * helpers whose casts are inside zod preprocess/transform or low-level formatting
- * implementation details and never escape the decoder boundary.
+ * No bypass mechanism: no allowlist files, no magic comments that suppress
+ * the rule. If TypeScript cannot prove a type, use a zod schema, a decoder
+ * function, or a local type predicate — not a cast.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const JSON_EXTRACTION_DIR = join(import.meta.dirname, '..', 'src', 'json-extraction');
-
-// No broadly allowlisted files — individual lines may be exempted with the
-// "// zod-boundary-internal-cast" inline comment instead.
 
 // Patterns that must not appear in boundary/render files.
 const FORBIDDEN_PATTERNS: Array<{ label: string; pattern: RegExp }> = [
@@ -49,11 +46,7 @@ describe('type-safety guard – json-extraction boundary files', () => {
       it(`${fileName}: no "${label}"`, () => {
         const violations = lines
           .map((line, i) => ({ line: line.trim(), lineNum: i + 1 }))
-          .filter(({ line }) =>
-            !line.startsWith('//')
-            && !line.includes('// zod-boundary-internal-cast')
-            && pattern.test(line)
-          );
+          .filter(({ line }) => !line.startsWith('//') && pattern.test(line));
 
         expect(violations, `Found forbidden pattern "${label}" in ${fileName}`).toHaveLength(0);
       });

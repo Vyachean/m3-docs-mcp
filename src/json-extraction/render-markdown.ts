@@ -141,7 +141,7 @@ export function renderVideoMarkdown({
   return lines.join('\n\n');
 }
 
-export function renderResourcePlaceholder(label: string, details: Record<string, unknown>): string { // zod-boundary-internal-cast – details is always internally-constructed metadata, not external JSON
+export function renderResourcePlaceholder(label: string, details: object): string {
   return [
     `> Material resource placeholder: ${label}`,
     `> ${escapeMarkdownListText(JSON.stringify(details))}`
@@ -402,6 +402,10 @@ function normalizeUnit(unit: string): string {
   return unit.toLowerCase();
 }
 
+function isNonArrayObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
 function formatUnknownStructuredValue(v: Record<string, unknown>): string {
   return stableStringify(v);
 }
@@ -410,42 +414,42 @@ function formatValueNode(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (typeof v !== 'object') return String(v);
   if (Array.isArray(v)) return v.map(formatValueNode).filter(Boolean).join(', ');
+  if (!isNonArrayObject(v)) return '';
 
-  const obj = v as Record<string, unknown>; // zod-boundary-internal-cast
-  if ('red' in obj && 'green' in obj && 'blue' in obj) {
-    const red = Number(obj.red);
-    const green = Number(obj.green);
-    const blue = Number(obj.blue);
-    const alpha = obj.alpha != null ? Number(obj.alpha) : 1;
+  if ('red' in v && 'green' in v && 'blue' in v) {
+    const red = Number(v.red);
+    const green = Number(v.green);
+    const blue = Number(v.blue);
+    const alpha = v.alpha != null ? Number(v.alpha) : 1;
     if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
     if (Number.isFinite(alpha) && alpha < 0.9999) {
       return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
     }
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
-  if ('unit' in obj && typeof obj.unit === 'string') {
-    if (typeof obj.value !== 'number') return '';
-    return `${obj.value}${normalizeUnit(obj.unit)}`;
+  if ('unit' in v && typeof v.unit === 'string') {
+    if (typeof v.value !== 'number') return '';
+    return `${v.value}${normalizeUnit(v.unit)}`;
   }
-  if ('values' in obj && Array.isArray(obj.values)) return obj.values.map(formatValueNode).filter(Boolean).join(', ');
-  if ('family' in obj || 'defaultSize' in obj || 'corners' in obj) {
+  if ('values' in v && Array.isArray(v.values)) return v.values.map(formatValueNode).filter(Boolean).join(', ');
+  if ('family' in v || 'defaultSize' in v || 'corners' in v) {
     const parts = [
-      typeof obj.family === 'string' ? obj.family : '',
-      obj.defaultSize ? formatValueNode(obj.defaultSize) : '',
-      Array.isArray(obj.corners) ? obj.corners.map(formatValueNode).filter(Boolean).join(', ') : ''
+      typeof v.family === 'string' ? v.family : '',
+      v.defaultSize ? formatValueNode(v.defaultSize) : '',
+      Array.isArray(v.corners) ? v.corners.map(formatValueNode).filter(Boolean).join(', ') : ''
     ].filter(Boolean);
     return parts.join(' ');
   }
-  if ('fontNames' in obj || 'fontWeight' in obj || 'fontSize' in obj || 'lineHeight' in obj) {
+  if ('fontNames' in v || 'fontWeight' in v || 'fontSize' in v || 'lineHeight' in v) {
     const parts = [
-      obj.fontNames ? formatValueNode(obj.fontNames) : '',
-      typeof obj.fontWeight === 'number' ? String(obj.fontWeight) : '',
-      obj.fontSize ? formatValueNode(obj.fontSize) : '',
-      obj.lineHeight ? formatValueNode(obj.lineHeight) : ''
+      v.fontNames ? formatValueNode(v.fontNames) : '',
+      typeof v.fontWeight === 'number' ? String(v.fontWeight) : '',
+      v.fontSize ? formatValueNode(v.fontSize) : '',
+      v.lineHeight ? formatValueNode(v.lineHeight) : ''
     ].filter(Boolean);
     return parts.join(' ');
   }
-  return formatUnknownStructuredValue(obj);
+  return formatUnknownStructuredValue(v);
 }
 
 function formatResolvedValue(rv: Record<string, unknown>): string {
@@ -778,10 +782,11 @@ function stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
-
-  const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
-  const entries = Object.keys(obj).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`);
-  return `{${entries.join(',')}}`;
+  if (isNonArrayObject(value)) {
+    const entries = Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return '{}';
 }
 
 function entryMatchesContext(

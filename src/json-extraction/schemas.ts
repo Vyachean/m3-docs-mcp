@@ -14,6 +14,10 @@ export function compactJson(value: unknown): string {
 
 type JsonObject = Record<string, unknown>;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function walkObjects(root: unknown, visitor: (value: Record<string, unknown>) => void): void {
   const seen = new Set<unknown>();
   const visit = (value: unknown): void => {
@@ -23,19 +27,20 @@ function walkObjects(root: unknown, visitor: (value: Record<string, unknown>) =>
       for (const item of value) visit(item);
       return;
     }
-    const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
-    visitor(obj);
-    for (const nested of Object.values(obj)) visit(nested);
+    if (isRecord(value)) {
+      visitor(value);
+      for (const nested of Object.values(value)) visit(nested);
+    }
   };
   visit(root);
 }
 
 function asObject(value: unknown): JsonObject | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as JsonObject) : null; // zod-boundary-internal-cast
+  return isRecord(value) ? value : null;
 }
 
-function asArray<T = unknown>(value: unknown): T[] {
-  return Array.isArray(value) ? (value as T[]) : []; // zod-boundary-internal-cast
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function readString(value: unknown): string | null {
@@ -205,13 +210,11 @@ function _statusHeaders(resource: unknown): string[] {
   const direct = Array.isArray(o.headers) ? o.headers : Array.isArray(o.columns) ? o.columns : null;
   if (direct) {
     return direct
-      .map((v) =>
-        typeof v === 'string'
-          ? v
-          : typeof v === 'object' && v && 'label' in v
-            ? String((v as Record<string, unknown>).label ?? '') // zod-boundary-internal-cast
-            : ''
-      )
+      .map((v) => {
+        if (typeof v === 'string') return v;
+        if (isRecord(v)) return String(v.label ?? '');
+        return '';
+      })
       .filter(Boolean);
   }
   const payload = o.payload;
@@ -227,10 +230,8 @@ function _statusRows(resource: unknown): string[][] {
     return rawRows
       .map((row) => {
         if (Array.isArray(row)) return row.map((v) => (typeof v === 'string' ? v : _stableStringify(v)));
-        if (row && typeof row === 'object') {
-          return Object.values(row as Record<string, unknown>).map((v) => // zod-boundary-internal-cast
-            typeof v === 'string' ? v : _stableStringify(v)
-          );
+        if (isRecord(row)) {
+          return Object.values(row).map((v) => (typeof v === 'string' ? v : _stableStringify(v)));
         }
         return [String(row ?? '')];
       })
@@ -245,11 +246,10 @@ function _stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((e) => _stableStringify(e)).join(',')}]`;
-  const obj = value as Record<string, unknown>; // zod-boundary-internal-cast
-  return `{${Object.keys(obj)
-    .sort()
-    .map((k) => `${JSON.stringify(k)}:${_stableStringify(obj[k])}`)
-    .join(',')}}`;
+  if (isRecord(value)) {
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${_stableStringify(value[k])}`).join(',')}}`;
+  }
+  return '{}';
 }
 
 export function parseStatusTable(resource: unknown): DecodedStatusTable | null {
