@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -7,7 +7,8 @@ import {
   buildSlugOnlyRoutesFromDocPaths,
   extractCarbonVersionFromNetworkUrls
 } from '../src/crawler.js';
-import { normalizeMaterialUrl } from '../src/crawler-utils.js';
+import { cacheStatus } from '../src/cache.js';
+import { normalizeMaterialPublicDocPath, normalizeMaterialUrl } from '../src/crawler-utils.js';
 import type { CrawlProgress } from '../src/types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -75,14 +76,14 @@ describe('buildSlugOnlyRoutesFromDocPaths', () => {
 describe('normalizeMaterialUrl - /m3/pages/ alias', () => {
   const base = 'https://m3.material.io';
 
-  it('canonicalizes /m3/pages/components/buttons to /components/buttons', () => {
+  it('does not strip /m3/pages/ prefix — preserves the path as-is', () => {
     expect(normalizeMaterialUrl('https://m3.material.io/m3/pages/components/buttons', base))
-      .toBe('https://m3.material.io/components/buttons');
+      .toBe('https://m3.material.io/m3/pages/components/buttons');
   });
 
-  it('canonicalizes /m3/pages/styles/color to /styles/color', () => {
+  it('preserves /m3/pages/styles/color without modification', () => {
     expect(normalizeMaterialUrl('/m3/pages/styles/color', base))
-      .toBe('https://m3.material.io/styles/color');
+      .toBe('https://m3.material.io/m3/pages/styles/color');
   });
 
   it('does not modify paths that do not start with /m3/pages/', () => {
@@ -93,6 +94,30 @@ describe('normalizeMaterialUrl - /m3/pages/ alias', () => {
   it('does not modify /m3/ paths that are not /m3/pages/', () => {
     expect(normalizeMaterialUrl('/m3/other/path', base))
       .toBe('https://m3.material.io/m3/other/path');
+  });
+});
+
+describe('normalizeMaterialPublicDocPath - /m3/pages/ filtering', () => {
+  const base = 'https://m3.material.io';
+
+  it('returns null for /m3/pages/app-bars/guidelines to prevent fake public routes', () => {
+    expect(normalizeMaterialPublicDocPath('/m3/pages/app-bars/guidelines', base)).toBeNull();
+  });
+
+  it('returns null for /m3/pages/components/buttons so it cannot pollute cache keys', () => {
+    expect(normalizeMaterialPublicDocPath('/m3/pages/components/buttons', base)).toBeNull();
+  });
+
+  it('returns null for /m3/pages/styles/color', () => {
+    expect(normalizeMaterialPublicDocPath('/m3/pages/styles/color', base)).toBeNull();
+  });
+
+  it('does not filter normal component paths', () => {
+    expect(normalizeMaterialPublicDocPath('/components/buttons', base)).toBe('/components/buttons');
+  });
+
+  it('does not filter normal style paths', () => {
+    expect(normalizeMaterialPublicDocPath('/styles/color', base)).toBe('/styles/color');
   });
 });
 
@@ -113,6 +138,7 @@ function makeMockPage(
         for (const l of listeners) l({ url: () => rUrl, ok: () => true });
       }
     }),
+    waitForSelector: vi.fn(async () => undefined),
     on: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.add(l); }),
     off: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.delete(l); }),
     waitForResponse: vi.fn(async () => ({})),
@@ -125,7 +151,7 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
     const page = makeMockPage(['https://m3.material.io/_dsm/content/m3/9.9.9/page.json']);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined, undefined, 0);
 
     expect(result?.carbonVersion).toBe('9.9.9');
     expect(result?.observedUrls).toContain('https://m3.material.io/_dsm/content/m3/9.9.9/page.json');
@@ -136,7 +162,7 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
     const page = makeMockPage(['https://m3.material.io/_dsm/data/dsdb-m3/3.1.4/TOKEN_TABLE.colors.json']);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined, undefined, 0);
 
     expect(result?.carbonVersion).toBe('3.1.4');
   });
@@ -145,17 +171,56 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
     const page = makeMockPage([]);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/seed1', '/seed2'], undefined);
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/seed1', '/seed2'], undefined, undefined, 0);
 
     expect(result).toBeNull();
     expect(page.close).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not return early when only /page-data/ arrives — returns null and tries next seed', async () => {
+    const page = makeMockPage(['https://m3.material.io/page-data/components/buttons/page-data.json']);
+    const ctx = { newPage: vi.fn(async () => page) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
+
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined, undefined, 0);
+
+    expect(result).toBeNull();
+  });
+
+  it('succeeds when a /_dsm URL arrives during the drain window after /page-data', async () => {
+    vi.useFakeTimers();
+    type RawListener = (r: { url: () => string; ok: () => boolean }) => void;
+    const listeners = new Set<RawListener>();
+
+    const mockPage = {
+      goto: vi.fn(async () => {
+        for (const l of listeners) l({ url: () => 'https://m3.material.io/page-data/components/buttons/page-data.json', ok: () => true });
+        setTimeout(() => {
+          for (const l of listeners) l({ url: () => 'https://m3.material.io/_dsm/data/dsdb-m3/4.2.0/TOKEN_TABLE.colors.json', ok: () => true });
+        }, 500);
+      }),
+      waitForSelector: vi.fn(async () => undefined),
+      on: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.add(l); }),
+      off: vi.fn((event: string, l: RawListener) => { if (event === 'response') listeners.delete(l); }),
+      close: vi.fn(async () => undefined)
+    };
+
+    const ctx = { newPage: vi.fn(async () => mockPage) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
+    const resultPromise = bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined, undefined, 2_000);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    vi.useRealTimers();
+
+    expect(result?.carbonVersion).toBe('4.2.0');
+    expect(result?.observedUrls).toContain('https://m3.material.io/page-data/components/buttons/page-data.json');
+    expect(result?.observedUrls).toContain('https://m3.material.io/_dsm/data/dsdb-m3/4.2.0/TOKEN_TABLE.colors.json');
   });
 
   it('closes the page even when goto throws', async () => {
     const page = makeMockPage([], { gotoThrows: true });
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/fail'], undefined);
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/fail'], undefined, undefined, 0);
 
     expect(result).toBeNull();
     expect(page.close).toHaveBeenCalled();
@@ -166,19 +231,19 @@ describe('bootstrapCarbonVersionFromBrowser', () => {
     ctrl.abort();
     const ctx = { newPage: vi.fn(), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], ctrl.signal);
+    const result = await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], ctrl.signal, undefined, 0);
 
     expect(result).toBeNull();
     expect(ctx.newPage).not.toHaveBeenCalled();
   });
 
-  it('calls waitForResponse concurrently with goto for each seed', async () => {
+  it('calls waitForSelector on each seed page', async () => {
     const page = makeMockPage(['https://m3.material.io/_dsm/content/m3/1.0.0/x.json']);
     const ctx = { newPage: vi.fn(async () => page), close: vi.fn(async () => undefined) } as unknown as Parameters<typeof bootstrapCarbonVersionFromBrowser>[0];
 
-    await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined);
+    await bootstrapCarbonVersionFromBrowser(ctx, 'https://m3.material.io', ['/'], undefined, undefined, 0);
 
-    expect(page.waitForResponse).toHaveBeenCalledTimes(1);
+    expect(page.waitForSelector).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -412,7 +477,7 @@ describe('DSDB recovery integration', () => {
     expect(raw['directJsonEnabled']).toBe(true);
   }, 20_000);
 
-  it('writes browserOnlyFallback=true when both bundle and network recovery fail', async () => {
+  it('writes browserOnlyFallback=true and networkRecoveryFailureReason when both bundle and network recovery fail', async () => {
     await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
 
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
@@ -420,6 +485,8 @@ describe('DSDB recovery integration', () => {
     expect(raw['networkRecoveryAttempted']).toBe(true);
     expect(raw['networkRecoverySucceeded']).toBe(false);
     expect(raw['browserOnlyFallback']).toBe(true);
+    expect(typeof raw['networkRecoveryFailureReason']).toBe('string');
+    expect(raw['networkRecoveryFailureReason']).toBeTruthy();
   }, 20_000);
 
   it('clears directJsonDisabledReason after successful network recovery', async () => {
@@ -435,4 +502,45 @@ describe('DSDB recovery integration', () => {
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['directJsonDisabledReason']).toBeNull();
   }, 20_000);
+
+  it('exposes networkRecoveryFailureReason in cacheStatus after failed recovery', async () => {
+    // Write a diagnostics file simulating a failed network recovery
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      bundleDiscoveryFailed: true,
+      networkRecoveryAttempted: true,
+      networkRecoverySucceeded: false,
+      networkRecoveryFailureReason: 'no-dsdb-urls-captured',
+      directJsonEnabled: false,
+      browserOnlyFallback: true,
+      directJsonDisabledReason: 'no-dsdb-urls-captured'
+    }));
+
+    const status = await cacheStatus(cacheDir);
+    expect(status.networkRecoveryFailureReason).toBe('no-dsdb-urls-captured');
+    expect(status.browserOnlyFallback).toBe(true);
+    expect(status.bundleDiscoveryFailed).toBe(true);
+    expect(status.networkRecoveryAttempted).toBe(true);
+    expect(status.networkRecoverySucceeded).toBe(false);
+  });
+
+  it('does not expose networkRecoveryFailureReason in cacheStatus when recovery succeeds', async () => {
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      bundleDiscoveryFailed: true,
+      networkRecoveryAttempted: true,
+      networkRecoverySucceeded: true,
+      directJsonEnabled: true,
+      dsdbConfigSource: 'browser-network',
+      browserOnlyFallback: false
+    }));
+
+    const status = await cacheStatus(cacheDir);
+    expect(status.networkRecoveryFailureReason).toBeUndefined();
+    expect(status.directJsonEnabled).toBe(true);
+    expect(status.dsdbConfigSource).toBe('browser-network');
+    expect(status.browserOnlyFallback).toBe(false);
+  });
 });

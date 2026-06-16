@@ -296,6 +296,7 @@ export type CacheStatus = {
   bundleDiscoveryFailed?: boolean;
   networkRecoveryAttempted?: boolean;
   networkRecoverySucceeded?: boolean;
+  networkRecoveryFailureReason?: string | null;
 };
 
 export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';

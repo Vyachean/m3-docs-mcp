@@ -12,7 +12,8 @@ const DiagnosticsDsdbFieldsSchema = z.object({
   dsdbConfigSource: z.union([z.literal('bundle'), z.literal('browser-network')]).nullish(),
   bundleDiscoveryFailed: z.boolean().nullish(),
   networkRecoveryAttempted: z.boolean().nullish(),
-  networkRecoverySucceeded: z.boolean().nullish()
+  networkRecoverySucceeded: z.boolean().nullish(),
+  networkRecoveryFailureReason: z.string().nullish()
 }).passthrough();
 
 async function readDsdbFieldsFromDiagnostics(diagPath: string): Promise<z.output<typeof DiagnosticsDsdbFieldsSchema> | null> {
@@ -175,7 +176,8 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     ...(dsdbFields?.dsdbConfigSource != null ? { dsdbConfigSource: dsdbFields.dsdbConfigSource } : {}),
     ...(dsdbFields?.bundleDiscoveryFailed != null ? { bundleDiscoveryFailed: dsdbFields.bundleDiscoveryFailed } : {}),
     ...(dsdbFields?.networkRecoveryAttempted != null ? { networkRecoveryAttempted: dsdbFields.networkRecoveryAttempted } : {}),
-    ...(dsdbFields?.networkRecoverySucceeded != null ? { networkRecoverySucceeded: dsdbFields.networkRecoverySucceeded } : {})
+    ...(dsdbFields?.networkRecoverySucceeded != null ? { networkRecoverySucceeded: dsdbFields.networkRecoverySucceeded } : {}),
+    ...(dsdbFields?.networkRecoveryFailureReason != null ? { networkRecoveryFailureReason: dsdbFields.networkRecoveryFailureReason } : {})
   };
 }
 

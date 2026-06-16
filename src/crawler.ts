@@ -623,18 +623,35 @@ const NETWORK_BOOTSTRAP_SEED_PATHS = [
   '/styles/color',
   '/foundations/design-tokens/overview'
 ];
+const NETWORK_BOOTSTRAP_DRAIN_MS = 2_000;
+
+function classifyNetworkCandidateType(url: string): 'content' | 'token-table' | 'dsdb-resource' | 'page-data' | 'unknown-dsm' {
+  if (url.includes('/_dsm/content/m3/')) return 'content';
+  if (url.includes('/_dsm/data/dsdb-m3/')) {
+    if (/\/TOKEN_TABLE\./i.test(url)) return 'token-table';
+    return 'dsdb-resource';
+  }
+  if (url.includes('/page-data/')) return 'page-data';
+  return 'unknown-dsm';
+}
 
 /**
  * Extracts carbonVersion by observing `/_dsm/content/m3/{version}/` or
  * `/_dsm/data/dsdb-m3/{version}/` URLs captured from a set of browser-navigated
  * seed pages. Returns null if no match is found.
+ *
+ * Waits for Material content to render, then allows a short drain window for
+ * deferred network requests (e.g. `_dsm` URLs that arrive after the initial
+ * `/page-data` response). Only DSDB-version URLs are accepted as recovery
+ * candidates; `/page-data` responses are logged but are not sufficient.
  */
 export async function bootstrapCarbonVersionFromBrowser(
   browserContext: BrowserContext,
   baseUrl: string,
   seedPaths: string[],
   signal?: AbortSignal,
-  logger?: UpdateLogger
+  logger?: UpdateLogger,
+  drainMs = NETWORK_BOOTSTRAP_DRAIN_MS
 ): Promise<{ carbonVersion: string; observedUrls: string[] } | null> {
   const observedUrls: string[] = [];
 
@@ -646,27 +663,54 @@ export async function bootstrapCarbonVersionFromBrowser(
     const listener = (response: { url: () => string; ok: () => boolean }) => {
       const url = response.url();
       if (!url.includes('/_dsm/') && !url.includes('/page-data/')) return;
-      if (response.ok()) observedUrls.push(url);
+      if (!response.ok()) return;
+      observedUrls.push(url);
+      const candidateType = classifyNetworkCandidateType(url);
+      const match = url.match(DSDB_VERSION_URL_RE);
+      const sufficient = Boolean(match?.[1]);
+      logger?.log('info', 'dsdb-config:network-candidate-detected', {
+        url,
+        candidateType,
+        carbonVersion: match?.[1] ?? null,
+        sufficient
+      });
     };
     try {
       page = await browserContext.newPage();
       page.on('response', listener);
-      await Promise.all([
-        page.goto(seedUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 }),
-        page.waitForResponse(
-          (r) => r.url().includes('/_dsm/') || r.url().includes('/page-data/'),
-          { timeout: 8_000 }
-        ).catch(() => undefined)
-      ]);
+      // Navigate and wait for Material content shell to appear
+      await page.goto(seedUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.waitForSelector(MATERIAL_CONTENT_SELECTOR, { timeout: 15_000 }).catch(() => undefined);
+      // Check for DSDB URL that arrived during navigation (common path — return immediately)
       for (const url of observedUrls) {
         const match = url.match(DSDB_VERSION_URL_RE);
         if (match?.[1]) {
-          logger?.log('info', 'dsdb-config:network-candidate-detected', { url, carbonVersion: match[1], seedPath });
+          logger?.log('info', 'dsdb-config:network-drain-complete', { seedPath, observedUrlCount: observedUrls.length, drained: false });
           return { carbonVersion: match[1], observedUrls };
         }
       }
-    } catch {
-      // continue to next seed
+      // Drain only when relevant network activity was observed (page-data without _dsm),
+      // indicating _dsm may still be in-flight. Skip drain if nothing relevant arrived.
+      const hasRelevantActivity = observedUrls.length > 0;
+      if (hasRelevantActivity && drainMs > 0) {
+        await delay(drainMs, signal);
+      }
+      logger?.log('info', 'dsdb-config:network-drain-complete', {
+        seedPath,
+        observedUrlCount: observedUrls.length,
+        drained: hasRelevantActivity && drainMs > 0
+      });
+      for (const url of observedUrls) {
+        const match = url.match(DSDB_VERSION_URL_RE);
+        if (match?.[1]) {
+          return { carbonVersion: match[1], observedUrls };
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted) return null;
+      // log rejection and continue to next seed
+      const reason = err instanceof Error ? err.message : String(err);
+      logger?.log('info', 'dsdb-config:network-candidate-rejected', { seedPath, reason });
     } finally {
       if (page) page.off('response', listener);
       await page?.close().catch(() => undefined);
