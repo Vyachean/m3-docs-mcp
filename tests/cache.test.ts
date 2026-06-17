@@ -3,7 +3,31 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
-import type { CoverageDiagnostics, MaterialIndex, MaterialPage } from '../src/types.js';
+import { createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
+import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage } from '../src/types.js';
+
+const REQUIRED_SAMPLE_SLUGS = ['components/buttons/specs', 'components/lists/specs', 'styles/color/roles', 'foundations/design-tokens/overview'];
+
+function requiredSampleDiagnostic(slug: string, overrides: Partial<ExtractionRouteDiagnostic> = {}): ExtractionRouteDiagnostic {
+  return {
+    url: `https://m3.material.io/${slug}`,
+    path: `${slug}.md`,
+    sourceUsed: 'direct-json',
+    finalMethod: 'json',
+    jsonAttempted: true,
+    jsonSucceeded: true,
+    browserFallbackAttempted: false,
+    browserFallbackSucceeded: false,
+    directJsonAttempted: true,
+    directJsonSucceeded: true,
+    unknownChunkTypes: [],
+    unknownResourceTypes: [],
+    tokenTables: 0,
+    tokenTablesRendered: 0,
+    missingRequestedTokenSets: [],
+    ...overrides
+  };
+}
 
 let cacheDir: string;
 const originalCacheDir = process.env.M3_DOCS_CACHE_DIR;
@@ -404,6 +428,118 @@ describe('cache helpers', () => {
     });
 
     expect(() => assertSafeCachePromotion(fullRunIndex, null)).toThrow('coverage gap');
+  });
+
+  function minimalCoverageDiagnostics(overrides: Partial<CoverageDiagnostics> = {}): CoverageDiagnostics {
+    return {
+      discoveredPublicUrlCount: 0,
+      sitemapUrlCount: 0,
+      renderedNavUrlCount: 0,
+      angularRouteHintCount: 0,
+      previousCacheRouteHintCount: 0,
+      acceptedPageCount: 0,
+      uncrawledDiscoveredUrlCount: 0,
+      uncrawledDiscoveredUrls: [],
+      skippedBecauseMaxPagesCount: 0,
+      skippedBecauseJsonCoveredCount: 0,
+      skippedByPolicyCount: 0,
+      skippedBlogCount: 0,
+      skippedByPolicyUrls: [],
+      includeBlog: false,
+      crawlPriorityPolicyVersion: '1',
+      coverageVerified: false,
+      coverageWarnings: [],
+      coverageHealth: 'unverified',
+      isLimitedRun: false,
+      maxPagesExplicit: false,
+      ...overrides
+    };
+  }
+
+  it('fails full refresh promotion when a required sample is missing from index.pages', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs', {
+      sourceUsed: 'failed',
+      directJsonSucceeded: false,
+      jsonSucceeded: false,
+      fallbackReasons: ['json-fetch-failed']
+    }));
+    for (const slug of REQUIRED_SAMPLE_SLUGS.slice(1)) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.slice(1).map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 4,
+      failedPageCount: 1,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');
+  });
+
+  it('allows a --max-pages 20 smoke run where all required samples are force-included and valid', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug, { selectedBecause: 'required-validation' }));
+    }
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 4,
+      failedPageCount: 0,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true, maxPagesExplicit: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('does not fail promotion when a required sample could not even be reserved under a tiny maxPages', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs', {
+      sourceUsed: 'skipped',
+      skippedReason: 'not-selected',
+      directJsonAttempted: false,
+      directJsonSucceeded: false,
+      jsonAttempted: false,
+      jsonSucceeded: false
+    }));
+    for (const slug of REQUIRED_SAMPLE_SLUGS.slice(1)) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug, { selectedBecause: 'required-validation' }));
+    }
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.slice(1).map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 3,
+      failedPageCount: 0,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true, maxPagesExplicit: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
   });
 
   it('allows first cache with discovery empty (unverified) without rejecting', () => {

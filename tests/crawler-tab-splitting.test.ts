@@ -2,6 +2,7 @@ import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pagesDir } from '../src/cache.js';
 
 // No Playwright browser should be needed for this scenario (everything resolves via direct
 // JSON), but mock it the same way every other crawler-flow test does so a real Chromium install
@@ -85,6 +86,12 @@ describe('deterministic pipeline: bundle-supplement + tab-splitting (real fixtur
     // Only one page-data + one Carbon fetch happened for components/buttons (not one per tab).
     expect(pagePaths.filter((p) => p.startsWith('components/buttons/')).length).toBe(4);
 
+    // savePage's writePage call must be awaited (not fire-and-forget) before crawlMaterialDocs
+    // returns — every tab page must already be persisted to disk by the time the promise resolves.
+    for (const tabPath of ['specs.md', 'overview.md', 'guidelines.md', 'accessibility.md']) {
+      await expect(readFile(path.join(pagesDir(cacheDir), 'components/buttons', tabPath), 'utf8')).resolves.toContain('#');
+    }
+
     const specsDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/buttons/specs.md');
     expect(specsDiagnostic).toMatchObject({
       sourceUsed: 'direct-json',
@@ -128,5 +135,41 @@ describe('deterministic pipeline: bundle-supplement + tab-splitting (real fixtur
         expect(explained).toBe(true);
       }
     }
+  }, 30_000);
+
+  it('does not let a small maxPages (source-route limit) cap virtual tab pages from an already-attempted route', async () => {
+    const html = '<html><body><script src="/static/angular/main.dea11ea1.js"></script></body></html>';
+    const siteMeta = {
+      routes: {
+        '/components/buttons': {
+          other_routes: [],
+          public: true,
+          redirect_external_url: null,
+          reference: { collection_id: 'Components', document_id: 5992419119333376, repo_id: 'mio-example' }
+        }
+      }
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => `window.site_meta = ${JSON.stringify(siteMeta)};` } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.dea11ea1.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/5047690081337344.json') return { ok: true, json: async () => pageDataButtons } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/2026-06-10_13-00-05/e31df68a-59d4-41dc-8743-8c48b476d4f8.json') return { ok: true, json: async () => contentButtons } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    // maxPages:1 is a source-route budget — components/buttons expands into 4 tab pages on its
+    // own, well beyond the source-route count of 1. All 4 must still be saved.
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 0, force: true });
+
+    const buttonsTabPaths = index.pages.map((p) => p.path).filter((p) => p.startsWith('components/buttons/')).sort();
+    expect(buttonsTabPaths).toEqual([
+      'components/buttons/accessibility.md',
+      'components/buttons/guidelines.md',
+      'components/buttons/overview.md',
+      'components/buttons/specs.md',
+    ]);
   }, 30_000);
 });

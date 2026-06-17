@@ -248,17 +248,26 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  // Fail if any required sample routes were selected and failed. Route diagnostic paths are
-  // cache file paths (always ".md"-suffixed, e.g. "components/buttons/specs.md"), including for
-  // virtual tab pages — compare against that form, not the bare URL slug.
+  // Fail if any required sample route is missing from the saved cache pages or failed JSON
+  // extraction. Route diagnostic / cache page paths are cache file paths (always ".md"-suffixed,
+  // e.g. "components/buttons/specs.md"), including for virtual tab pages — compare against that
+  // form, not the bare URL slug. The only exemption: a required path that filterRoutes itself
+  // couldn't even reserve a slot for (skippedReason:"not-selected", i.e. maxPages is smaller than
+  // the required-route reservation) is a budget choice, not an extraction failure.
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
+  const savedPagePaths = new Set(nextIndex.pages.map((p) => p.path));
   const failedRequired = REQUIRED_SAMPLE_SLUGS.filter((slug) => {
-    const diag = routeDiagnostics.find((d) => d.path === `${slug}.md`);
-    return diag !== undefined && diag.sourceUsed === 'failed';
+    const cachePath = `${slug}.md`;
+    const diag = routeDiagnostics.find((d) => d.path === cachePath);
+    // No diagnostic at all means this route was never a candidate in this crawl (e.g. a
+    // deliberately scoped/synthetic site_meta) — not a coverage problem for *this* crawl to flag.
+    if (diag === undefined) return false;
+    if (diag.skippedReason === 'not-selected') return false;
+    return !savedPagePaths.has(cachePath);
   });
   if (failedRequired.length > 0) {
     throw new Error(
-      `Required sample routes failed JSON extraction: ${failedRequired.join(', ')}. ` +
+      `Required sample routes are missing or failed JSON extraction: ${failedRequired.join(', ')}. ` +
       'Keeping the existing cache. Use --force to promote anyway.'
     );
   }

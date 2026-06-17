@@ -1971,9 +1971,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             }
             return true;
           });
-        const recoveredRoutes = siteMetaRouteSet.length > 0
+        // Unlike the default config (already source-route-limited by filterRoutes), this legacy
+        // browser-network-recovery route list never passes through filterRoutes — apply the same
+        // maxPages source-route budget here explicitly, since runDirectJsonBatch itself no longer
+        // caps by cache-page count.
+        const recoveredRoutes = (siteMetaRouteSet.length > 0
           ? siteMetaRouteSet.map((slug): DsdbRoute => ({ slug }))
-          : buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths).filter((r) => includeBlog || !isBlogPath(`/${r.slug}`));
+          : buildSlugOnlyRoutesFromDocPaths(discoveredPublicDocPaths).filter((r) => includeBlog || !isBlogPath(`/${r.slug}`))
+        ).slice(0, maxPages);
         const recoveredConfig: DsdbSiteConfig = { carbonVersion: recoveredVersion, routes: recoveredRoutes };
         dsdbConfigSource = 'browser-network';
         directJsonEnabled = true;
@@ -2266,7 +2271,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const contentJson = carbonOk ? carbonResult.data : null;
     const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, [], signal);
 
-    const savePage = (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): void => {
+    const savePage = async (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): Promise<void> => {
       if (extraction.fallbackReason) {
         jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
         recordRouteDiagnostic(createRouteDiagnostic({
@@ -2280,9 +2285,24 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
           tokenTables: extraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+          tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
           tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved,
           tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded,
           tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
+          tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+          tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+          tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+          statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
+          statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+          statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
+          statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+          unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+          statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+          resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+          resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+          resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+          resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+          resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
           missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
           routeMetadataWarnings: route.metadataWarnings ?? [],
           ...sharedDiagnosticFields,
@@ -2291,7 +2311,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         return;
       }
       const materialPage = extraction.page;
-      if (materialPage.text.length <= MIN_PAGE_TEXT_LENGTH || pages.length >= maxPages || writtenPaths.has(materialPage.path)) return;
+      // maxPages is a source-route limit enforced upstream by filterRoutes; it must never cap
+      // cache pages here, or tab-splitting can silently drop tabs once the cache-page count
+      // happens to reach a number meant to bound source routes, not virtual pages.
+      if (materialPage.text.length <= MIN_PAGE_TEXT_LENGTH || writtenPaths.has(materialPage.path)) return;
       pages.push(materialPage);
       markAcceptedPage(materialPage.path);
       pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
@@ -2306,6 +2329,24 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
         tokenTables: extraction.pageDiagnostic.tokenTables,
         tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+        tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
+        tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved,
+        tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded,
+        tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
+        tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
+        tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+        tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
+        statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
+        statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
+        statusTablesDecoded: extraction.pageDiagnostic.statusTablesDecoded ?? 0,
+        statusTablesRenderedAsPlaceholder: extraction.pageDiagnostic.statusTablesRenderedAsPlaceholder ?? 0,
+        unsupportedStatusTableSchemaCount: extraction.pageDiagnostic.unsupportedStatusTableSchemaCount ?? 0,
+        statusTableDiagnostics: extraction.pageDiagnostic.statusTableDiagnostics ?? [],
+        resourceChunksRequested: extraction.pageDiagnostic.resourceChunksRequested ?? 0,
+        resourceChunksResolved: extraction.pageDiagnostic.resourceChunksResolved ?? 0,
+        resourceChunksDecoded: extraction.pageDiagnostic.resourceChunksDecoded ?? 0,
+        resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
+        resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
         missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
         routeMetadataWarnings: route.metadataWarnings ?? [],
         ...sharedDiagnosticFields,
@@ -2314,7 +2355,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       writtenPaths.add(materialPage.path);
       jsonExtractedSlugs.add(route.slug);
       lastSavedUrl = materialPage.url;
-      void writePage(materialPage, cacheDir);
+      await writePage(materialPage, cacheDir);
       emitProgress(true);
     };
 
@@ -2357,7 +2398,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           sectionIndices: [matchResult.sectionIndex],
           titleOverride: effectiveParentTitle ? `${effectiveParentTitle} ${tab.label}` : tab.label
         });
-        savePage(tabUrl, extraction, { virtualSource: 'tab', virtualRoute: tabUrl, tabName: tab.label, tabSlug: slug });
+        await savePage(tabUrl, extraction, { virtualSource: 'tab', virtualRoute: tabUrl, tabName: tab.label, tabSlug: slug });
       }
       return;
     }
@@ -2369,7 +2410,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       capturedAt,
       fetchResource
     });
-    savePage(routeUrl, extraction, { virtualSource: null });
+    await savePage(routeUrl, extraction, { virtualSource: null });
   }
 
   async function runDirectJsonBatch(config: DsdbSiteConfig): Promise<void> {
@@ -2389,18 +2430,21 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           }
           return true;
         });
-    // Pre-limit to remaining page budget so we don't schedule hundreds of fetches
-    // when maxPages is small and none have been saved yet.
-    const remainingBudget = Math.max(0, maxPages - pages.length);
-    const routes = eligibleRoutes.slice(0, remainingBudget);
-    knownTargetPageCount = Math.min(maxPages, pages.length + routes.length);
+    // maxPages is a source-route limit, already enforced upstream by filterRoutes for the default
+    // (bundle-table-resolved) config — config.routes here is already the selected/budgeted route
+    // list. It must never be re-applied as a cache-page cap: one source route can expand into many
+    // tab-split cache pages, so comparing pages.length against maxPages would stop attempting
+    // further source routes (or drop later tabs of an already-attempted route) well before the
+    // intended source-route budget is exhausted.
+    const routes = eligibleRoutes;
+    knownTargetPageCount = pages.length + routes.length;
     crawlPhase = 'fetch-page-data';
     emitProgress(true);
-    for (let i = 0; i < routes.length && pages.length < maxPages && !signal?.aborted; i += concurrency) {
+    for (let i = 0; i < routes.length && !signal?.aborted; i += concurrency) {
       throwIfAborted(signal);
       const batch = routes.slice(i, i + concurrency);
       await Promise.all(batch.map(async (route) => {
-        if (pages.length >= maxPages || signal?.aborted) return;
+        if (signal?.aborted) return;
         dsdbAttemptedCount += 1;
         const routeUrl = new URL(`/${route.slug}`, baseUrl).toString();
         directJsonActiveUrls.add(routeUrl);
@@ -2482,7 +2526,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             return;
           }
           const materialPage = extraction.page;
-          if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && pages.length < maxPages && !writtenPaths.has(materialPage.path)) {
+          if (materialPage.text.length > MIN_PAGE_TEXT_LENGTH && !writtenPaths.has(materialPage.path)) {
             const rawJsonDebugFilesWritten = await writeRawJsonDebugFiles(cacheDir, materialPage.path, bundle.responses);
             pages.push(materialPage);
             markAcceptedPage(materialPage.path);
