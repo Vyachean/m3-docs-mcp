@@ -392,6 +392,10 @@ export type CrawlOptions = {
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;
+  /** Browser-based DOM fallback and network recovery are disabled by default — the default
+   *  update path is deterministic direct-JSON extraction only. Set true to opt into the legacy
+   *  Playwright-based fallback/recovery behavior. */
+  allowBrowserFallback?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
   /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.

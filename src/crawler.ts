@@ -1639,24 +1639,42 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         if (signal?.aborted) throw err;
         const reason = err instanceof Error ? err.message : String(err);
         const isSiteMetaError = err instanceof SiteMetaParseError;
-        const isFormatError = isSiteMetaError && err.isFormatError;
-        // Schema/format errors mean site_meta.js was fetched but has an unexpected structure.
-        // This is not a transient failure — rethrow so the refresh fails visibly instead of
-        // silently falling back to slug-only routes that produce broken direct JSON.
-        if (isFormatError) {
-          logger?.log('error', 'site-meta:format-error', { phase: 'fetch-site-meta', reason });
-          logError(`site_meta.js schema error (${reason}). Update the schema to match the current site structure.`);
-          throw err;
-        }
+        // A SiteMetaParseError NOT raised by the fetch/HTTP step itself means site_meta.js was
+        // fetched and a parse/schema attempt was made before it failed.
+        const wasFetched = isSiteMetaError && !reason.startsWith('site_meta.js fetch failed');
+        if (wasFetched) siteMetaFetched = true;
         siteMetaFailed = true;
-        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError });
-        if (verbose) {
-          logVerbose(`site_meta.js unavailable (${reason}); falling back to Angular bundle for route discovery`);
-        }
+        logger?.log('error', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
+        logError(`site_meta.js unusable (${reason}); the default update path requires site_meta as the route source.`);
       }
     }
 
     const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
+    const browserFallbackAllowed = options.allowBrowserFallback === true;
+
+    if (!siteMetaProvidedRoutes && !browserFallbackAllowed) {
+      // site_meta is the only accepted full route source for the default (deterministic) update
+      // path. Never fall back to the bundle route table for whole-site route discovery there —
+      // the bundle table may only resolve page references for routes already known from
+      // site_meta, or supplement specific tracked subtrees. (Legacy callers that explicitly opt
+      // into allowBrowserFallback keep the old degraded bundle/browser-network-recovery path.)
+      siteMetaFailed = true;
+      const reason = siteMetaFetched ? 'site_meta.js fetched but produced zero usable routes' : 'site_meta.js could not be fetched/parsed';
+      logger?.log('error', 'site-meta:rejected', { phase: 'fetch-site-meta', reason, siteMetaFetched, siteMetaFailed });
+      await logger?.writeIntermediateDiagnostics({
+        promotionDecision: 'pending',
+        startedAt,
+        siteMetaFetched,
+        siteMetaFailed: true,
+        bundleDiscoveryFailed,
+        directJsonEnabled: false,
+        directJsonDisabledReason: reason,
+        dsdbConfigSource: null,
+        networkRecoveryAttempted: false,
+        networkRecoverySucceeded: false
+      });
+      throw new Error(`site_meta.js did not provide a usable route list (${reason}); refusing to fall back to the bundle table as a full route source.`);
+    }
 
     // page-reference-resolver: fetch the Angular bundle once for carbonVersion + the route table
     // used to resolve collectionId/documentId/exportedCarbonFileId/tabs. This is the only place
@@ -1687,7 +1705,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         directJsonEnabled = false;
         directJsonDisabledReason = reason;
         logError(`Angular bundle fetch failed${siteMetaProvidedRoutes ? ' (site_meta routes available, will recover carbonVersion via browser)' : ', will attempt browser-network recovery'}: ${reason}`);
-        logger?.log('warn', 'dsdb-config:bundle-failed', { phase: 'fetch-site-meta', reason, siteMetaProvidedRoutes, networkRecoveryWillAttempt: true });
+        logger?.log('warn', 'dsdb-config:bundle-failed', { phase: 'fetch-site-meta', reason, siteMetaProvidedRoutes, networkRecoveryWillAttempt: browserFallbackAllowed });
         await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
@@ -1711,9 +1729,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       let uncoveredPrefixes: string[];
 
       if (!siteMetaProvidedRoutes) {
-        // site_meta failed entirely: the bundle route table is the only available route list
-        // (degraded mode — not the documented bundle-supplement case, which only covers specific
-        // missing subtrees on top of a working site_meta route list).
+        // Legacy degraded mode only (allowBrowserFallback): site_meta failed entirely, so the
+        // bundle route table is the only available route list. Never reachable in the default
+        // update path — that path already failed fast above.
         candidateRoutes = bundleRoutes.map((entry): NormalizedRoute => {
           const path = `/${entry.slug}`;
           return {
@@ -1810,6 +1828,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
       finalConfig = { carbonVersion, routes: resolvedRoutes };
     } else if (siteMetaProvidedRoutes) {
+      // Bundle fetch failed: site_meta routes exist, but no page-reference table is available
+      // to resolve documentId/collectionId. Direct JSON cannot run; browser-network-recovery
+      // (legacy fallback mode only) is the only way to obtain a carbonVersion in this case.
       if (!dsdbConfigSource) dsdbConfigSource = 'site-meta';
       directJsonEnabled = false;
       directJsonDisabledReason = directJsonDisabledReason ?? 'carbonVersion-unavailable';
@@ -1819,7 +1840,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         siteMetaRouteCount: normalizedSiteMetaRoutes.length
       });
     }
-    // else: both site_meta and the bundle failed — old browser-only fallback path
+    // else: both site_meta and the bundle failed — legacy browser-only fallback path (allowBrowserFallback only)
 
     // fetch-page-data: run direct JSON extraction with available config
     if (finalConfig) {
@@ -1845,7 +1866,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const jsonExtractionSatisfiedMinimum = pages.length >= minAcceptedPageCount;
   const requiresBrowserFallback = jsonFallbackRoutes.size > 0;
   const requiresBrowserCoverageCheck = shouldAttemptBrowserCoverageCheck(previousIndex, discoveredPublicDocPaths.size, acceptedPublicDocPaths.size);
-  if (pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+  // Browser-based DOM fallback and network recovery are opt-in only (options.allowBrowserFallback).
+  // The default update path is deterministic direct-JSON extraction; if it cannot produce enough
+  // valid pages, the update fails validation (assertValidIndex) instead of launching a browser.
+  if (options.allowBrowserFallback !== true && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
+    coverageDiagnostics.coverageWarnings.push('coverage-unverified:browser-fallback-disabled');
+  }
+  if (options.allowBrowserFallback === true && pages.length < maxPages && !signal?.aborted && (!jsonExtractionSatisfiedMinimum || requiresBrowserFallback || requiresBrowserCoverageCheck)) {
     crawlPhase = 'browser-dom-fallback';
     knownTargetPageCount = maxPages;
     let browser: Browser | null = null;

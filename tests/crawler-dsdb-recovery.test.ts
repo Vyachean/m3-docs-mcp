@@ -411,6 +411,7 @@ describe('DSDB recovery integration', () => {
     const phases: string[] = [];
     const index = await crawlMaterialDocs({
       cacheDir,
+      allowBrowserFallback: true,
       maxPages: 3,
       minPageCount: 1,
       onProgress: (p: CrawlProgress) => { phases.push(p.phase); }
@@ -437,7 +438,7 @@ describe('DSDB recovery integration', () => {
       { url: 'https://m3.material.io/_dsm/data/dsdb-m3/6.0.0/TOKEN_TABLE.colors.json', payload: {} }
     ];
 
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     const diagPath = path.join(cacheDir, 'diagnostics', 'latest-update.json');
     const raw = JSON.parse(await readFile(diagPath, 'utf8')) as Record<string, unknown>;
@@ -446,7 +447,7 @@ describe('DSDB recovery integration', () => {
   }, 20_000);
 
   it('completes a browser-only crawl when both bundle and network recovery fail', async () => {
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     expect(index.pageCount).toBeGreaterThanOrEqual(1);
     const rawIndex = JSON.parse(await readFile(path.join(cacheDir, 'index.json'), 'utf8')) as { pageCount: number };
@@ -454,7 +455,7 @@ describe('DSDB recovery integration', () => {
   }, 20_000);
 
   it('writes bundleDiscoveryFailed=true and promotionDecision=promoted when bundle fails but crawl completes', async () => {
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['bundleDiscoveryFailed']).toBe(true);
@@ -469,7 +470,7 @@ describe('DSDB recovery integration', () => {
       { url: 'https://m3.material.io/_dsm/content/m3/7.0.0/x.json', payload: {} }
     ];
 
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['dsdbConfigSource']).toBe('browser-network');
@@ -478,7 +479,7 @@ describe('DSDB recovery integration', () => {
   }, 20_000);
 
   it('writes browserOnlyFallback=true and networkRecoveryFailureReason when both bundle and network recovery fail', async () => {
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['bundleDiscoveryFailed']).toBe(true);
@@ -497,7 +498,7 @@ describe('DSDB recovery integration', () => {
       { url: 'https://m3.material.io/_dsm/content/m3/8.0.0/x.json', payload: {} }
     ];
 
-    await crawlMaterialDocs({ cacheDir, maxPages: 2, minPageCount: 1 });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 1 });
 
     const raw = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(raw['directJsonDisabledReason']).toBeNull();

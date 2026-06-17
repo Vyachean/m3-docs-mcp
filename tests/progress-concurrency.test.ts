@@ -121,11 +121,17 @@ function makeDsdbFetchStub(): ReturnType<typeof vi.fn> {
     (_, i) => `{"slug":"route-${i}","documentId":"doc${i}","collectionId":"col${i}"}`
   ).join(',');
   const mainJs = `"carbonVersion":"1.0.0" var routes=[${routeParts}]`;
+  const siteMetaRoutes: Record<string, { public: true }> = {};
+  for (let i = 0; i < ROUTE_COUNT; i += 1) siteMetaRoutes[`/route-${i}`] = { public: true };
+  const siteMetaJs = `window.site_meta = ${JSON.stringify({ routes: siteMetaRoutes })};`;
 
   return vi.fn(async (url: string | URL | Request) => {
     const urlStr = String(url instanceof Request ? url.url : url);
     if (urlStr === 'https://m3.material.io') {
       return { ok: true, text: async () => baseHtml };
+    }
+    if (urlStr === 'https://m3.material.io/site_meta.js') {
+      return { ok: true, text: async () => siteMetaJs };
     }
     if (urlStr.includes('main.deadbeef.js')) {
       return { ok: true, text: async () => mainJs };
