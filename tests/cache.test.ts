@@ -451,6 +451,193 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(fullRunIndex, null)).toThrow('coverage gap');
   });
 
+  it('promotes a full refresh with many discovered URLs but a smaller, fully-accounted plannedVirtualPageCount', () => {
+    // Mirrors a real full-refresh shape: 1433 discovered public URLs (aliases, tab URLs, legacy
+    // routes, platform-specific pages) but only 174 planned virtual pages from the 63 resolvable
+    // source routes actually selected/attempted, 162 saved and 12 failed (within the 20% rate).
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+    diag.virtualPagesPlanned = 174;
+    diag.virtualPagesSaved = 162;
+    diag.virtualPagesFailed = 12;
+    diag.sourcePagesAttempted = 63;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 63,
+      failedPageCount: 12,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        discoveredPublicUrlCount: 1433,
+        isLimitedRun: false,
+        resolvableSourceRouteCount: 63,
+        selectedSourceRouteCount: 63,
+        attemptedSourceRouteCount: 63,
+        plannedVirtualPageCount: 174,
+        savedVirtualPageCount: 162,
+        failedVirtualPageCount: 12,
+        // No coverage-gap warning: a real run would not push one here since
+        // hasSignificantCoverageGap(174, 162) is below the 20%/min-5 threshold.
+        coverageWarnings: []
+      })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('still fails a full refresh when plannedVirtualPageCount has a real gap', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+    // 174 planned, only 80 saved, 94 failed — a genuine ~54% failure rate, well above 20%.
+    diag.virtualPagesPlanned = 174;
+    diag.virtualPagesSaved = 80;
+    diag.virtualPagesFailed = 94;
+    diag.sourcePagesAttempted = 63;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      // Below MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK so the unrelated (and unit-mismatched —
+      // attemptedPageCount is source-route-level while failedPageCount is virtual-page-level)
+      // failedPageRatio check on MaterialIndex doesn't fire first; this test isolates the new
+      // plannedVirtualPageCount-based coverage-gap check specifically.
+      attemptedPageCount: 4,
+      failedPageCount: 0,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        discoveredPublicUrlCount: 1433,
+        isLimitedRun: false,
+        resolvableSourceRouteCount: 63,
+        selectedSourceRouteCount: 63,
+        attemptedSourceRouteCount: 63,
+        plannedVirtualPageCount: 174,
+        savedVirtualPageCount: 80,
+        failedVirtualPageCount: 94,
+        coverageWarnings: ['coverage-gap:planned=174:saved=80:failed=94']
+      })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('coverage gap');
+  });
+
+  it('rejects full refresh diagnostics where virtualPagesSaved + virtualPagesFailed does not match virtualPagesPlanned', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+    diag.virtualPagesPlanned = 174;
+    diag.virtualPagesSaved = 162;
+    diag.virtualPagesFailed = 5; // should be 12 — inconsistent accounting
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('diagnostics are inconsistent');
+  });
+
+  it('does not let aliases or tab URLs inflate the hard coverage denominator', () => {
+    // discoveredPublicUrlCount includes hundreds of alias/tab URLs that are not separate source
+    // routes at all; skippedAliasOnlyCount accounts for them, and they must not appear anywhere in
+    // the planned/saved/failed virtual-page accounting that promotion actually validates against.
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+    diag.virtualPagesPlanned = 4;
+    diag.virtualPagesSaved = 4;
+    diag.virtualPagesFailed = 0;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        discoveredPublicUrlCount: 500,
+        isLimitedRun: false,
+        aliasUrlCount: 400,
+        skippedAliasOnlyCount: 400,
+        resolvableSourceRouteCount: 4,
+        selectedSourceRouteCount: 4,
+        attemptedSourceRouteCount: 4,
+        plannedVirtualPageCount: 4,
+        savedVirtualPageCount: 4,
+        failedVirtualPageCount: 0,
+        coverageWarnings: []
+      })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('classifies a non-content index route as skipped, not failed, and excludes it from failedVirtualPageCount', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+    // /components itself: page-data exists but is a navigation landing page, not real content.
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components', {
+      sourceUsed: 'skipped',
+      skippedReason: 'non-content-index',
+      directJsonAttempted: true,
+      directJsonSucceeded: false,
+      jsonAttempted: true,
+      jsonSucceeded: false,
+      fallbackReasons: ['json-title-missing']
+    }));
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false, skippedNonContentIndexCount: 1 })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+    const componentsDiag = diag.routeDiagnostics.find((d) => d.path === 'components.md');
+    expect(componentsDiag?.sourceUsed).toBe('skipped');
+    expect(componentsDiag?.skippedReason).toBe('non-content-index');
+    expect(diag.pagesFailed).toBe(0);
+  });
+
   function minimalCoverageDiagnostics(overrides: Partial<CoverageDiagnostics> = {}): CoverageDiagnostics {
     return {
       discoveredPublicUrlCount: 0,

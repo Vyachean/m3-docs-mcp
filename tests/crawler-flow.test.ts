@@ -1048,6 +1048,51 @@ describe('crawlMaterialDocs', () => {
     expect(index.failedPageCount).toBe(0);
     expect(index.extractionDiagnostics?.pagesFailed).toBe(0);
     expect(index.extractionDiagnostics?.sourcePagesFailed).toBe(0);
+    // Unresolved routes are classified and counted separately from genuine extraction failures.
+    expect(index.coverageDiagnostics?.unresolvedSourceRouteCount).toBe(1);
+    expect(index.coverageDiagnostics?.skippedMissingPageReferenceCount).toBe(1);
+  }, 10_000);
+
+  it('classifies a bare top-level index route with no real content as skipped:non-content-index, not failed', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '"slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"',
+      '"slug":"components","documentId":"doc-components-index","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-components-index","exportedCarbonFileId":"page-canon-components-index.json"'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+    // /components: page-data exists but content-page has no title and no sections — a navigation
+    // landing page, not a content page.
+    const componentsPageData = { result: { pageContext: { documentId: 'doc-components-index', pageCanonId: 'page-canon-components-index', slug: 'components' } } };
+    const componentsContentPage = { sections: [] };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/lists/overview', 'components']) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-components-index.json') return { ok: true, json: async () => componentsPageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-components-index.json') return { ok: true, json: async () => componentsContentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    const componentsDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components.md');
+    expect(componentsDiagnostic).toMatchObject({
+      sourceUsed: 'skipped',
+      skippedReason: 'non-content-index'
+    });
+    // Not counted as a failed extraction — it was never expected to produce a content page.
+    expect(index.extractionDiagnostics?.pagesFailed).toBe(0);
+    expect(index.extractionDiagnostics?.sourcePagesFailed).toBe(0);
+    expect(index.coverageDiagnostics?.skippedNonContentIndexCount).toBe(1);
   }, 10_000);
 
   it('rejects the update when site_meta.js fails instead of falling back to the bundle table as a full route source', async () => {

@@ -147,7 +147,7 @@ export type ExtractionRouteDiagnostic = {
   /** Set when this route/virtual page was never attempted — distinct from sourceUsed:"failed",
    *  which is reserved for routes that were actually attempted and errored. Excluded from
    *  failedPages/virtualPagesFailed/failedPageCount. */
-  skippedReason?: 'missing-page-reference' | 'not-selected';
+  skippedReason?: 'missing-page-reference' | 'not-selected' | 'non-content-index' | 'alias-only' | 'redirect' | 'private' | 'blog' | 'legacy-route' | 'platform-specific-unmapped';
   /** Tables rendered via the inline decode pipeline (extractContentPageToMaterialPage), which does
    *  not track a separate resolved/decoded stage. Distinguishes "rendered without that granularity"
    *  from a genuine resolved:0/decoded:0 with tables actually rendered, which would look impossible. */
@@ -286,6 +286,32 @@ export type CoverageDiagnostics = {
   maxPagesExplicit?: boolean;
   /** Routes dropped purely because maxPages truncated the candidate list. Diagnostic only. */
   skippedNotSelectedCount?: number;
+
+  // ── Full-refresh coverage classification (diagnostic + the basis for hard validation) ──────
+  // discoveredPublicUrlCount mixes canonical routes with aliases, tab URLs, legacy/static routes,
+  // and platform-specific pages that don't map to extractable content — it stays diagnostic-only.
+  // The fields below separate "site routes" from "cache/virtual pages" and classify every
+  // discovered URL that isn't a selected/attempted canonical route, so the hard promotion target
+  // (plannedVirtualPageCount vs savedVirtualPageCount + failedVirtualPageCount) never gets diluted
+  // by URLs that were never expected to become content pages in the first place.
+  canonicalSiteMetaRouteCount?: number;
+  publicCanonicalRouteCount?: number;
+  aliasUrlCount?: number;
+  redirectedRouteCount?: number;
+  privateRouteCount?: number;
+  blogRouteCount?: number;
+  resolvableSourceRouteCount?: number;
+  unresolvedSourceRouteCount?: number;
+  selectedSourceRouteCount?: number;
+  attemptedSourceRouteCount?: number;
+  plannedVirtualPageCount?: number;
+  savedVirtualPageCount?: number;
+  failedVirtualPageCount?: number;
+  skippedAliasOnlyCount?: number;
+  skippedMissingPageReferenceCount?: number;
+  skippedNonContentIndexCount?: number;
+  skippedLegacyRouteCount?: number;
+  skippedPlatformSpecificUnmappedCount?: number;
 };
 
 export type SuspiciousCrawlPage = {

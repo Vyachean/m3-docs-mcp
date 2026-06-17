@@ -58,6 +58,20 @@ const MIN_PAGE_TEXT_LENGTH = 80;
 const SHORT_PAGE_TEXT_LENGTH = 160;
 const CONTENT_PREVIEW_LENGTH = 800;
 const COMPONENT_PATH_WITHOUT_OVERVIEW = /^\/components\/([^/]+)$/;
+// Bare top-level section index routes (e.g. "/components", "/styles") have page-data but are
+// navigation landing pages, not content pages — a missing title/sections there is expected, not an
+// extraction failure. Matches the cache file path form (no leading slash, ".md" suffix).
+const NON_CONTENT_INDEX_PATH = /^[a-z][a-z-]*\.md$/;
+const NON_CONTENT_INDEX_FALLBACK_REASONS = new Set<ExtractionFallbackReason>([
+  'json-title-missing',
+  'json-no-sections',
+  'json-no-headings',
+  'json-short-markdown'
+]);
+
+function isNonContentIndexRoute(cachePath: string, fallbackReason: ExtractionFallbackReason | undefined): boolean {
+  return Boolean(fallbackReason) && NON_CONTENT_INDEX_FALLBACK_REASONS.has(fallbackReason!) && NON_CONTENT_INDEX_PATH.test(cachePath);
+}
 const MATERIAL_CONTENT_SELECTOR = 'main, [role="main"]';
 const DEFAULT_CRAWL_CONCURRENCY = 1;
 const MAX_DISCOVERED_LINK_FACTOR = 4;
@@ -1177,6 +1191,22 @@ function buildRunDiagnostics({
     hasPreviousCache: previousIndex !== null,
     preservedFailedStagingPath,
     coverageHealth: covDiag?.coverageHealth ?? null,
+    // Full-refresh coverage summary: discoveredPublicUrlCount is diagnostic only (mixes canonical
+    // routes with aliases/tabs/legacy/platform URLs) — the actual promotion target is
+    // plannedVirtualPageCount vs savedVirtualPageCount + failedVirtualPageCount.
+    isLimitedRun: covDiag?.isLimitedRun ?? null,
+    discoveredPublicUrlCount: covDiag?.discoveredPublicUrlCount ?? null,
+    resolvableSourceRouteCount: covDiag?.resolvableSourceRouteCount ?? null,
+    selectedSourceRouteCount: covDiag?.selectedSourceRouteCount ?? null,
+    attemptedSourceRouteCount: covDiag?.attemptedSourceRouteCount ?? null,
+    plannedVirtualPageCount: covDiag?.plannedVirtualPageCount ?? null,
+    savedVirtualPageCount: covDiag?.savedVirtualPageCount ?? null,
+    failedVirtualPageCount: covDiag?.failedVirtualPageCount ?? null,
+    skippedAliasOnlyCount: covDiag?.skippedAliasOnlyCount ?? null,
+    skippedMissingPageReferenceCount: covDiag?.skippedMissingPageReferenceCount ?? null,
+    skippedNonContentIndexCount: covDiag?.skippedNonContentIndexCount ?? null,
+    skippedLegacyRouteCount: covDiag?.skippedLegacyRouteCount ?? null,
+    skippedPlatformSpecificUnmappedCount: covDiag?.skippedPlatformSpecificUnmappedCount ?? null,
     lastPhase: lastProgress?.phase ?? null,
     concurrency,
     lastRatePagesPerSecond: lastProgress?.ratePagesPerSecond ?? null,
@@ -1347,6 +1377,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   let sourcePagesSelectedCount = 0;
   let skippedNotSelectedCount = 0;
   let truncatedByMaxPages = false;
+  let resolvableSourceRouteCount = 0;
+  let unresolvedSourceRouteCount = 0;
+  // All candidate route paths (site_meta + bundle-supplement), before maxPages selection — used to
+  // tell a genuinely unmapped/legacy discovered URL apart from one that's simply an alias of (or
+  // excluded variant of) a route the pipeline already knows about.
+  const candidatePathsSet = new Set<string>();
+  const aliasPathsSet = new Set<string>();
   const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
   const verbose = options.verbose ?? false;
   const logError = (msg: string): void => { options.onBeforeLog?.(); console.error(msg); };
@@ -1642,6 +1679,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         coverageDiagnostics.siteMetaPrivateRouteCount = normalizedSiteMetaRoutes.filter((r) => !r.public).length;
         coverageDiagnostics.siteMetaRedirectRouteCount = normalizedSiteMetaRoutes.filter((r) => Boolean(r.redirectExternalUrl)).length;
         coverageDiagnostics.siteMetaAliasCount = normalizeResult.aliasCount;
+        // Full-refresh coverage classification counters (see hasSignificantCoverageGap callers):
+        // discoveredPublicUrlCount mixes canonical routes with aliases/tabs/legacy/platform URLs,
+        // so these track the canonical-route-level picture separately.
+        coverageDiagnostics.canonicalSiteMetaRouteCount = normalizeResult.normalizedRouteCount;
+        coverageDiagnostics.publicCanonicalRouteCount = publicRoutes.length;
+        coverageDiagnostics.aliasUrlCount = normalizeResult.aliasCount;
+        coverageDiagnostics.redirectedRouteCount = normalizedSiteMetaRoutes.filter((r) => Boolean(r.redirectExternalUrl)).length;
+        coverageDiagnostics.privateRouteCount = normalizedSiteMetaRoutes.filter((r) => !r.public).length;
+        coverageDiagnostics.blogRouteCount = normalizedSiteMetaRoutes.filter((r) => r.isBlog).length;
+        for (const route of normalizedSiteMetaRoutes) {
+          for (const alias of route.aliases) aliasPathsSet.add(alias);
+        }
 
         logger?.log('info', 'site-meta:routes-enumerated', {
           phase: 'normalize-routes',
@@ -1803,6 +1852,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
       coverageDiagnostics.bundleSupplementRouteCount = candidateRoutes.filter((r) => r.navigationSource === 'bundle-supplement').length;
       coverageDiagnostics.supplementedPrefixes = uncoveredPrefixes;
+      for (const route of candidateRoutes) candidatePathsSet.add(route.path);
 
       crawlPhase = 'filter-routes';
       emitProgress(true);
@@ -1825,6 +1875,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         const slug = route.path.replace(/^\/+|\/+$/g, '');
         if (!slug) continue;
         if (resolution.pageReferenceSource === 'missing') {
+          unresolvedSourceRouteCount += 1;
           recordRouteDiagnostic(createRouteDiagnostic({
             url: new URL(route.path, baseUrl).toString(),
             path: routePathFromSlug(slug),
@@ -1851,6 +1902,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           selectedBecause: route.selectedBecause
         });
       }
+      resolvableSourceRouteCount = resolvedRoutes.length;
       finalConfig = { carbonVersion, routes: resolvedRoutes };
     } else if (siteMetaProvidedRoutes) {
       // Bundle fetch failed: site_meta routes exist, but no page-reference table is available
@@ -2135,17 +2187,70 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   if (policySkippedDocPaths.size > 0) {
     coverageDiagnostics.coverageWarnings.push(`coverage-policy-skip:blog=${skippedBlogCount}:total=${policySkippedDocPaths.size}:includeBlog=${includeBlog}`);
   }
-  // For gap/regression checks, treat policy-skipped routes as effectively covered
-  const effectiveDiscovered = coverageDiagnostics.discoveredPublicUrlCount;
-  const effectiveAccepted = coverageDiagnostics.acceptedPageCount + policySkippedDocPaths.size;
   if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
     coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
   }
   if (isLimitedRun) {
     coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${effectiveSkippedNotSelectedCount}`);
   }
-  if (!isLimitedRun && hasSignificantCoverageGap(effectiveDiscovered, effectiveAccepted)) {
-    coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
+
+  // Source-route vs cache-page counters: one source route can expand into several tab-split cache
+  // pages, so these must never be compared 1:1. Computed before the gap check below, which must
+  // validate against these — never against discoveredPublicUrlCount (canonical routes mixed with
+  // aliases, tab URLs, legacy/static routes, and platform-specific pages that are never expected
+  // to become content pages at all).
+  const sourceVirtualCounters = computeSourceAndVirtualPageCounters(extractionDiagnostics.routeDiagnostics);
+  extractionDiagnostics.sourcePagesSelected = sourcePagesSelectedCount;
+  extractionDiagnostics.sourcePagesAttempted = sourceVirtualCounters.sourcePagesAttempted;
+  extractionDiagnostics.sourcePagesSucceeded = sourceVirtualCounters.sourcePagesSucceeded;
+  extractionDiagnostics.sourcePagesFailed = sourceVirtualCounters.sourcePagesFailed;
+  extractionDiagnostics.virtualPagesPlanned = sourceVirtualCounters.virtualPagesPlanned;
+  extractionDiagnostics.virtualPagesSaved = sourceVirtualCounters.virtualPagesSaved;
+  extractionDiagnostics.virtualPagesFailed = sourceVirtualCounters.virtualPagesFailed;
+  extractionDiagnostics.cachePagesSaved = sourceVirtualCounters.cachePagesSaved;
+
+  coverageDiagnostics.resolvableSourceRouteCount = resolvableSourceRouteCount;
+  coverageDiagnostics.unresolvedSourceRouteCount = unresolvedSourceRouteCount;
+  coverageDiagnostics.selectedSourceRouteCount = sourcePagesSelectedCount;
+  coverageDiagnostics.attemptedSourceRouteCount = dsdbAttemptedCount;
+  coverageDiagnostics.plannedVirtualPageCount = sourceVirtualCounters.virtualPagesPlanned;
+  coverageDiagnostics.savedVirtualPageCount = sourceVirtualCounters.virtualPagesSaved;
+  coverageDiagnostics.failedVirtualPageCount = sourceVirtualCounters.virtualPagesFailed;
+  coverageDiagnostics.skippedMissingPageReferenceCount = unresolvedSourceRouteCount;
+
+  // Classify every discovered-but-uncrawled URL so none of them silently inflate a hard coverage
+  // denominator: alias targets of routes already known to the pipeline, genuinely unmapped/legacy
+  // static routes (predate the Angular app, never registered in the bundle route table), and
+  // platform-specific pages that look like implementation docs but aren't part of any candidate
+  // route. skippedNotSelectedCount (maxPages truncation) and skippedMissingPageReferenceCount
+  // (resolvePageReference failures) are already tracked above from routeDiagnostics.
+  let skippedAliasOnlyCount = 0;
+  let skippedLegacyRouteCount = 0;
+  let skippedPlatformSpecificUnmappedCount = 0;
+  const PLATFORM_SPECIFIC_SEGMENT = /^\/(android|ios|flutter|web)(\/|$)/;
+  for (const docPath of uncrawledDiscoveredUrls) {
+    if (aliasPathsSet.has(docPath)) {
+      skippedAliasOnlyCount += 1;
+    } else if (candidatePathsSet.has(docPath)) {
+      // Known candidate route that simply wasn't selected/resolved — already counted via
+      // skippedNotSelectedCount/skippedMissingPageReferenceCount; not double-counted here.
+      continue;
+    } else if (PLATFORM_SPECIFIC_SEGMENT.test(docPath)) {
+      skippedPlatformSpecificUnmappedCount += 1;
+    } else {
+      skippedLegacyRouteCount += 1;
+    }
+  }
+  coverageDiagnostics.skippedAliasOnlyCount = skippedAliasOnlyCount;
+  coverageDiagnostics.skippedLegacyRouteCount = skippedLegacyRouteCount;
+  coverageDiagnostics.skippedPlatformSpecificUnmappedCount = skippedPlatformSpecificUnmappedCount;
+  coverageDiagnostics.skippedNonContentIndexCount = extractionDiagnostics.routeDiagnostics.filter((d) => d.skippedReason === 'non-content-index').length;
+
+  // Full-refresh hard coverage gap: validated against the deterministic pipeline's own planned vs.
+  // saved+failed virtual pages and selected vs. attempted source routes — never against
+  // discoveredPublicUrlCount. A limited run is exempted entirely (see isLimitedRun above).
+  if (!isLimitedRun && hasSignificantCoverageGap(sourceVirtualCounters.virtualPagesPlanned, sourceVirtualCounters.virtualPagesSaved)) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-gap:planned=${sourceVirtualCounters.virtualPagesPlanned}:saved=${sourceVirtualCounters.virtualPagesSaved}:failed=${sourceVirtualCounters.virtualPagesFailed}`);
   }
   const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
   if (previousDiscoveredCount > 0 && coverageDiagnostics.discoveredPublicUrlCount > 0 && coverageDiagnostics.discoveredPublicUrlCount < Math.floor(previousDiscoveredCount * COVERAGE_REGRESSION_RATIO)) {
@@ -2166,18 +2271,6 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     coverageDiagnostics.coverageVerified = false;
   }
   coverageDiagnostics.coverageHealth = computeCoverageHealth(coverageDiagnostics);
-
-  // Source-route vs cache-page counters: one source route can expand into several tab-split cache
-  // pages, so these must never be compared 1:1.
-  const sourceVirtualCounters = computeSourceAndVirtualPageCounters(extractionDiagnostics.routeDiagnostics);
-  extractionDiagnostics.sourcePagesSelected = sourcePagesSelectedCount;
-  extractionDiagnostics.sourcePagesAttempted = sourceVirtualCounters.sourcePagesAttempted;
-  extractionDiagnostics.sourcePagesSucceeded = sourceVirtualCounters.sourcePagesSucceeded;
-  extractionDiagnostics.sourcePagesFailed = sourceVirtualCounters.sourcePagesFailed;
-  extractionDiagnostics.virtualPagesPlanned = sourceVirtualCounters.virtualPagesPlanned;
-  extractionDiagnostics.virtualPagesSaved = sourceVirtualCounters.virtualPagesSaved;
-  extractionDiagnostics.virtualPagesFailed = sourceVirtualCounters.virtualPagesFailed;
-  extractionDiagnostics.cachePagesSaved = sourceVirtualCounters.cachePagesSaved;
 
   // failedPageCount: virtualPagesFailed is the source of truth for direct-JSON/network-JSON/DOM
   // route-level failures (it excludes skipped-not-attempted entries); failedUrls is kept only for
@@ -2278,10 +2371,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const savePage = async (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): Promise<void> => {
       if (extraction.fallbackReason) {
         jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
+        const nonContentIndex = isNonContentIndexRoute(extraction.page.path, extraction.fallbackReason);
         recordRouteDiagnostic(createRouteDiagnostic({
           url: extraction.page.url,
           path: extraction.page.path,
-          sourceUsed: 'failed',
+          sourceUsed: nonContentIndex ? 'skipped' : 'failed',
+          ...(nonContentIndex ? { skippedReason: 'non-content-index' as const } : {}),
           finalMethod: null,
           directJsonAttempted: true,
           fallbackReasons: [extraction.fallbackReason],
@@ -2495,10 +2590,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           });
           if (extraction.fallbackReason) {
             jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
+            const nonContentIndex = isNonContentIndexRoute(extraction.page.path, extraction.fallbackReason);
             recordRouteDiagnostic(createRouteDiagnostic({
               url: extraction.page.url,
               path: extraction.page.path,
-              sourceUsed: 'failed',
+              sourceUsed: nonContentIndex ? 'skipped' : 'failed',
+              ...(nonContentIndex ? { skippedReason: 'non-content-index' as const } : {}),
               finalMethod: null,
               directJsonAttempted: true,
               fallbackReasons: [extraction.fallbackReason],

@@ -249,6 +249,39 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
   }
 
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
+  const coverageDiag = nextIndex.coverageDiagnostics;
+  const extractionDiag = nextIndex.extractionDiagnostics;
+
+  // Accounting invariant: every attempted source route's virtual pages must be accounted for as
+  // either saved or failed — never silently dropped. This should always hold by construction; a
+  // mismatch indicates a real bug in the diagnostics pipeline, not a content/coverage problem.
+  if (
+    extractionDiag &&
+    extractionDiag.virtualPagesPlanned !== extractionDiag.virtualPagesSaved + extractionDiag.virtualPagesFailed
+  ) {
+    throw new Error(
+      `Material 3 crawl diagnostics are inconsistent: virtualPagesPlanned=${extractionDiag.virtualPagesPlanned} but ` +
+      `virtualPagesSaved=${extractionDiag.virtualPagesSaved} + virtualPagesFailed=${extractionDiag.virtualPagesFailed} ` +
+      `does not match. Keeping the existing cache. Use --force to promote anyway.`
+    );
+  }
+
+  // Full refresh only: every selected/resolvable source route must actually have been attempted.
+  // resolvableSourceRouteCount includes blog routes when includeBlog:false explicitly excludes them
+  // before the fetch loop runs (a legitimate, intentional exclusion, not a coverage gap), so that
+  // count is subtracted out before comparing.
+  if (!coverageDiag?.isLimitedRun && coverageDiag?.resolvableSourceRouteCount !== undefined && coverageDiag.attemptedSourceRouteCount !== undefined) {
+    const expectedAttempted = (coverageDiag.includeBlog ?? false)
+      ? coverageDiag.resolvableSourceRouteCount
+      : Math.max(0, coverageDiag.resolvableSourceRouteCount - (coverageDiag.blogRouteCount ?? 0));
+    const unattempted = expectedAttempted - coverageDiag.attemptedSourceRouteCount;
+    if (unattempted > 0 && unattempted >= Math.max(5, Math.ceil(expectedAttempted * DEFAULT_MAX_FAILED_PAGE_RATIO))) {
+      throw new Error(
+        `Material 3 crawl only attempted ${coverageDiag.attemptedSourceRouteCount} of ${expectedAttempted} ` +
+        `selected/resolvable source routes on a full refresh. Keeping the existing cache. Use --force to promote anyway.`
+      );
+    }
+  }
 
   // Fail if the deterministic page-data pipeline (routes resolved via the bundle-table page
   // reference resolver — the default path) was attempted at all but nothing was saved from it.
