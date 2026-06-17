@@ -20,7 +20,7 @@ export type NormalizedRoute = {
 
 export type SkippedRoute = {
   path: string;
-  reason: 'private' | 'redirect' | 'blog' | 'missing-reference';
+  reason: 'private' | 'redirect' | 'blog' | 'missing-reference' | 'not-selected';
 };
 
 export type SelectedRoute = NormalizedRoute & {
@@ -51,6 +51,11 @@ export type FilterRoutesResult = {
   skippedRedirectCount: number;
   skippedBlogCount: number;
   skippedMissingReferenceCount: number;
+  skippedNotSelectedCount: number;
+  /** True when maxPages forced candidates to be dropped before fetching anything. */
+  truncatedByMaxPages: boolean;
+  candidateSourceRouteCount: number;
+  selectedSourceRouteCount: number;
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -195,17 +200,29 @@ export function filterRoutes(routes: NormalizedRoute[], options: FilterRoutesOpt
     .sort((a, b) => compareMaterialRoutePriority(a.path, b.path));
 
   let selected: SelectedRoute[];
+  let truncatedByMaxPages = false;
+  let skippedNotSelectedCount = 0;
   if (options.maxPages === null || candidates.length <= options.maxPages) {
     selected = [
       ...required.map((r) => ({ ...r, selectedBecause: 'budget' as const })),
       ...rest.map((r) => ({ ...r, selectedBecause: 'budget' as const })),
     ];
   } else {
+    truncatedByMaxPages = true;
     const budgetForRest = Math.max(0, options.maxPages - required.length);
+    const restSelected = rest.slice(0, budgetForRest);
+    const restDropped = rest.slice(budgetForRest);
     selected = [
       ...required.map((r) => ({ ...r, selectedBecause: 'required-validation' as const })),
-      ...rest.slice(0, budgetForRest).map((r) => ({ ...r, selectedBecause: 'budget' as const })),
+      ...restSelected.map((r) => ({ ...r, selectedBecause: 'budget' as const })),
     ];
+    for (const dropped of restDropped) {
+      skipped.push({ path: dropped.path, reason: 'not-selected' });
+      skippedNotSelectedCount += 1;
+    }
+    // required.length may itself exceed options.maxPages — those required routes are still force-
+    // included above (validated strictly when selected); the caller decides how to treat a required
+    // route that didn't fit at all (it simply won't appear in `selected`).
   }
 
   // A route with no site_meta-supplied documentId is NOT removed from `selected` here — the
@@ -218,5 +235,16 @@ export function filterRoutes(routes: NormalizedRoute[], options: FilterRoutesOpt
     }
   }
 
-  return { selected, skipped, skippedPrivateCount, skippedRedirectCount, skippedBlogCount, skippedMissingReferenceCount };
+  return {
+    selected,
+    skipped,
+    skippedPrivateCount,
+    skippedRedirectCount,
+    skippedBlogCount,
+    skippedMissingReferenceCount,
+    skippedNotSelectedCount,
+    truncatedByMaxPages,
+    candidateSourceRouteCount: candidates.length,
+    selectedSourceRouteCount: selected.length,
+  };
 }

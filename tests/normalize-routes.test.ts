@@ -128,4 +128,31 @@ describe('filterRoutes', () => {
     expect(filtered.selected.find((r) => r.path === '/required')?.selectedBecause).toBe('required-validation');
     expect(filtered.selected).toHaveLength(2);
   });
+
+  it('marks truncatedByMaxPages and records dropped routes as skipped:not-selected', () => {
+    const routes = [route('/a'), route('/b'), route('/c')];
+    const filtered = filterRoutes(routes, { includeBlog: false, maxPages: 2 });
+    expect(filtered.truncatedByMaxPages).toBe(true);
+    expect(filtered.skippedNotSelectedCount).toBe(1);
+    expect(filtered.skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'not-selected' })
+    ]));
+    expect(filtered.candidateSourceRouteCount).toBe(3);
+    expect(filtered.selectedSourceRouteCount).toBe(2);
+  });
+
+  it('does not truncate or report not-selected routes when maxPages is null (full refresh)', () => {
+    const routes = [route('/a'), route('/b'), route('/c')];
+    const filtered = filterRoutes(routes, { includeBlog: false, maxPages: null });
+    expect(filtered.truncatedByMaxPages).toBe(false);
+    expect(filtered.skippedNotSelectedCount).toBe(0);
+    expect(filtered.selected).toHaveLength(3);
+  });
+
+  it('does not truncate when candidates fit within maxPages', () => {
+    const routes = [route('/a'), route('/b')];
+    const filtered = filterRoutes(routes, { includeBlog: false, maxPages: 5 });
+    expect(filtered.truncatedByMaxPages).toBe(false);
+    expect(filtered.skippedNotSelectedCount).toBe(0);
+  });
 });

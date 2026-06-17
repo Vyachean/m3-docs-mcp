@@ -61,12 +61,16 @@ export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth
 function firstCacheCoveragePolicy(nextIndex: MaterialIndex): void {
   const diag = nextIndex.coverageDiagnostics;
   if (!diag) return;
+  // A limited run (explicit --max-pages, or maxPages truncated route selection) intentionally
+  // scopes down extraction — comparing its accepted-page count against the full discovered site
+  // is not a valid signal there. Only a full refresh enforces this gap strictly.
+  if (diag.isLimitedRun) return;
   const warnings = diag.coverageWarnings;
   const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
   const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
   if (hasGap && !hasPartial) {
     const gapWarning = warnings.find((w) => w.startsWith('coverage-gap:')) ?? 'coverage-gap';
-    throw new Error(`Material 3 cache has a significant coverage gap (${gapWarning}) without an intentional --max-pages limit. Discovery found more public URLs than were accepted. Use --force to promote anyway.`);
+    throw new Error(`Material 3 cache has a significant coverage gap (${gapWarning}) on a full refresh. Discovery found more public URLs than were accepted. Use --force to promote anyway.`);
   }
 }
 
@@ -320,7 +324,8 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
 
   const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
   const nextDiscoveredCount = nextIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? nextIndex.pageCount;
-  const intentionalPartial = nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false;
+  const intentionalPartial = nextIndex.coverageDiagnostics?.isLimitedRun
+    ?? (nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false);
   if (!intentionalPartial && previousDiscoveredCount > 0 && nextDiscoveredCount > 0) {
     const minDiscoveredPages = Math.ceil(previousDiscoveredCount * DEFAULT_MIN_RETAINED_PAGE_RATIO);
     if (nextDiscoveredCount < minDiscoveredPages) {

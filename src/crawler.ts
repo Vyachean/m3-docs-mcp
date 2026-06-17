@@ -10,7 +10,7 @@ import { UpdateLogger } from './update-logger.js';
 import { CRAWL_PRIORITY_POLICY_VERSION, compareMaterialCrawlUrlPriority, compareMaterialRoutePriority, isBlogPath } from './crawl-priority.js';
 import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl } from './crawler-utils.js';
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
-import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
+import { computeSourceAndVirtualPageCounters, createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { extractPageDataMetadata } from './json-extraction/extract-page-data.js';
 import { createDsdbResourceFetcher, fetchCarbonContentByReference, fetchJsonPageBundle, fetchPageDataByReference } from './json-extraction/fetch-json-page.js';
@@ -918,7 +918,10 @@ function createEmptyCoverageDiagnostics(): CoverageDiagnostics {
     crawlPriorityPolicyVersion: CRAWL_PRIORITY_POLICY_VERSION,
     coverageVerified: false,
     coverageWarnings: [],
-    coverageHealth: 'unverified'
+    coverageHealth: 'unverified',
+    isLimitedRun: false,
+    maxPagesExplicit: false,
+    skippedNotSelectedCount: 0
   };
 }
 
@@ -1282,7 +1285,10 @@ type DsdbDiscoveryState = {
 
 async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousIndex: MaterialIndex | null = null, previousCacheDir = cacheDir, logger?: UpdateLogger): Promise<{ index: MaterialIndex; dsdbState: DsdbDiscoveryState }> {
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
-  const maxPages = options.maxPages ?? 250;
+  // No --max-pages means a full refresh: no source-route truncation. Number.MAX_SAFE_INTEGER (not
+  // Infinity) keeps maxPages JSON-serializable in progress/diagnostics output.
+  const maxPagesExplicit = options.maxPagesExplicit === true;
+  const maxPages = options.maxPages ?? Number.MAX_SAFE_INTEGER;
   const concurrency = Math.min(options.concurrency ?? DEFAULT_CRAWL_CONCURRENCY, maxPages);
   const signal = options.signal;
   const includeBlog = options.includeBlog ?? false;
@@ -1334,6 +1340,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   let activeWorkers = 0;
   let aborted = false;
   let dsdbAttemptedCount = 0;
+  let sourcePagesSelectedCount = 0;
+  let skippedNotSelectedCount = 0;
+  let truncatedByMaxPages = false;
   const minAcceptedPageCount = options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT;
   const verbose = options.verbose ?? false;
   const logError = (msg: string): void => { options.onBeforeLog?.(); console.error(msg); };
@@ -1426,8 +1435,11 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     statusTablesRenderedAsPlaceholder = 0,
     unsupportedStatusTableSchemaCount = 0,
     statusTableDiagnostics = [],
-    tokenTablesResolved = 0,
-    tokenTablesDecoded = 0,
+    // No default: undefined means "not tracked at this call site" (distinct from "tracked as 0"),
+    // see tokenTablesRenderedFromInline.
+    tokenTablesResolved,
+    tokenTablesDecoded,
+    tokenTablesRenderedFromInline = 0,
     tokenTablesRenderedAsPlaceholder = 0,
     tokenTablesUnsupportedSchema = 0,
     statusTablesDecoded = 0,
@@ -1455,11 +1467,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     pageDataStatus,
     carbonUrl,
     carbonStatus,
-    selectedBecause
+    selectedBecause,
+    skippedReason
   }: {
     url: string;
     path: string;
     sourceUsed: ExtractionSource;
+    skippedReason?: ExtractionRouteDiagnostic['skippedReason'];
     finalMethod: ExtractionRouteDiagnostic['finalMethod'];
     directJsonAttempted?: boolean;
     directJsonSucceeded?: boolean;
@@ -1476,6 +1490,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTablesRequested?: number;
     tokenTablesResolved?: number;
     tokenTablesDecoded?: number;
+    tokenTablesRenderedFromInline?: number;
     tokenTablesRenderedAsPlaceholder?: number;
     tokenTablesUnsupportedSchema?: number;
     tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
@@ -1514,6 +1529,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     url,
     path,
     sourceUsed,
+    ...(skippedReason ? { skippedReason } : {}),
     finalMethod,
     jsonAttempted: directJsonAttempted || networkJsonAttempted,
     jsonSucceeded: directJsonSucceeded || networkJsonSucceeded,
@@ -1533,8 +1549,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTables,
     tokenTablesRendered,
     tokenTablesRequested,
-    tokenTablesResolved,
-    tokenTablesDecoded,
+    ...(tokenTablesResolved !== undefined ? { tokenTablesResolved } : {}),
+    ...(tokenTablesDecoded !== undefined ? { tokenTablesDecoded } : {}),
+    tokenTablesRenderedFromInline,
     tokenTablesRenderedAsPlaceholder,
     tokenTablesUnsupportedSchema,
     tokenContextDiagnostics,
@@ -1794,6 +1811,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         if (skip.reason === 'blog') policySkippedDocPaths.add(skip.path);
       }
       coverageDiagnostics.skippedBlogCount += filtered.skippedBlogCount;
+      truncatedByMaxPages = filtered.truncatedByMaxPages;
+      skippedNotSelectedCount = filtered.skippedNotSelectedCount;
+      sourcePagesSelectedCount = filtered.selected.length;
 
       const resolvedRoutes: DsdbRoute[] = [];
       for (const route of filtered.selected) {
@@ -1804,7 +1824,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           recordRouteDiagnostic(createRouteDiagnostic({
             url: new URL(route.path, baseUrl).toString(),
             path: routePathFromSlug(slug),
-            sourceUsed: 'failed',
+            sourceUsed: 'skipped',
+            skippedReason: 'missing-page-reference',
             finalMethod: null,
             fallbackReasons: ['json-fetch-failed'],
             navigationSource: route.navigationSource,
@@ -2089,7 +2110,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.uncrawledDiscoveredUrls = uncrawledDiscoveredUrls;
   coverageDiagnostics.uncrawledDiscoveredUrlCount = uncrawledDiscoveredUrls.length;
   coverageDiagnostics.skippedBecauseJsonCoveredCount = Array.from(discoveredPublicDocPaths).filter((docPath) => acceptedPublicDocPaths.has(docPath) && isDsdbCoveredPath(docPath.replace(/^\/+/, ''), jsonExtractedSlugs)).length;
-  coverageDiagnostics.skippedBecauseMaxPagesCount = pages.length >= maxPages ? uncrawledDiscoveredUrls.length : 0;
+  // Limited-run detection is primarily whether maxPages actually truncated source-route selection
+  // (or was explicitly requested) — not whether the cache-file count happened to reach the cap, since
+  // a tight source-route budget can expand into fewer cache pages than maxPages via tab-splitting.
+  // The legacy browser-only crawl path (no site_meta/bundle route list, so filterRoutes never runs)
+  // has no source-route concept at all; for that path "pages.length reached maxPages" remains the
+  // only available signal that the run was capped.
+  const legacyMaxPagesHit = pages.length >= maxPages;
+  const isLimitedRun = maxPagesExplicit || truncatedByMaxPages || legacyMaxPagesHit;
+  const effectiveSkippedNotSelectedCount = truncatedByMaxPages ? skippedNotSelectedCount : (legacyMaxPagesHit ? uncrawledDiscoveredUrls.length : 0);
+  coverageDiagnostics.isLimitedRun = isLimitedRun;
+  coverageDiagnostics.maxPagesExplicit = maxPagesExplicit;
+  coverageDiagnostics.skippedNotSelectedCount = skippedNotSelectedCount;
+  coverageDiagnostics.skippedBecauseMaxPagesCount = effectiveSkippedNotSelectedCount;
   if (policySkippedDocPaths.size > 0) {
     coverageDiagnostics.coverageWarnings.push(`coverage-policy-skip:blog=${skippedBlogCount}:total=${policySkippedDocPaths.size}:includeBlog=${includeBlog}`);
   }
@@ -2099,10 +2132,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   if (coverageDiagnostics.discoveredPublicUrlCount === 0) {
     coverageDiagnostics.coverageWarnings.push(previousIndex ? 'coverage-discovery-empty:using-previous-cache-hints' : 'coverage-discovery-empty:no-baseline');
   }
-  if (coverageDiagnostics.skippedBecauseMaxPagesCount > 0) {
-    coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${coverageDiagnostics.skippedBecauseMaxPagesCount}`);
+  if (isLimitedRun) {
+    coverageDiagnostics.coverageWarnings.push(`coverage-partial:max-pages-limited:${effectiveSkippedNotSelectedCount}`);
   }
-  if (hasSignificantCoverageGap(effectiveDiscovered, effectiveAccepted)) {
+  if (!isLimitedRun && hasSignificantCoverageGap(effectiveDiscovered, effectiveAccepted)) {
     coverageDiagnostics.coverageWarnings.push(`coverage-gap:accepted=${coverageDiagnostics.acceptedPageCount}:discovered=${coverageDiagnostics.discoveredPublicUrlCount}`);
   }
   const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
@@ -2124,15 +2157,28 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     coverageDiagnostics.coverageVerified = false;
   }
   coverageDiagnostics.coverageHealth = computeCoverageHealth(coverageDiagnostics);
-  // failedPageCount includes both browser crawl failures and direct JSON route failures
-  // so the reported count is consistent with routeDiagnostics entries with sourceUsed:'failed'.
-  const directJsonFailedCount = extractionDiagnostics.pagesFailed;
+
+  // Source-route vs cache-page counters: one source route can expand into several tab-split cache
+  // pages, so these must never be compared 1:1.
+  const sourceVirtualCounters = computeSourceAndVirtualPageCounters(extractionDiagnostics.routeDiagnostics);
+  extractionDiagnostics.sourcePagesSelected = sourcePagesSelectedCount;
+  extractionDiagnostics.sourcePagesAttempted = sourceVirtualCounters.sourcePagesAttempted;
+  extractionDiagnostics.sourcePagesSucceeded = sourceVirtualCounters.sourcePagesSucceeded;
+  extractionDiagnostics.sourcePagesFailed = sourceVirtualCounters.sourcePagesFailed;
+  extractionDiagnostics.virtualPagesPlanned = sourceVirtualCounters.virtualPagesPlanned;
+  extractionDiagnostics.virtualPagesSaved = sourceVirtualCounters.virtualPagesSaved;
+  extractionDiagnostics.virtualPagesFailed = sourceVirtualCounters.virtualPagesFailed;
+  extractionDiagnostics.cachePagesSaved = sourceVirtualCounters.cachePagesSaved;
+
+  // failedPageCount: virtualPagesFailed is the source of truth for direct-JSON/network-JSON/DOM
+  // route-level failures (it excludes skipped-not-attempted entries); failedUrls is kept only for
+  // the legacy browser-DOM-worker path, a disjoint URL space in default (non-browser-fallback) mode.
   const index: MaterialIndex = {
     source: baseUrl,
     capturedAt,
     pageCount: pages.length,
     attemptedPageCount: dsdbAttemptedCount + seen.size,
-    failedPageCount: failedUrls.length + directJsonFailedCount,
+    failedPageCount: failedUrls.length + sourceVirtualCounters.virtualPagesFailed,
     failedUrls,
     qualityReport,
     extractionDiagnostics,
@@ -2234,6 +2280,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
           tokenTables: extraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+          tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved,
+          tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded,
+          tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
           missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
           routeMetadataWarnings: route.metadataWarnings ?? [],
           ...sharedDiagnosticFields,
@@ -2410,8 +2459,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               tokenTables: extraction.pageDiagnostic.tokenTables,
               tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
               tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
-              tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
-              tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+              tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved,
+              tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded,
+              tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
               tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
               tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
               tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
@@ -2449,8 +2499,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               tokenTables: extraction.pageDiagnostic.tokenTables,
               tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
               tokenTablesRequested: extraction.pageDiagnostic.tokenTables,
-              tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved ?? 0,
-              tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+              tokenTablesResolved: extraction.pageDiagnostic.tokenTablesResolved,
+              tokenTablesDecoded: extraction.pageDiagnostic.tokenTablesDecoded,
+              tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
               tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
               tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
               tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
@@ -2692,8 +2743,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTables: networkExtraction.pageDiagnostic.tokenTables,
           tokenTablesRendered: networkExtraction.pageDiagnostic.tokenTablesRendered,
           tokenTablesRequested: networkExtraction.pageDiagnostic.tokenTables,
-          tokenTablesResolved: networkExtraction.pageDiagnostic.tokenTablesResolved ?? 0,
-          tokenTablesDecoded: networkExtraction.pageDiagnostic.tokenTablesDecoded ?? 0,
+          tokenTablesResolved: networkExtraction.pageDiagnostic.tokenTablesResolved,
+          tokenTablesDecoded: networkExtraction.pageDiagnostic.tokenTablesDecoded,
+          tokenTablesRenderedFromInline: networkExtraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
           tokenTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
           tokenTablesUnsupportedSchema: networkExtraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
           tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,

@@ -1015,6 +1015,41 @@ describe('crawlMaterialDocs', () => {
     }
   }, 10_000);
 
+  it('classifies a selected site_meta route absent from the bundle table as skipped, not failed', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    // /components/orphan exists in site_meta but has no entry in the bundle route table at all —
+    // resolvePageReference returns pageReferenceSource:"missing" for it.
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/lists/overview', 'components/orphan']) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-lists.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+
+    const orphanDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/orphan.md');
+    expect(orphanDiagnostic).toMatchObject({
+      sourceUsed: 'skipped',
+      skippedReason: 'missing-page-reference',
+      pageReferenceSource: 'missing'
+    });
+    // Never attempted — must not count toward any failure counter.
+    expect(index.failedPageCount).toBe(0);
+    expect(index.extractionDiagnostics?.pagesFailed).toBe(0);
+    expect(index.extractionDiagnostics?.sourcePagesFailed).toBe(0);
+  }, 10_000);
+
   it('rejects the update when site_meta.js fails instead of falling back to the bundle table as a full route source', async () => {
     const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
     const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';

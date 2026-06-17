@@ -100,5 +100,33 @@ describe('deterministic pipeline: bundle-supplement + tab-splitting (real fixtur
     // must show they were the source of those routes' navigation, not site_meta.
     expect(index.coverageDiagnostics?.supplementedPrefixes?.sort()).toEqual(['foundations', 'styles']);
     expect(index.coverageDiagnostics?.bundleSupplementRouteCount).toBeGreaterThan(0);
+
+    // Source-route counters (site routes attempted) must stay distinct from virtual/cache-page
+    // counters (one source route, components/buttons, expands into 4 tab pages here) — they must
+    // never be compared 1:1.
+    const diag = index.extractionDiagnostics!;
+    expect(diag.virtualPagesSaved).toBe(index.pageCount);
+    expect(diag.cachePagesSaved).toBe(index.pageCount);
+    expect(diag.sourcePagesAttempted).toBeGreaterThan(0);
+    expect(diag.sourcePagesAttempted).toBeLessThan(diag.virtualPagesPlanned);
+    // components/buttons (the route with mocked page-data + Carbon responses) must count as a
+    // single succeeded source route despite expanding into 4 tab pages; other routes here (lists,
+    // bundle-supplement styles/foundations routes) aren't mocked and are expected to fail, but that
+    // must not be confused with "the succeeded route failed."
+    expect(diag.sourcePagesSucceeded).toBeGreaterThanOrEqual(1);
+    expect(diag.sourcePagesSucceeded + diag.sourcePagesFailed).toBe(diag.sourcePagesAttempted);
+
+    // No route diagnostic should show tables rendered without resolved/decoded ever having been
+    // tracked alongside it (the "tokenTablesRequested:2,resolved:0,decoded:0,rendered:2"-shaped bug):
+    // whenever tokenTablesRendered > 0, resolved/decoded must be tracked (or the inline-render
+    // counter must explain it) rather than silently defaulting to a contradictory 0.
+    for (const routeDiag of index.extractionDiagnostics?.routeDiagnostics ?? []) {
+      if (routeDiag.tokenTablesRendered > 0) {
+        const explained = (routeDiag.tokenTablesResolved ?? 0) > 0
+          || (routeDiag.tokenTablesDecoded ?? 0) > 0
+          || (routeDiag.tokenTablesRenderedFromInline ?? 0) > 0;
+        expect(explained).toBe(true);
+      }
+    }
   }, 30_000);
 });

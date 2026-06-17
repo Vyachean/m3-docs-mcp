@@ -346,6 +346,66 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(partialIndex, null)).not.toThrow();
   });
 
+  it('allows a limited run (isLimitedRun:true) with a real discovered/accepted gap to promote', () => {
+    const limitedIndex = materialIndex(11, {
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 1405,
+        sitemapUrlCount: 1405,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 11,
+        uncrawledDiscoveredUrlCount: 1394,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 15,
+        skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
+        coverageVerified: false,
+        isLimitedRun: true,
+        maxPagesExplicit: true,
+        // Note: no coverage-partial/coverage-gap warning pushed at all in limited mode — isLimitedRun
+        // alone is enough for firstCacheCoveragePolicy to skip the full-site comparison.
+        coverageWarnings: [],
+        coverageHealth: 'partial'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(limitedIndex, null)).not.toThrow();
+  });
+
+  it('still rejects a full run (isLimitedRun:false) with the same discovered/accepted gap', () => {
+    const fullRunIndex = materialIndex(11, {
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 1405,
+        sitemapUrlCount: 1405,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 11,
+        uncrawledDiscoveredUrlCount: 1394,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 0,
+        skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
+        coverageVerified: false,
+        isLimitedRun: false,
+        maxPagesExplicit: false,
+        coverageWarnings: ['coverage-gap:accepted=11:discovered=1405'],
+        coverageHealth: 'failed'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(fullRunIndex, null)).toThrow('coverage gap');
+  });
+
   it('allows first cache with discovery empty (unverified) without rejecting', () => {
     const unverifiedIndex = materialIndex(15, {
       coverageDiagnostics: {

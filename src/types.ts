@@ -12,7 +12,7 @@ export type MaterialPage = {
 };
 
 export type ExtractionMethod = 'json' | 'dom';
-export type ExtractionSource = 'direct-json' | 'network-json' | 'dom-fallback' | 'failed';
+export type ExtractionSource = 'direct-json' | 'network-json' | 'dom-fallback' | 'failed' | 'skipped';
 export type JsonResponseType = 'page-metadata' | 'content-page' | 'dsdb-resource' | 'token-table' | 'status-table' | 'unknown-json-resource';
 
 export type ExtractionFallbackReason =
@@ -67,6 +67,7 @@ export type ExtractionPageDiagnostic = {
   tokenTablesDecoded?: number;
   tokenTablesRenderedAsPlaceholder?: number;
   tokenTablesUnsupportedSchema?: number;
+  tokenTablesRenderedFromInline?: number;
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
@@ -143,6 +144,14 @@ export type ExtractionRouteDiagnostic = {
   navigationSource?: 'site-meta' | 'bundle-supplement';
   /** Where collectionId/documentId were resolved from for the page-data fetch. */
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  /** Set when this route/virtual page was never attempted — distinct from sourceUsed:"failed",
+   *  which is reserved for routes that were actually attempted and errored. Excluded from
+   *  failedPages/virtualPagesFailed/failedPageCount. */
+  skippedReason?: 'missing-page-reference' | 'not-selected';
+  /** Tables rendered via the inline decode pipeline (extractContentPageToMaterialPage), which does
+   *  not track a separate resolved/decoded stage. Distinguishes "rendered without that granularity"
+   *  from a genuine resolved:0/decoded:0 with tables actually rendered, which would look impossible. */
+  tokenTablesRenderedFromInline?: number;
   /** What was actually fetched to build this page's content. */
   contentSource?: 'page-data' | 'page-data+carbon' | 'carbon';
   /** Whether this cached page came from splitting a tab out of a parent route's content. */
@@ -188,6 +197,9 @@ export type ExtractionDiagnostics = {
   tokenTablesRenderedAsPlaceholder: number;
   tokenTablesUnsupportedSchema: number;
   tokenTablesFailedToRender: number;
+  /** Tables rendered via the inline decode pipeline, where resolved/decoded weren't tracked as a
+   *  separate stage. See ExtractionRouteDiagnostic.tokenTablesRenderedFromInline. */
+  tokenTablesRenderedFromInline: number;
   tokenTablesMissingRequestedTokenSets: number;
   tokenContextDiagnosticsRecorded: number;
   tokenTablesUsingFallbackContext: number;
@@ -211,6 +223,22 @@ export type ExtractionDiagnostics = {
   videoCount: number;
   unresolvedResourceCount: number;
   rawJsonDebugFilesWritten: number;
+  /** Distinct site routes selected for extraction (before tab expansion). */
+  sourcePagesSelected: number;
+  /** Distinct site routes actually attempted (fetched). */
+  sourcePagesAttempted: number;
+  /** Distinct attempted source routes that produced at least one saved cache page. */
+  sourcePagesSucceeded: number;
+  /** Distinct attempted source routes that produced zero saved cache pages. */
+  sourcePagesFailed: number;
+  /** Expected cache pages across attempted source routes (1 per route, or len(tabs) for tab routes). */
+  virtualPagesPlanned: number;
+  /** Cache pages actually written. Same quantity as cachePagesSaved, viewed at the virtual-page level. */
+  virtualPagesSaved: number;
+  /** Cache pages that were attempted (selected, not skipped) but failed to save. */
+  virtualPagesFailed: number;
+  /** Cache pages actually written (cache-file-level count; equals virtualPagesSaved). */
+  cachePagesSaved: number;
   routeDiagnostics: ExtractionRouteDiagnostic[];
   pageDiagnostics: ExtractionPageDiagnostic[];
 };
@@ -250,6 +278,14 @@ export type CoverageDiagnostics = {
   coverageVerified: boolean;
   coverageWarnings: string[];
   coverageHealth?: CoverageHealth;
+  /** True when this run intentionally limits scope (explicit --max-pages, or maxPages truncated
+   *  route selection) — full-site discovered-vs-accepted coverage-gap checks are scoped down
+   *  accordingly instead of being a hard promotion blocker. */
+  isLimitedRun?: boolean;
+  /** True when the CLI/caller explicitly passed --max-pages (as opposed to no flag at all). */
+  maxPagesExplicit?: boolean;
+  /** Routes dropped purely because maxPages truncated the candidate list. Diagnostic only. */
+  skippedNotSelectedCount?: number;
 };
 
 export type SuspiciousCrawlPage = {
@@ -385,7 +421,10 @@ export type CrawlProgressHandler = (progress: CrawlProgress) => void;
 
 export type CrawlOptions = {
   baseUrl?: string;
-  maxPages?: number;
+  /** null/undefined means a full refresh with no source-route truncation. */
+  maxPages?: number | null;
+  /** True when the caller explicitly requested a maxPages limit (vs. the default full refresh). */
+  maxPagesExplicit?: boolean;
   minPageCount?: number;
   cacheDir?: string;
   headless?: boolean;
@@ -408,7 +447,8 @@ export type CrawlOptions = {
 };
 
 export type RefreshOptions = {
-  maxPages?: number;
+  maxPages?: number | null;
+  maxPagesExplicit?: boolean;
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;
