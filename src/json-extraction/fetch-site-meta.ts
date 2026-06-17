@@ -2,10 +2,14 @@ import { z } from 'zod';
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
+// document_id/collection_id/repo_id are observed as numbers in live data (e.g. 5909068158074880),
+// not strings — accept either and normalize to string at the descriptor layer.
+const SiteMetaIdSchema = z.union([z.string(), z.number()]).optional();
+
 const SiteMetaReferenceSchema = z.object({
-  collection_id: z.string().optional(),
-  document_id: z.string().optional(),
-  repo_id: z.string().optional(),
+  collection_id: SiteMetaIdSchema,
+  document_id: SiteMetaIdSchema,
+  repo_id: SiteMetaIdSchema,
 }).passthrough();
 
 /**
@@ -44,6 +48,13 @@ export type SiteMetaRouteDescriptor = {
   documentId: string | undefined;
   repoId: string | undefined;
 };
+
+/** Coerces a site_meta id field (string | number | undefined) to a normalized string, or undefined if missing/empty. */
+function normalizeSiteMetaId(value: string | number | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const str = String(value).trim();
+  return str.length > 0 ? str : undefined;
+}
 
 export type SiteMetaParseResult =
   | { ok: true; siteMeta: SiteMeta; routes: SiteMetaRouteDescriptor[]; publicCount: number; privateCount: number; redirectCount: number; aliasCount: number }
@@ -176,9 +187,9 @@ export function buildSiteMetaRouteDescriptors(siteMeta: SiteMeta): {
       otherRoutes,
       isPublic,
       redirectExternalUrl: raw.redirect_external_url ?? null,
-      collectionId: raw.reference?.collection_id,
-      documentId: raw.reference?.document_id,
-      repoId: raw.reference?.repo_id,
+      collectionId: normalizeSiteMetaId(raw.reference?.collection_id),
+      documentId: normalizeSiteMetaId(raw.reference?.document_id),
+      repoId: normalizeSiteMetaId(raw.reference?.repo_id),
     });
   }
 

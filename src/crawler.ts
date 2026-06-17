@@ -12,9 +12,23 @@ import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl 
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
-import { fetchJsonPageBundle } from './json-extraction/fetch-json-page.js';
-import { SiteMetaParseError, buildSiteMetaRouteDescriptors, fetchSiteMeta } from './json-extraction/fetch-site-meta.js';
-import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonPageBundle } from './json-extraction/json-bundle.js';
+import { extractPageDataMetadata } from './json-extraction/extract-page-data.js';
+import { createDsdbResourceFetcher, fetchCarbonContentByReference, fetchJsonPageBundle, fetchPageDataByReference } from './json-extraction/fetch-json-page.js';
+import { SiteMetaParseError, fetchSiteMeta } from './json-extraction/fetch-site-meta.js';
+import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonCapturedResponse, type JsonPageBundle } from './json-extraction/json-bundle.js';
+import { filterRoutes, normalizeSiteMetaRoutes, type NormalizedRoute } from './json-extraction/normalize-routes.js';
+import {
+  bundleRoutesUnderPrefix,
+  extractBundleRouteTable,
+  extractCarbonVersion as extractCarbonVersionFromBundleText,
+  fetchAngularBundleText,
+  findSubtreesWithoutCoverage,
+  matchTabToSection,
+  resolvePageReference,
+  type BundleRouteEntry,
+  type BundleTabEntry,
+} from './json-extraction/page-reference-resolver.js';
+import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
 import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
@@ -27,6 +41,16 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
+// site_meta.routes has zero coverage under these subtrees (verified live via
+// scripts/inspect-site-data.mjs: /styles/color/roles and /foundations/design-tokens have no
+// site_meta entry at all). The bundle route table supplements navigation only for these
+// documented prefixes — never as a general route-discovery source.
+const TRACKED_BUNDLE_SUPPLEMENT_PREFIXES = ['styles', 'foundations'];
+// Representative validation routes (as real, non-tab parent routes) that must always have a
+// chance to be selected, even under a tight maxPages budget. /components/buttons/specs and
+// /components/lists/specs are tabs of their parent route, not separate site_meta/bundle routes —
+// the parent is reserved here, and tab-splitting produces the actual required cache pages.
+const REQUIRED_VALIDATION_PARENT_PATHS = ['/components/buttons', '/components/lists', '/styles/color/roles', '/foundations/design-tokens'];
 // Re-crawl blog posts from the current year and the previous year; skip everything older.
 const BLOG_POST_REUSE_YEAR_LAG = 1;
 const DSDB_CONFIG_TIMEOUT_MS = 30_000;
@@ -65,6 +89,11 @@ type DsdbRoute = {
   collectionName?: string;
   pageCanonId?: string;
   metadataWarnings?: string[];
+  /** Resolved via the isolated page-reference-resolver against the bundle route table. */
+  tabs?: BundleTabEntry[];
+  navigationSource?: 'site-meta' | 'bundle-supplement';
+  pageReferenceSource?: 'bundle-table' | 'missing';
+  selectedBecause?: 'budget' | 'required-validation';
 };
 
 type DsdbSiteConfig = {
@@ -1412,7 +1441,21 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     capturedJsonResponseCounts = {},
     rawJsonDebugFilesWritten = 0,
     routeMetadataWarnings = [],
-    candidateSelectionReasons = []
+    candidateSelectionReasons = [],
+    navigationSource,
+    pageReferenceSource,
+    contentSource,
+    virtualSource,
+    sourceRoute,
+    virtualRoute,
+    tabName,
+    tabSlug,
+    pageDataFetchedOnce,
+    pageDataUrl,
+    pageDataStatus,
+    carbonUrl,
+    carbonStatus,
+    selectedBecause
   }: {
     url: string;
     path: string;
@@ -1453,6 +1496,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     rawJsonDebugFilesWritten?: number;
     routeMetadataWarnings?: string[];
     candidateSelectionReasons?: string[];
+    navigationSource?: ExtractionRouteDiagnostic['navigationSource'];
+    pageReferenceSource?: ExtractionRouteDiagnostic['pageReferenceSource'];
+    contentSource?: ExtractionRouteDiagnostic['contentSource'];
+    virtualSource?: ExtractionRouteDiagnostic['virtualSource'];
+    sourceRoute?: string;
+    virtualRoute?: string;
+    tabName?: string;
+    tabSlug?: string;
+    pageDataFetchedOnce?: boolean;
+    pageDataUrl?: string;
+    pageDataStatus?: number | string;
+    carbonUrl?: string;
+    carbonStatus?: number | string;
+    selectedBecause?: ExtractionRouteDiagnostic['selectedBecause'];
   }): ExtractionRouteDiagnostic => ({
     url,
     path,
@@ -1497,7 +1554,21 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     capturedJsonResponseCounts,
     rawJsonDebugFilesWritten,
     ...(routeMetadataWarnings.length > 0 ? { routeMetadataWarnings } : {}),
-    ...(candidateSelectionReasons.length > 0 ? { candidateSelectionReasons } : {})
+    ...(candidateSelectionReasons.length > 0 ? { candidateSelectionReasons } : {}),
+    ...(navigationSource ? { navigationSource } : {}),
+    ...(pageReferenceSource ? { pageReferenceSource } : {}),
+    ...(contentSource ? { contentSource } : {}),
+    ...(virtualSource !== undefined ? { virtualSource } : {}),
+    ...(sourceRoute ? { sourceRoute } : {}),
+    ...(virtualRoute ? { virtualRoute } : {}),
+    ...(tabName ? { tabName } : {}),
+    ...(tabSlug ? { tabSlug } : {}),
+    ...(pageDataFetchedOnce !== undefined ? { pageDataFetchedOnce } : {}),
+    ...(pageDataUrl ? { pageDataUrl } : {}),
+    ...(pageDataStatus !== undefined ? { pageDataStatus } : {}),
+    ...(carbonUrl ? { carbonUrl } : {}),
+    ...(carbonStatus !== undefined ? { carbonStatus } : {}),
+    ...(selectedBecause ? { selectedBecause } : {})
   });
 
   // ── Phase 1: fetch-shell + fetch-site-meta + enumerate-routes + fetch-page-data ──
@@ -1518,12 +1589,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
     addDiscoveredPaths(await discoverSitemapDocPaths(baseUrl), sitemapPublicDocPaths);
 
-    // fetch-site-meta: primary route discovery from /site_meta.js
+    // fetch-site-meta: primary route source. site_meta.routes drives the route LIST (public/
+    // private/redirect/blog/aliases). It does NOT carry a usable collectionId/documentId for
+    // page-data (verified live: site_meta's reference fields 404 against /page-data/...). That
+    // mapping — plus tabs[] for sub-routes like /components/buttons/specs — comes from the
+    // isolated page-reference-resolver below, which parses the Angular bundle's route table.
     crawlPhase = 'fetch-site-meta';
     emitProgress(true);
 
-    let siteMetaRoutes: DsdbRoute[] = [];
-    let carbonVersionFromSiteMeta: string | null = null;
+    let normalizedSiteMetaRoutes: NormalizedRoute[] = [];
 
     if (typeof fetch === 'function') {
       try {
@@ -1532,59 +1606,35 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         const siteMeta = await fetchSiteMeta(baseUrl, signal);
         siteMetaFetched = true;
 
-        // enumerate-routes: filter and deduplicate routes
-        crawlPhase = 'enumerate-routes';
+        // normalize-routes
+        crawlPhase = 'normalize-routes';
         emitProgress(true);
 
-        const { routes: siteMetaDescriptors, publicCount, privateCount, redirectCount, aliasCount } = buildSiteMetaRouteDescriptors(siteMeta);
-        const siteMetaTotalRouteCount = Object.keys(siteMeta.routes).length;
-        coverageDiagnostics.siteMetaRouteCount = siteMetaTotalRouteCount;
-        coverageDiagnostics.siteMetaPublicRouteCount = publicCount;
-        coverageDiagnostics.siteMetaPrivateRouteCount = privateCount;
-        coverageDiagnostics.siteMetaRedirectRouteCount = redirectCount;
-        coverageDiagnostics.siteMetaAliasCount = aliasCount;
+        const normalizeResult = normalizeSiteMetaRoutes(siteMeta);
+        if (!normalizeResult.ok) {
+          throw new SiteMetaParseError(`site_meta.js: ${normalizeResult.reason}`, { isFormatError: true });
+        }
+        normalizedSiteMetaRoutes = normalizeResult.routes;
+        const publicRoutes = normalizedSiteMetaRoutes.filter((r) => r.public && !r.redirectExternalUrl);
+        coverageDiagnostics.siteMetaRouteCount = normalizeResult.normalizedRouteCount;
+        coverageDiagnostics.siteMetaPublicRouteCount = publicRoutes.length;
+        coverageDiagnostics.siteMetaPrivateRouteCount = normalizedSiteMetaRoutes.filter((r) => !r.public).length;
+        coverageDiagnostics.siteMetaRedirectRouteCount = normalizedSiteMetaRoutes.filter((r) => Boolean(r.redirectExternalUrl)).length;
+        coverageDiagnostics.siteMetaAliasCount = normalizeResult.aliasCount;
 
         logger?.log('info', 'site-meta:routes-enumerated', {
-          phase: 'enumerate-routes',
-          totalRoutes: siteMetaTotalRouteCount,
-          publicRoutes: publicCount,
-          privateSkipped: privateCount,
-          redirectSkipped: redirectCount,
-          aliases: aliasCount
+          phase: 'normalize-routes',
+          totalRoutes: normalizeResult.normalizedRouteCount,
+          publicRoutes: publicRoutes.length,
+          invalidRoutes: normalizeResult.invalidRouteCount,
+          aliases: normalizeResult.aliasCount,
+          deduplicatedAliases: normalizeResult.deduplicatedAliasCount
         });
 
-        // Convert site_meta descriptors to DsdbRoute format
-        for (const descriptor of siteMetaDescriptors) {
-          const slug = descriptor.route.replace(/^\/+|\/+$/g, '');
-          if (!slug) continue;
-          siteMetaRoutes.push({
-            slug,
-            documentId: descriptor.documentId,
-            collectionId: descriptor.collectionId,
-            pageCanonId: undefined,
-            exportedCarbonFileId: undefined,
-            collectionName: undefined,
-            metadataWarnings: [
-              ...(!descriptor.documentId ? ['missing-document-id'] : []),
-              ...(!descriptor.collectionId ? ['missing-collection-id'] : [])
-            ].filter(Boolean).length > 0
-              ? [
-                  ...(!descriptor.documentId ? ['missing-document-id'] : []),
-                  ...(!descriptor.collectionId ? ['missing-collection-id'] : [])
-                ]
-              : undefined
-          });
-          addDiscoveredPaths([descriptor.route], angularRoutePublicDocPaths);
-          // Register aliases so they are not crawled as separate pages
-          for (const alias of descriptor.otherRoutes) {
-            addDiscoveredPaths([alias], angularRoutePublicDocPaths);
-          }
+        for (const route of normalizedSiteMetaRoutes) {
+          addDiscoveredPaths([route.path], angularRoutePublicDocPaths);
+          addDiscoveredPaths(route.aliases, angularRoutePublicDocPaths);
         }
-
-        logger?.log('info', 'site-meta:fetch-succeeded', {
-          phase: 'enumerate-routes',
-          routeCount: siteMetaRoutes.length
-        });
       } catch (err) {
         if (signal?.aborted) throw err;
         const reason = err instanceof Error ? err.message : String(err);
@@ -1599,7 +1649,6 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           throw err;
         }
         siteMetaFailed = true;
-        // Network/HTTP errors: fall back to bundle discovery silently.
         logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError });
         if (verbose) {
           logVerbose(`site_meta.js unavailable (${reason}); falling back to Angular bundle for route discovery`);
@@ -1607,56 +1656,46 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
     }
 
-    // Try Angular bundle: primary when site_meta failed (gets routes+version), fallback for carbonVersion when site_meta succeeded
-    let dsdbConfig: DsdbSiteConfig | null = null;
-    const siteMetaProvidedRoutes = siteMetaRoutes.length > 0;
+    const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
 
-    if (!siteMetaProvidedRoutes || carbonVersionFromSiteMeta === null) {
+    // page-reference-resolver: fetch the Angular bundle once for carbonVersion + the route table
+    // used to resolve collectionId/documentId/exportedCarbonFileId/tabs. This is the only place
+    // bundle text is parsed (isolated module), and it is never used to invent new top-level routes
+    // except the documented subtree-supplement case below.
+    let carbonVersion: string | null = null;
+    let bundleRoutes: BundleRouteEntry[] = [];
+    if (typeof fetch === 'function') {
       try {
         throwIfAborted(signal);
-        logger?.log('info', 'dsdb-config:bundle-started', {
-          phase: siteMetaProvidedRoutes ? 'enumerate-routes' : 'fetch-site-meta',
-          baseUrl,
-          purpose: siteMetaProvidedRoutes ? 'carbonVersion-only' : 'routes-and-version'
-        });
-        dsdbConfig = await fetchDsdbSiteConfig(baseUrl, signal);
-        if (!siteMetaProvidedRoutes) {
-          // site_meta failed: use bundle routes as primary
-          dsdbConfigSource = 'bundle';
-        }
+        logger?.log('info', 'dsdb-config:bundle-started', { phase: 'fetch-site-meta', baseUrl });
+        const bundleText = await fetchAngularBundleText(baseUrl, signal);
+        carbonVersion = extractCarbonVersionFromBundleText(bundleText);
+        bundleRoutes = extractBundleRouteTable(bundleText);
+        if (!carbonVersion) throw new Error('carbonVersion not found in Angular bundle');
+        if (bundleRoutes.length === 0) throw new Error('No bundle routes found in Angular bundle');
         directJsonEnabled = true;
+        if (!dsdbConfigSource) dsdbConfigSource = siteMetaProvidedRoutes ? 'site-meta' : 'bundle';
         logger?.log('info', 'dsdb-config:bundle-succeeded', {
-          phase: 'enumerate-routes',
-          carbonVersion: dsdbConfig.carbonVersion,
-          routeCount: dsdbConfig.routes.length,
-          usedForRoutes: !siteMetaProvidedRoutes
+          phase: 'fetch-site-meta',
+          carbonVersion,
+          routeCount: bundleRoutes.length
         });
-        if (siteMetaProvidedRoutes && !dsdbConfigSource) {
-          dsdbConfigSource = 'site-meta';
-        }
       } catch (err) {
         if (signal?.aborted) throw err;
         const reason = err instanceof Error ? err.message : String(err);
         bundleDiscoveryFailed = true;
-        if (!siteMetaProvidedRoutes) {
-          directJsonEnabled = false;
-          directJsonDisabledReason = reason;
-        }
-        logError(`DSDB config fetch failed${siteMetaProvidedRoutes ? ' (site_meta routes available, will recover carbonVersion via browser)' : ', will attempt browser-network recovery'}: ${reason}`);
-        logger?.log('warn', 'dsdb-config:bundle-failed', {
-          phase: 'enumerate-routes',
-          reason,
-          siteMetaProvidedRoutes,
-          networkRecoveryWillAttempt: true
-        });
+        directJsonEnabled = false;
+        directJsonDisabledReason = reason;
+        logError(`Angular bundle fetch failed${siteMetaProvidedRoutes ? ' (site_meta routes available, will recover carbonVersion via browser)' : ', will attempt browser-network recovery'}: ${reason}`);
+        logger?.log('warn', 'dsdb-config:bundle-failed', { phase: 'fetch-site-meta', reason, siteMetaProvidedRoutes, networkRecoveryWillAttempt: true });
         await logger?.writeIntermediateDiagnostics({
           promotionDecision: 'pending',
           startedAt,
           siteMetaFetched,
           siteMetaFailed,
           bundleDiscoveryFailed: true,
-          directJsonEnabled: siteMetaProvidedRoutes,
-          directJsonDisabledReason: siteMetaProvidedRoutes ? null : reason,
+          directJsonEnabled: false,
+          directJsonDisabledReason: reason,
           dsdbConfigSource: siteMetaProvidedRoutes ? 'site-meta' : null,
           networkRecoveryAttempted: false,
           networkRecoverySucceeded: false
@@ -1664,30 +1703,123 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       }
     }
 
-    // Build final config: prefer site_meta routes + bundle carbonVersion
+    // filter-routes + resolve page references, producing the DsdbRoute[] the existing
+    // fetch-page-data batch consumes (extended with tabs/navigationSource/pageReferenceSource).
     let finalConfig: DsdbSiteConfig | null = null;
-    if (siteMetaProvidedRoutes && dsdbConfig) {
-      // Best case: site_meta routes + bundle carbonVersion
-      finalConfig = { carbonVersion: dsdbConfig.carbonVersion, routes: siteMetaRoutes };
-      if (!dsdbConfigSource) dsdbConfigSource = 'site-meta';
-      directJsonEnabled = true;
-    } else if (!siteMetaProvidedRoutes && dsdbConfig) {
-      // Fallback: bundle routes + bundle carbonVersion (old behavior)
-      finalConfig = dsdbConfig;
-      if (!dsdbConfigSource) dsdbConfigSource = 'bundle';
-      directJsonEnabled = true;
-    } else if (siteMetaProvidedRoutes && !dsdbConfig) {
-      // site_meta routes available but no carbonVersion yet — deferred to browser network recovery
+    if (carbonVersion) {
+      let candidateRoutes: NormalizedRoute[];
+      let uncoveredPrefixes: string[];
+
+      if (!siteMetaProvidedRoutes) {
+        // site_meta failed entirely: the bundle route table is the only available route list
+        // (degraded mode — not the documented bundle-supplement case, which only covers specific
+        // missing subtrees on top of a working site_meta route list).
+        candidateRoutes = bundleRoutes.map((entry): NormalizedRoute => {
+          const path = `/${entry.slug}`;
+          return {
+            path,
+            routeKey: path,
+            aliases: entry.alternateSlugs ?? [],
+            public: true,
+            redirectExternalUrl: null,
+            collectionId: entry.collectionId ?? null,
+            documentId: entry.documentId ?? null,
+            repoId: null,
+            isBlog: isBlogPath(path),
+            navigationSource: 'bundle-supplement',
+            raw: entry
+          };
+        });
+        uncoveredPrefixes = [];
+        if (!dsdbConfigSource) dsdbConfigSource = 'bundle';
+      } else {
+        candidateRoutes = normalizedSiteMetaRoutes;
+
+        // bundle-supplement: only for tracked subtrees with zero site_meta coverage.
+        const siteMetaPaths = normalizedSiteMetaRoutes.map((r) => r.path);
+        uncoveredPrefixes = findSubtreesWithoutCoverage(siteMetaPaths, TRACKED_BUNDLE_SUPPLEMENT_PREFIXES);
+        const supplementRoutes: NormalizedRoute[] = [];
+        for (const prefix of uncoveredPrefixes) {
+          for (const entry of bundleRoutesUnderPrefix(bundleRoutes, prefix)) {
+            const supplementPath = `/${entry.slug}`;
+            supplementRoutes.push({
+              path: supplementPath,
+              routeKey: supplementPath,
+              aliases: entry.alternateSlugs ?? [],
+              public: true,
+              redirectExternalUrl: null,
+              collectionId: entry.collectionId ?? null,
+              documentId: entry.documentId ?? null,
+              repoId: null,
+              isBlog: isBlogPath(supplementPath),
+              navigationSource: 'bundle-supplement',
+              raw: entry
+            });
+          }
+        }
+        if (supplementRoutes.length > 0) {
+          logger?.log('info', 'bundle-supplement:routes-added', { phase: 'normalize-routes', prefixes: uncoveredPrefixes, count: supplementRoutes.length });
+        }
+        candidateRoutes = [...candidateRoutes, ...supplementRoutes];
+      }
+      coverageDiagnostics.bundleSupplementRouteCount = candidateRoutes.filter((r) => r.navigationSource === 'bundle-supplement').length;
+      coverageDiagnostics.supplementedPrefixes = uncoveredPrefixes;
+
+      crawlPhase = 'filter-routes';
+      emitProgress(true);
+      const filtered = filterRoutes(candidateRoutes, {
+        includeBlog,
+        maxPages,
+        requiredPaths: REQUIRED_VALIDATION_PARENT_PATHS
+      });
+      for (const skip of filtered.skipped) {
+        if (skip.reason === 'blog') policySkippedDocPaths.add(skip.path);
+      }
+      coverageDiagnostics.skippedBlogCount += filtered.skippedBlogCount;
+
+      const resolvedRoutes: DsdbRoute[] = [];
+      for (const route of filtered.selected) {
+        const resolution = resolvePageReference(route.path, bundleRoutes);
+        const slug = route.path.replace(/^\/+|\/+$/g, '');
+        if (!slug) continue;
+        if (resolution.pageReferenceSource === 'missing') {
+          recordRouteDiagnostic(createRouteDiagnostic({
+            url: new URL(route.path, baseUrl).toString(),
+            path: routePathFromSlug(slug),
+            sourceUsed: 'failed',
+            finalMethod: null,
+            fallbackReasons: ['json-fetch-failed'],
+            navigationSource: route.navigationSource,
+            pageReferenceSource: 'missing',
+            selectedBecause: route.selectedBecause
+          }));
+          continue;
+        }
+        resolvedRoutes.push({
+          slug,
+          documentId: resolution.entry.documentId,
+          collectionId: resolution.entry.collectionId,
+          exportedCarbonFileId: resolution.entry.exportedCarbonFileId,
+          pageCanonId: undefined,
+          collectionName: undefined,
+          tabs: resolution.entry.tabs,
+          navigationSource: route.navigationSource,
+          pageReferenceSource: 'bundle-table',
+          selectedBecause: route.selectedBecause
+        });
+      }
+      finalConfig = { carbonVersion, routes: resolvedRoutes };
+    } else if (siteMetaProvidedRoutes) {
       if (!dsdbConfigSource) dsdbConfigSource = 'site-meta';
       directJsonEnabled = false;
       directJsonDisabledReason = directJsonDisabledReason ?? 'carbonVersion-unavailable';
       logger?.log('warn', 'direct-json:deferred', {
-        phase: 'enumerate-routes',
+        phase: 'filter-routes',
         reason: 'carbonVersion-unavailable',
-        siteMetaRouteCount: siteMetaRoutes.length
+        siteMetaRouteCount: normalizedSiteMetaRoutes.length
       });
     }
-    // else: both failed — old browser-only fallback path
+    // else: both site_meta and the bundle failed — old browser-only fallback path
 
     // fetch-page-data: run direct JSON extraction with available config
     if (finalConfig) {
@@ -1999,6 +2131,171 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   };
 
+  function tabUrlSlug(tab: BundleTabEntry): string {
+    if (tab.slug) return tab.slug.replace(/^\/+|\/+$/g, '');
+    return tab.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  }
+
+  /**
+   * Deterministic fetch-page-data path for a route resolved via the page-reference-resolver
+   * (collectionId/documentId/exportedCarbonFileId from the bundle table). No slug guessing: at
+   * most one page-data URL and one Carbon content URL are attempted. Routes with tabs[] produce
+   * one virtual cache page per tab from a single page-data + Carbon fetch.
+   */
+  async function runReferenceBasedRouteFetch(route: DsdbRoute, carbonVersion: string, routeUrl: string, capturedAt: string): Promise<void> {
+    const routePath = routePathFromSlug(route.slug);
+    const collectionId = route.collectionId!;
+    const documentId = route.documentId!;
+
+    const [pageDataResult, carbonResult] = await Promise.all([
+      fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal),
+      fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal)
+    ]);
+
+    const pageDataOk = pageDataResult.status === 'ok';
+    const carbonOk = carbonResult.status === 'ok';
+    const contentSource: ExtractionRouteDiagnostic['contentSource'] = pageDataOk && carbonOk
+      ? 'page-data+carbon'
+      : carbonOk ? 'carbon' : 'page-data';
+    const pageDataUrl = pageDataResult.url;
+    const pageDataStatus = pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status;
+    const carbonUrl = carbonResult.status === 'not-available' ? undefined : carbonResult.url;
+    const carbonStatus = carbonResult.status === 'ok' || carbonResult.status === 'http-error' ? carbonResult.httpStatus : carbonResult.status === 'not-available' ? undefined : carbonResult.status;
+
+    const sharedDiagnosticFields = {
+      navigationSource: route.navigationSource,
+      pageReferenceSource: 'bundle-table' as const,
+      contentSource,
+      sourceRoute: routePath,
+      pageDataFetchedOnce: true,
+      pageDataUrl,
+      pageDataStatus,
+      carbonUrl,
+      carbonStatus,
+      selectedBecause: route.selectedBecause
+    };
+
+    if (!pageDataOk && !carbonOk) {
+      jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: routeUrl,
+        path: routePath,
+        sourceUsed: 'failed',
+        finalMethod: null,
+        directJsonAttempted: true,
+        fallbackReasons: ['json-fetch-failed'],
+        ...sharedDiagnosticFields
+      }));
+      return;
+    }
+
+    const pageDataJson = pageDataOk ? pageDataResult.data : null;
+    const contentJson = carbonOk ? carbonResult.data : null;
+    const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, [], signal);
+
+    const savePage = (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): void => {
+      if (extraction.fallbackReason) {
+        jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
+        recordRouteDiagnostic(createRouteDiagnostic({
+          url: extraction.page.url,
+          path: extraction.page.path,
+          sourceUsed: 'failed',
+          finalMethod: null,
+          directJsonAttempted: true,
+          fallbackReasons: [extraction.fallbackReason],
+          unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+          unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+          tokenTables: extraction.pageDiagnostic.tokenTables,
+          tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+          missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+          routeMetadataWarnings: route.metadataWarnings ?? [],
+          ...sharedDiagnosticFields,
+          ...extra
+        }));
+        return;
+      }
+      const materialPage = extraction.page;
+      if (materialPage.text.length <= MIN_PAGE_TEXT_LENGTH || pages.length >= maxPages || writtenPaths.has(materialPage.path)) return;
+      pages.push(materialPage);
+      markAcceptedPage(materialPage.path);
+      pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
+      recordRouteDiagnostic(createRouteDiagnostic({
+        url: materialPage.url,
+        path: materialPage.path,
+        sourceUsed: 'direct-json',
+        finalMethod: 'json',
+        directJsonAttempted: true,
+        directJsonSucceeded: true,
+        unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
+        unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
+        tokenTables: extraction.pageDiagnostic.tokenTables,
+        tokenTablesRendered: extraction.pageDiagnostic.tokenTablesRendered,
+        missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+        routeMetadataWarnings: route.metadataWarnings ?? [],
+        ...sharedDiagnosticFields,
+        ...extra
+      }));
+      writtenPaths.add(materialPage.path);
+      jsonExtractedSlugs.add(route.slug);
+      lastSavedUrl = materialPage.url;
+      void writePage(materialPage, cacheDir);
+      emitProgress(true);
+    };
+
+    if (route.tabs && route.tabs.length > 0) {
+      const decodedContentPage = contentJson ? parseContentPage(contentJson) : null;
+      const decodedSections = decodedContentPage?.sections ?? [];
+      const sectionRefs = decodedSections.map((s) => ({ name: s.title }));
+      // hasRouteTitlePathMismatch() expects the page title to mention the route's component
+      // name (segments[1] of the URL) — combine the parent page title with the tab label so a
+      // tab page like /components/buttons/specs titled "Specs" doesn't trip that heuristic.
+      const parentTitle = pageDataJson ? extractPageDataMetadata(pageDataJson).title : null;
+      const effectiveParentTitle = parentTitle ?? decodedContentPage?.title ?? null;
+      for (let tabIndex = 0; tabIndex < route.tabs.length; tabIndex += 1) {
+        const tab = route.tabs[tabIndex]!;
+        const slug = tabUrlSlug(tab);
+        const tabUrl = `${routeUrl}/${slug}`;
+        const matchResult = matchTabToSection(tab, tabIndex, sectionRefs, route.tabs.length);
+        if (!matchResult.matched) {
+          recordRouteDiagnostic(createRouteDiagnostic({
+            url: tabUrl,
+            path: routePathFromSlug(`${route.slug}/${slug}`),
+            sourceUsed: 'failed',
+            finalMethod: null,
+            directJsonAttempted: true,
+            fallbackReasons: ['json-no-sections'],
+            ...sharedDiagnosticFields,
+            virtualSource: 'tab',
+            virtualRoute: tabUrl,
+            tabName: tab.label,
+            tabSlug: slug
+          }));
+          continue;
+        }
+        const extraction = await extractContentPageToMaterialPage({
+          url: tabUrl,
+          pageData: pageDataJson,
+          contentPage: contentJson,
+          capturedAt,
+          fetchResource,
+          sectionIndices: [matchResult.sectionIndex],
+          titleOverride: effectiveParentTitle ? `${effectiveParentTitle} ${tab.label}` : tab.label
+        });
+        savePage(tabUrl, extraction, { virtualSource: 'tab', virtualRoute: tabUrl, tabName: tab.label, tabSlug: slug });
+      }
+      return;
+    }
+
+    const extraction = await extractContentPageToMaterialPage({
+      url: routeUrl,
+      pageData: pageDataJson,
+      contentPage: contentJson,
+      capturedAt,
+      fetchResource
+    });
+    savePage(routeUrl, extraction, { virtualSource: null });
+  }
+
   async function runDirectJsonBatch(config: DsdbSiteConfig): Promise<void> {
     addDiscoveredPaths(
       config.routes.map((route) => normalizeMaterialPublicDocPath(`/${route.slug}`, baseUrl))
@@ -2034,6 +2331,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         emitProgress(true);
         try {
           throwIfAborted(signal);
+
+          if (route.pageReferenceSource === 'bundle-table' && route.collectionId && route.documentId) {
+            await runReferenceBasedRouteFetch(route, config.carbonVersion, routeUrl, capturedAt);
+            return;
+          }
+
+          // Legacy/degraded path (no resolved bundle-table reference — e.g. browser-network-
+          // recovery slug-only routes). Kept as an explicit fallback; never reported as
+          // bundle-table-resolved direct JSON.
           const bundle = await fetchJsonPageBundle(baseUrl, config.carbonVersion, {
             slug: route.slug,
             documentId: route.documentId,
@@ -2051,7 +2357,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               sourceUsed: 'failed',
               finalMethod: null,
               directJsonAttempted: true,
-              fallbackReasons: ['json-fetch-failed']
+              fallbackReasons: ['json-fetch-failed'],
+              pageReferenceSource: route.pageReferenceSource
             }));
             return;
           }

@@ -26,6 +26,21 @@ describe('parseSiteMetaJs', () => {
     expect(result.routes['/components/buttons/overview']).toBeDefined();
   });
 
+  it('parses routes with numeric reference ids without schema error (live site_meta shape)', () => {
+    const js = `window.site_meta = ${JSON.stringify({
+      routes: {
+        '/': {
+          other_routes: ['/index.html', '/homepage'],
+          public: true,
+          redirect_external_url: null,
+          reference: { collection_id: 'Homepage', document_id: 5909068158074880, repo_id: 'mio-example' }
+        }
+      }
+    })};`;
+    const result = parseSiteMetaJs(js);
+    expect(result.routes['/']?.reference?.document_id).toBe(5909068158074880);
+  });
+
   it('parses self.site_meta assignment', () => {
     const js = `self.site_meta=${JSON.stringify({ routes: validRoutesObject })}`;
     const result = parseSiteMetaJs(js);
@@ -232,6 +247,24 @@ describe('buildSiteMetaRouteDescriptors', () => {
     expect(routes[0]?.collectionId).toBe('components');
     expect(routes[0]?.documentId).toBe('dialogs-overview');
     expect(routes[0]?.repoId).toBe('m3');
+  });
+
+  it('normalizes numeric reference ids to strings (real site_meta shape)', () => {
+    // Live m3.material.io data: document_id/collection_id can be numbers, e.g. the "/" route's
+    // reference is { collection_id: "Homepage", document_id: 5909068158074880, repo_id: "mio-example" }.
+    const siteMeta = {
+      routes: {
+        '/': {
+          other_routes: ['/index.html', '/homepage'],
+          public: true,
+          reference: { collection_id: 'Homepage', document_id: 5909068158074880, repo_id: 'mio-example' }
+        }
+      }
+    };
+    const { routes } = buildSiteMetaRouteDescriptors(siteMeta);
+    expect(routes[0]?.collectionId).toBe('Homepage');
+    expect(routes[0]?.documentId).toBe('5909068158074880');
+    expect(routes[0]?.repoId).toBe('mio-example');
   });
 
   it('produces descriptor with undefined ids when reference is missing', () => {

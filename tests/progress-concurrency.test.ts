@@ -79,11 +79,10 @@ const fetchJsonConcurrencyTracker = vi.hoisted(() => {
       await new Promise<void>((r) => setTimeout(r, 20));
       currentConcurrent -= 1;
       return {
-        pageData: null,
-        contentPage: null,
-        responses: [],
-        fetchResource: async () => null,
-        selectionReasons: []
+        status: 'ok' as const,
+        url: 'https://m3.material.io/page-data/mock/mock.json',
+        httpStatus: 200,
+        data: null
       };
     }),
     reset: () => { currentConcurrent = 0; peakConcurrent = 0; },
@@ -91,9 +90,19 @@ const fetchJsonConcurrencyTracker = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/json-extraction/fetch-json-page.js', () => ({
-  fetchJsonPageBundle: fetchJsonConcurrencyTracker.fn
-}));
+// The default fetch-page-data pipeline resolves routes via the bundle table and fetches them
+// through fetchPageDataByReference (one call per route) — mock that instead of the legacy
+// slug-guessing fetchJsonPageBundle to track per-route concurrency. fetchCarbonContentByReference
+// is left real: these synthetic routes have no exportedCarbonFileId, so it short-circuits to
+// {status:'not-available'} without making a network call.
+vi.mock('../src/json-extraction/fetch-json-page.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/json-extraction/fetch-json-page.js')>();
+  return {
+    ...actual,
+    fetchPageDataByReference: fetchJsonConcurrencyTracker.fn,
+    fetchJsonPageBundle: fetchJsonConcurrencyTracker.fn
+  };
+});
 
 vi.mock('playwright', () => ({
   chromium: {

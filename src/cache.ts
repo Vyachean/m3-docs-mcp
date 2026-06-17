@@ -244,10 +244,12 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  // Fail if any required sample routes were selected and failed.
+  // Fail if any required sample routes were selected and failed. Route diagnostic paths are
+  // cache file paths (always ".md"-suffixed, e.g. "components/buttons/specs.md"), including for
+  // virtual tab pages — compare against that form, not the bare URL slug.
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
   const failedRequired = REQUIRED_SAMPLE_SLUGS.filter((slug) => {
-    const diag = routeDiagnostics.find((d) => d.path === slug);
+    const diag = routeDiagnostics.find((d) => d.path === `${slug}.md`);
     return diag !== undefined && diag.sourceUsed === 'failed';
   });
   if (failedRequired.length > 0) {
@@ -255,6 +257,32 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
       `Required sample routes failed JSON extraction: ${failedRequired.join(', ')}. ` +
       'Keeping the existing cache. Use --force to promote anyway.'
     );
+  }
+
+  // Fail if the deterministic page-data pipeline (routes resolved via the bundle-table page
+  // reference resolver — the default path) was attempted at all but nothing was saved from it.
+  // Scoped to pageReferenceSource:"bundle-table" so it doesn't penalize the legacy degraded
+  // browser-network-recovery path, where direct JSON is attempted best-effort and DOM fallback
+  // is the expected compensator.
+  const deterministicAttempts = routeDiagnostics.filter((d) => d.pageReferenceSource === 'bundle-table' && d.directJsonAttempted);
+  const deterministicSaved = deterministicAttempts.filter((d) => d.sourceUsed === 'direct-json').length;
+  if (deterministicAttempts.length > 0 && deterministicSaved === 0) {
+    throw new Error(
+      `Direct JSON page-data was attempted for ${deterministicAttempts.length} route(s) but 0 were saved. ` +
+      'Keeping the existing cache. Use --force to promote anyway.'
+    );
+  }
+
+  // Fail if includeBlog:false was requested but a /blog route was nonetheless attempted.
+  const includeBlog = nextIndex.coverageDiagnostics?.includeBlog ?? false;
+  if (!includeBlog) {
+    const attemptedBlogRoute = routeDiagnostics.find((d) => /^blog\//.test(d.path) || d.path === 'blog.md');
+    if (attemptedBlogRoute) {
+      throw new Error(
+        `includeBlog:false was set but a /blog route was attempted (${attemptedBlogRoute.path}). ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
   }
 
   // Fail if token/spec tables were expected but none were rendered.

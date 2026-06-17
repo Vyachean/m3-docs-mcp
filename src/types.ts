@@ -139,6 +139,26 @@ export type ExtractionRouteDiagnostic = {
   rawJsonDebugFilesWritten?: number;
   routeMetadataWarnings?: string[];
   candidateSelectionReasons?: string[];
+  /** Where this route's path came from: site_meta.routes, or a bundle-supplement subtree. */
+  navigationSource?: 'site-meta' | 'bundle-supplement';
+  /** Where collectionId/documentId were resolved from for the page-data fetch. */
+  pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  /** What was actually fetched to build this page's content. */
+  contentSource?: 'page-data' | 'page-data+carbon' | 'carbon';
+  /** Whether this cached page came from splitting a tab out of a parent route's content. */
+  virtualSource?: 'tab' | null;
+  /** The real site_meta/bundle route this page was derived from, when it differs from `path` (tabs). */
+  sourceRoute?: string;
+  /** This page's own URL path when it's a virtual tab page (same as `path`, kept for clarity in logs). */
+  virtualRoute?: string;
+  tabName?: string;
+  tabSlug?: string;
+  pageDataFetchedOnce?: boolean;
+  pageDataUrl?: string;
+  pageDataStatus?: number | string;
+  carbonUrl?: string;
+  carbonStatus?: number | string;
+  selectedBecause?: 'budget' | 'required-validation';
 };
 
 export type ExtractionDiagnostics = {
@@ -213,6 +233,10 @@ export type CoverageDiagnostics = {
   siteMetaRedirectRouteCount?: number;
   /** Alias (other_routes) entries from site_meta. */
   siteMetaAliasCount?: number;
+  /** Routes added because a tracked subtree (e.g. styles, foundations) had zero site_meta coverage. */
+  bundleSupplementRouteCount?: number;
+  /** Which tracked subtrees actually triggered bundle-supplement (subset of tracked prefixes). */
+  supplementedPrefixes?: string[];
   acceptedPageCount: number;
   uncrawledDiscoveredUrlCount: number;
   uncrawledDiscoveredUrls: string[];
@@ -315,6 +339,8 @@ export type CrawlPhase =
   | 'fetch-shell'
   | 'fetch-site-meta'
   | 'enumerate-routes'
+  | 'normalize-routes'
+  | 'filter-routes'
   | 'fetch-page-data'
   | 'fetch-carbon'
   | 'extract-markdown'
