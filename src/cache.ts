@@ -248,29 +248,7 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  // Fail if any required sample route is missing from the saved cache pages or failed JSON
-  // extraction. Route diagnostic / cache page paths are cache file paths (always ".md"-suffixed,
-  // e.g. "components/buttons/specs.md"), including for virtual tab pages — compare against that
-  // form, not the bare URL slug. The only exemption: a required path that filterRoutes itself
-  // couldn't even reserve a slot for (skippedReason:"not-selected", i.e. maxPages is smaller than
-  // the required-route reservation) is a budget choice, not an extraction failure.
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
-  const savedPagePaths = new Set(nextIndex.pages.map((p) => p.path));
-  const failedRequired = REQUIRED_SAMPLE_SLUGS.filter((slug) => {
-    const cachePath = `${slug}.md`;
-    const diag = routeDiagnostics.find((d) => d.path === cachePath);
-    // No diagnostic at all means this route was never a candidate in this crawl (e.g. a
-    // deliberately scoped/synthetic site_meta) — not a coverage problem for *this* crawl to flag.
-    if (diag === undefined) return false;
-    if (diag.skippedReason === 'not-selected') return false;
-    return !savedPagePaths.has(cachePath);
-  });
-  if (failedRequired.length > 0) {
-    throw new Error(
-      `Required sample routes are missing or failed JSON extraction: ${failedRequired.join(', ')}. ` +
-      'Keeping the existing cache. Use --force to promote anyway.'
-    );
-  }
 
   // Fail if the deterministic page-data pipeline (routes resolved via the bundle-table page
   // reference resolver — the default path) was attempted at all but nothing was saved from it.
@@ -329,23 +307,46 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
   // coverage gap must not silently produce a cache that appears complete.
   firstCacheCoveragePolicy(nextIndex);
 
-  if (!previousIndex || previousIndex.pageCount <= 0) return;
+  if (previousIndex && previousIndex.pageCount > 0) {
+    const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
+    const nextDiscoveredCount = nextIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? nextIndex.pageCount;
+    const intentionalPartial = nextIndex.coverageDiagnostics?.isLimitedRun
+      ?? (nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false);
+    if (!intentionalPartial && previousDiscoveredCount > 0 && nextDiscoveredCount > 0) {
+      const minDiscoveredPages = Math.ceil(previousDiscoveredCount * DEFAULT_MIN_RETAINED_PAGE_RATIO);
+      if (nextDiscoveredCount < minDiscoveredPages) {
+        throw new Error(`Material 3 crawl discovered only ${nextDiscoveredCount} public documentation URLs, below ${formatPercent(DEFAULT_MIN_RETAINED_PAGE_RATIO)} of the previous cache coverage (${previousDiscoveredCount}). Keeping the existing cache. Use --force to replace it anyway.`);
+      }
+    }
 
-  const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
-  const nextDiscoveredCount = nextIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? nextIndex.pageCount;
-  const intentionalPartial = nextIndex.coverageDiagnostics?.isLimitedRun
-    ?? (nextIndex.coverageDiagnostics?.coverageWarnings.some((warning) => warning.startsWith('coverage-partial:max-pages-limited:')) ?? false);
-  if (!intentionalPartial && previousDiscoveredCount > 0 && nextDiscoveredCount > 0) {
-    const minDiscoveredPages = Math.ceil(previousDiscoveredCount * DEFAULT_MIN_RETAINED_PAGE_RATIO);
-    if (nextDiscoveredCount < minDiscoveredPages) {
-      throw new Error(`Material 3 crawl discovered only ${nextDiscoveredCount} public documentation URLs, below ${formatPercent(DEFAULT_MIN_RETAINED_PAGE_RATIO)} of the previous cache coverage (${previousDiscoveredCount}). Keeping the existing cache. Use --force to replace it anyway.`);
+    const minRetainedPageRatio = options.minRetainedPageRatio ?? DEFAULT_MIN_RETAINED_PAGE_RATIO;
+    const minAcceptedPages = Math.ceil(previousIndex.pageCount * minRetainedPageRatio);
+    if (nextIndex.pageCount < minAcceptedPages) {
+      throw new Error(`Material 3 crawl produced ${nextIndex.pageCount} pages, which is below ${formatPercent(minRetainedPageRatio)} of the previous cache (${previousIndex.pageCount} pages). Keeping the existing cache. Use --force to replace it anyway.`);
     }
   }
 
-  const minRetainedPageRatio = options.minRetainedPageRatio ?? DEFAULT_MIN_RETAINED_PAGE_RATIO;
-  const minAcceptedPages = Math.ceil(previousIndex.pageCount * minRetainedPageRatio);
-  if (nextIndex.pageCount < minAcceptedPages) {
-    throw new Error(`Material 3 crawl produced ${nextIndex.pageCount} pages, which is below ${formatPercent(minRetainedPageRatio)} of the previous cache (${previousIndex.pageCount} pages). Keeping the existing cache. Use --force to replace it anyway.`);
+  // Fail if any required sample route is missing from the saved cache pages, failed JSON
+  // extraction, or has no diagnostic at all. Route diagnostic / cache page paths are cache file
+  // paths (always ".md"-suffixed, e.g. "components/buttons/specs.md"), including for virtual tab
+  // pages — compare against that form, not the bare URL slug. The only exemption: a required path
+  // that filterRoutes itself explicitly couldn't reserve a slot for (skippedReason:"not-selected",
+  // i.e. maxPages is smaller than the required-route reservation) is a budget choice, not an
+  // extraction failure — but the absence of any diagnostic at all is NOT that signal and must fail.
+  // Checked last so a more specific, more actionable rejection reason (broken pipeline, coverage
+  // gap, retention ratio, etc.) surfaces first when several problems exist simultaneously.
+  const savedPagePaths = new Set(nextIndex.pages.map((p) => p.path));
+  const failedRequired = REQUIRED_SAMPLE_SLUGS.filter((slug) => {
+    const cachePath = `${slug}.md`;
+    const diag = routeDiagnostics.find((d) => d.path === cachePath);
+    if (diag?.skippedReason === 'not-selected') return false;
+    return !savedPagePaths.has(cachePath);
+  });
+  if (failedRequired.length > 0) {
+    throw new Error(
+      `Required sample routes are missing or failed JSON extraction: ${failedRequired.join(', ')}. ` +
+      'Keeping the existing cache. Use --force to promote anyway.'
+    );
   }
 }
 

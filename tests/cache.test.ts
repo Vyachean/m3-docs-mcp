@@ -55,6 +55,26 @@ const index: MaterialIndex = {
   pages: [page]
 };
 
+// Appends valid (saved + succeeded) entries for all four required sample routes, without touching
+// pageCount/attemptedPageCount/failedPageCount — those stay whatever the test set them to, since
+// many tests assert on the exact ratio math those fields drive. This only exists so that tests
+// unrelated to required-sample validation don't have to know about it; tests that explicitly pass
+// their own `extractionDiagnostics` override are exercising that check directly and are left alone.
+function withRequiredSamples(index: MaterialIndex): MaterialIndex {
+  const diag = createEmptyExtractionDiagnostics();
+  const extraPages: MaterialPage[] = [];
+  for (const slug of REQUIRED_SAMPLE_SLUGS) {
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    extraPages.push({
+      ...page,
+      id: `required-${slug}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    });
+  }
+  return { ...index, pages: [...index.pages, ...extraPages], extractionDiagnostics: diag };
+}
+
 function materialIndex(pageCount: number, overrides: Partial<MaterialIndex> = {}): MaterialIndex {
   const pages = Array.from({ length: pageCount }, (_, i) => ({
     ...page,
@@ -62,7 +82,7 @@ function materialIndex(pageCount: number, overrides: Partial<MaterialIndex> = {}
     path: `components/page-${i}/overview.md`,
     url: `https://m3.material.io/components/page-${i}/overview`
   }));
-  return {
+  const built: MaterialIndex = {
     source: 'https://m3.material.io',
     capturedAt: '2026-05-18T00:00:00.000Z',
     pageCount,
@@ -72,6 +92,7 @@ function materialIndex(pageCount: number, overrides: Partial<MaterialIndex> = {}
     pages,
     ...overrides
   };
+  return overrides.extractionDiagnostics === undefined ? withRequiredSamples(built) : built;
 }
 
 describe('cache helpers', () => {
@@ -481,6 +502,60 @@ describe('cache helpers', () => {
       failedPageCount: 1,
       extractionDiagnostics: diag,
       coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');
+  });
+
+  it('fails full refresh promotion when a required sample has no diagnostic and no page at all', () => {
+    // components/buttons/specs never appears in routeDiagnostics or pages — not "failed", just
+    // entirely absent. A missing diagnostic must not be treated as an automatic pass.
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS.slice(1)) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    }
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.slice(1).map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 3,
+      failedPageCount: 0,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');
+  });
+
+  it('fails a --max-pages 20 smoke promotion when a required sample is absent from both pages and routeDiagnostics', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS.slice(1)) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug, { selectedBecause: 'required-validation' }));
+    }
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.slice(1).map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      attemptedPageCount: 3,
+      failedPageCount: 0,
+      extractionDiagnostics: diag,
+      // isLimitedRun:true alone (e.g. --max-pages 20) does not exempt an absent required sample —
+      // only an explicit skippedReason:"not-selected" diagnostic does (see the tiny-maxPages test
+      // below). Force-inclusion means a real --max-pages 20 run should never hit this case in
+      // practice, but the validation itself must still fail it.
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true, maxPagesExplicit: true })
     });
 
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');

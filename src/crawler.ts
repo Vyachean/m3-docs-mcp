@@ -1102,9 +1102,13 @@ function emitRouteEvents(logger: UpdateLogger, index: MaterialIndex): void {
       source: route.sourceUsed,
       fallbackReasons: route.fallbackReasons ?? [],
       tokenTablesRequested: route.tokenTablesRequested ?? route.tokenTables,
-      tokenTablesResolved: route.tokenTablesResolved ?? 0,
-      tokenTablesDecoded: route.tokenTablesDecoded ?? 0,
+      // null (not 0) when this stage wasn't tracked at the call site that produced this diagnostic
+      // — tokenTablesRenderedFromInline explains how tables could still be rendered in that case,
+      // so logs never show e.g. "resolved:0,decoded:0,rendered:2" looking like an impossible state.
+      tokenTablesResolved: route.tokenTablesResolved ?? null,
+      tokenTablesDecoded: route.tokenTablesDecoded ?? null,
       tokenTablesRendered: route.tokenTablesRendered,
+      tokenTablesRenderedFromInline: route.tokenTablesRenderedFromInline ?? 0,
       tokenTablesRenderedAsPlaceholder: route.tokenTablesRenderedAsPlaceholder ?? 0,
       tokenTablesUnsupportedSchema: route.tokenTablesUnsupportedSchema ?? 0,
       statusTablesRequested: route.statusTablesRequested ?? 0,

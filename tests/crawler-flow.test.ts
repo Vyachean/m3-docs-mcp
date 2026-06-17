@@ -245,7 +245,7 @@ describe('crawlMaterialDocs', () => {
   });
 
   it('crawls discovered same-origin documentation pages into a promoted cache', async () => {
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2, force: true });
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledWith({ headless: true });
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -299,7 +299,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/foundations/layout/canonical-layouts'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 2, force: true });
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
@@ -319,7 +319,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/foundations/layout/canonical-layouts'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 2, minPageCount: 2, force: true });
 
     expect(index.pages.map((page) => page.path).sort()).toEqual(['foundations/layout/canonical-layouts.md', 'index.md']);
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith('https://m3.material.io/blog/ignored', expect.anything());
@@ -380,7 +380,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/components/buttons/overview'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2, force: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/buttons', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/buttons/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -407,7 +407,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/components/cards/overview'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2, force: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards', { waitUntil: 'domcontentloaded', timeout: 45000 });
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io/components/cards/overview', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -434,7 +434,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/components/buttons/overview'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, force: true });
 
     expect(index.pageCount).toBe(1);
     expect(index.failedUrls).toContain('https://m3.material.io/components/buttons');
@@ -467,7 +467,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/foundations/hidden-valid-route'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, force: true });
 
     expect(index.failedUrls).toContain('https://m3.material.io/foundations/bad-route');
     expect(index.pages.map((page) => page.path)).toEqual(['index.md']);
@@ -497,7 +497,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/foundations/layout-overview/adaptive-design'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 10, minPageCount: 2 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 10, minPageCount: 2, force: true });
 
     expect(index.pageCount).toBe(9);
     expect(index.attemptedPageCount).toBe(10);
@@ -576,7 +576,7 @@ describe('crawlMaterialDocs', () => {
 
     playwrightMock.pagesByUrl['https://m3.material.io'].links = [blogUrl];
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true, force: true });
 
     expect(playwrightMock.page.goto).not.toHaveBeenCalledWith(blogUrl, expect.anything());
     expect(index.pages.find((p) => p.url === blogUrl)).toMatchObject({ title: 'Old Blog Post', path: blogPath, publishedYear: oldYear });
@@ -622,7 +622,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogUrl
     };
 
-    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true, force: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
   }, 10_000);
@@ -664,7 +664,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogUrl
     };
 
-    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true });
+    await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true, force: true });
 
     expect(playwrightMock.page.goto).toHaveBeenCalledWith(blogUrl, expect.anything());
   }, 10_000);
@@ -690,7 +690,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: blogPostUrl
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, includeBlog: true, force: true });
 
     const blogEntry = index.pages.find((p) => p.url === blogPostUrl);
     expect(blogEntry?.publishedYear).toBe(currentYear);
@@ -714,7 +714,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, force: true });
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -760,7 +760,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 3 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 3, force: true });
 
     expect(playwrightMock.chromium.launch).toHaveBeenCalledTimes(1);
     expect(playwrightMock.page.goto).toHaveBeenCalledWith('https://m3.material.io', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -818,7 +818,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 3 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 3, force: true });
 
     expect(index.extractionDiagnostics).toMatchObject({
       pagesAcceptedFromDirectJson: 1,
@@ -860,7 +860,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 1, force: true });
 
     expect(index.pageCount).toBe(1);
     expect(index.coverageDiagnostics).toMatchObject({
@@ -893,7 +893,7 @@ describe('crawlMaterialDocs', () => {
       finalUrl: 'https://m3.material.io/components/buttons/overview'
     };
 
-    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 1, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 1, minPageCount: 1, force: true });
 
     expect(index.pageCount).toBe(1);
     expect(index.coverageDiagnostics).toMatchObject({
@@ -932,7 +932,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 10, minPageCount: 1, includeBlog: false });
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 10, minPageCount: 1, includeBlog: false, force: true });
 
     expect(playwrightMock.chromium.launch).not.toHaveBeenCalled();
 
@@ -1004,7 +1004,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
 
     expect(playwrightMock.chromium.launch).not.toHaveBeenCalled();
     expect(index.pages.map((page) => page.path)).toEqual(['components/lists/overview.md']);
@@ -1036,7 +1036,7 @@ describe('crawlMaterialDocs', () => {
       return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
     }));
 
-    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1 });
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
 
     const orphanDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/orphan.md');
     expect(orphanDiagnostic).toMatchObject({
