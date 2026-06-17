@@ -28,6 +28,7 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     tokenTablesRenderedAsPlaceholder: 0,
     tokenTablesUnsupportedSchema: 0,
     tokenTablesFailedToRender: 0,
+    tokenTablesRenderedFromInline: 0,
     tokenTablesMissingRequestedTokenSets: 0,
     tokenContextDiagnosticsRecorded: 0,
     tokenTablesUsingFallbackContext: 0,
@@ -51,6 +52,14 @@ export function createEmptyExtractionDiagnostics(): ExtractionDiagnostics {
     videoCount: 0,
     unresolvedResourceCount: 0,
     rawJsonDebugFilesWritten: 0,
+    sourcePagesSelected: 0,
+    sourcePagesAttempted: 0,
+    sourcePagesSucceeded: 0,
+    sourcePagesFailed: 0,
+    virtualPagesPlanned: 0,
+    virtualPagesSaved: 0,
+    virtualPagesFailed: 0,
+    cachePagesSaved: 0,
     routeDiagnostics: [],
     pageDiagnostics: []
   };
@@ -104,6 +113,7 @@ export function pushRouteDiagnostic(
   diagnostics.tokenTablesRenderedAsPlaceholder += routeDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0;
   diagnostics.tokenTablesUnsupportedSchema += routeDiagnostic.tokenTablesUnsupportedSchema ?? 0;
   diagnostics.tokenTablesFailedToRender += Math.max(0, routeDiagnostic.tokenTables - routeDiagnostic.tokenTablesRendered);
+  diagnostics.tokenTablesRenderedFromInline += routeDiagnostic.tokenTablesRenderedFromInline ?? 0;
   diagnostics.tokenTablesMissingRequestedTokenSets += routeDiagnostic.missingRequestedTokenSets.length;
   diagnostics.statusTablesRequested += routeDiagnostic.statusTablesRequested ?? 0;
   diagnostics.statusTablesResolved += routeDiagnostic.statusTablesResolved ?? 0;
@@ -121,4 +131,57 @@ export function pushRouteDiagnostic(
   diagnostics.tokenTablesWithMultipleContextVariants += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.multipleContextVariantsAvailable).length ?? 0;
   diagnostics.tokenTablesWithUnresolvedTokens += routeDiagnostic.tokenContextDiagnostics?.filter((entry) => entry.unresolvedTokenCount > 0).length ?? 0;
   diagnostics.rawJsonDebugFilesWritten += routeDiagnostic.rawJsonDebugFilesWritten ?? 0;
+}
+
+export type SourceVirtualPageCounters = {
+  sourcePagesAttempted: number;
+  sourcePagesSucceeded: number;
+  sourcePagesFailed: number;
+  virtualPagesPlanned: number;
+  virtualPagesSaved: number;
+  virtualPagesFailed: number;
+  cachePagesSaved: number;
+};
+
+/**
+ * Groups route diagnostics by the source route they came from (sourceRoute for tab-split virtual
+ * pages, otherwise the diagnostic's own path) to separate "site routes attempted" from "cache files
+ * written" — one source route can expand into multiple virtual/cache pages via tab-splitting.
+ * Entries with `skippedReason` were never attempted (dropped by maxPages or missing a page
+ * reference) and are excluded from every counter here.
+ */
+export function computeSourceAndVirtualPageCounters(routeDiagnostics: ExtractionRouteDiagnostic[]): SourceVirtualPageCounters {
+  const bySource = new Map<string, ExtractionRouteDiagnostic[]>();
+  for (const diagnostic of routeDiagnostics) {
+    if (diagnostic.skippedReason) continue;
+    const key = diagnostic.sourceRoute ?? diagnostic.path;
+    const list = bySource.get(key);
+    if (list) list.push(diagnostic);
+    else bySource.set(key, [diagnostic]);
+  }
+
+  let sourcePagesSucceeded = 0;
+  let sourcePagesFailed = 0;
+  let virtualPagesPlanned = 0;
+  let virtualPagesSaved = 0;
+  let virtualPagesFailed = 0;
+  for (const list of bySource.values()) {
+    virtualPagesPlanned += list.length;
+    const saved = list.filter((d) => d.sourceUsed !== 'failed' && d.sourceUsed !== 'skipped').length;
+    const failed = list.filter((d) => d.sourceUsed === 'failed').length;
+    virtualPagesSaved += saved;
+    virtualPagesFailed += failed;
+    if (saved > 0) sourcePagesSucceeded += 1;
+    else if (failed > 0) sourcePagesFailed += 1;
+  }
+
+  return {
+    sourcePagesAttempted: bySource.size,
+    sourcePagesSucceeded,
+    sourcePagesFailed,
+    virtualPagesPlanned,
+    virtualPagesSaved,
+    virtualPagesFailed,
+    cachePagesSaved: virtualPagesSaved,
+  };
 }

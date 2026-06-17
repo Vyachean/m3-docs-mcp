@@ -83,7 +83,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
     force: z.boolean().default(false)
   }, async ({ maxPages, concurrency, force }) => {
-    return jsonText(await store.refresh({ maxPages, concurrency, force: force ?? false }));
+    return jsonText(await store.refresh({ maxPages, maxPagesExplicit: maxPages !== undefined, concurrency, force: force ?? false }));
   });
 
   const transport = new StdioServerTransport();
@@ -117,6 +117,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
     state.progress = null;
     refreshPromise = store.refresh({
       maxPages,
+      maxPagesExplicit: true,
       concurrency,
       onProgress: (progress) => {
         state.progress = progress;

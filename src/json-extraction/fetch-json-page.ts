@@ -37,14 +37,29 @@ export async function fetchJsonPageBundle(
     responses
   );
 
-  const fetchResource = async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
-    const urls = buildDsdbResourceCandidateUrls(baseUrl, carbonVersion, resourceName, resourceType);
-    return fetchFirstJsonOrNull(urls, signal, fetchImpl, responses);
-  };
+  const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, responses, signal, fetchImpl);
 
   return {
     ...createJsonPageBundle({ pageData, contentPage, pageCanonId, responses }),
     fetchResource
+  };
+}
+
+/**
+ * Builds a DSDB resource fetcher closure (token tables, status tables, component specs) bound to
+ * a given carbonVersion. Shared by the legacy slug-guessing path and the dedicated
+ * reference-based pipeline so both get the same enrichment behavior.
+ */
+export function createDsdbResourceFetcher(
+  baseUrl: string,
+  carbonVersion: string,
+  responses: JsonCapturedResponse[] = [],
+  signal?: AbortSignal,
+  fetchImpl: FetchLike = fetch
+): (resourceName: string, resourceType?: string) => Promise<unknown | null> {
+  return async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
+    const urls = buildDsdbResourceCandidateUrls(baseUrl, carbonVersion, resourceName, resourceType);
+    return fetchFirstJsonOrNull(urls, signal, fetchImpl, responses);
   };
 }
 
@@ -140,4 +155,69 @@ function stripJsonExtension(value: string | undefined): string | null {
 
 function unique(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0)));
+}
+
+// ── Dedicated reference-based fetchers (default pipeline; no slug-guessing, single URL each) ──
+
+export type PageDataFetchResult =
+  | { status: 'ok'; url: string; httpStatus: number; data: unknown }
+  | { status: 'http-error'; url: string; httpStatus: number }
+  | { status: 'fetch-error'; url: string; error: string };
+
+/**
+ * Fetches page-data for a route already resolved to {collectionId, documentId} (via
+ * page-reference-resolver). Builds exactly one URL — no slug-only candidates, no fallback list.
+ * Never report this as a slug-only / fallback fetch.
+ */
+export async function fetchPageDataByReference(
+  baseUrl: string,
+  reference: { collectionId: string; documentId: string },
+  signal?: AbortSignal,
+  fetchImpl: FetchLike = fetch
+): Promise<PageDataFetchResult> {
+  const url = `${baseUrl}/page-data/${reference.collectionId}/${reference.documentId}.json`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { signal });
+  } catch (err) {
+    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!response.ok) return { status: 'http-error', url, httpStatus: response.status };
+  try {
+    const data = (await response.json()) as unknown;
+    return { status: 'ok', url, httpStatus: response.status, data };
+  } catch (err) {
+    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export type CarbonContentFetchResult =
+  | { status: 'ok'; url: string; httpStatus: number; data: unknown }
+  | { status: 'http-error'; url: string; httpStatus: number }
+  | { status: 'fetch-error'; url: string; error: string }
+  | { status: 'not-available' };
+
+/** Fetches Carbon content JSON for a route with a known exportedCarbonFileId. Single URL, no guessing. */
+export async function fetchCarbonContentByReference(
+  baseUrl: string,
+  carbonVersion: string,
+  exportedCarbonFileId: string | undefined,
+  signal?: AbortSignal,
+  fetchImpl: FetchLike = fetch
+): Promise<CarbonContentFetchResult> {
+  if (!exportedCarbonFileId) return { status: 'not-available' };
+  const url = `${baseUrl}/_dsm/content/m3/${carbonVersion}/${exportedCarbonFileId}`;
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { signal });
+  } catch (err) {
+    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!response.ok) return { status: 'http-error', url, httpStatus: response.status };
+  try {
+    const data = (await response.json()) as unknown;
+    return { status: 'ok', url, httpStatus: response.status, data };
+  } catch (err) {
+    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+  }
 }

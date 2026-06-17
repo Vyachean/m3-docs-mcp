@@ -6,6 +6,7 @@ const NON_DOC_PATH_PREFIXES = [
   'assets/',
   'static/',
   '_dsm/',
+  'm3/pages/',
   'favicon',
   'manifest',
   'robots.txt',

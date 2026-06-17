@@ -966,6 +966,41 @@ describe('parseStatusTable – zod boundary', () => {
 
 // ─── parseContentPage – zod boundary ─────────────────────────────────────────
 
+describe('parseContentPage – real-data regression: null optional chunk fields', () => {
+  // Live m3.material.io content chunks set most optional string fields to explicit `null`
+  // (footer: null, videoUrl: null, codeUrl: null, resourceName: null, ...) rather than omitting
+  // them. ContentChunkSchema previously declared these as z.string().optional(), which rejects
+  // `null` — causing every real chunk to fail safeParse and silently disappear, regardless of how
+  // much real content the page had.
+  it('parses a chunk whose unused optional fields are explicit null (real shape)', () => {
+    const result = parseContentPage({
+      title: 'Buttons',
+      sections: [{
+        name: 'Specs',
+        contentBlocks: [{
+          title: null,
+          contentChunks: [{
+            htmlValue: '<h2>Variants</h2>',
+            footer: null,
+            imageUrl: '',
+            imageUrlFife: null,
+            altText: '',
+            videoUrl: null,
+            codeUrl: null,
+            prototypeUrl: null,
+            resourceName: null,
+            libraryModuleType: null,
+            moduleConfigurationOverrides: null,
+            contentChunkType: 'TEXT'
+          }]
+        }]
+      }]
+    });
+    expect(result.sections[0]?.blocks[0]?.chunks).toHaveLength(1);
+    expect(result.sections[0]?.blocks[0]?.chunks[0]?.htmlValue).toBe('<h2>Variants</h2>');
+  });
+});
+
 describe('parseContentPage – zod boundary', () => {
   it('returns empty sections for null input', () => {
     const result = parseContentPage(null);
@@ -1082,9 +1117,9 @@ describe('parseContentPage – zod boundary', () => {
       }]
     });
     const chunk = result.sections[0]!.blocks[0]!.chunks[0]!;
-    // TypeScript: these are typed as string | undefined, not unknown
-    const url: string | undefined = chunk.imageUrl;
-    const alt: string | undefined = chunk.altText;
+    // TypeScript: these are typed as string | null | undefined, not unknown
+    const url: string | null | undefined = chunk.imageUrl;
+    const alt: string | null | undefined = chunk.altText;
     expect(url).toBe('https://example.com/img.png');
     expect(alt).toBe('An image');
   });

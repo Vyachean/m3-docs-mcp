@@ -12,7 +12,7 @@ export type MaterialPage = {
 };
 
 export type ExtractionMethod = 'json' | 'dom';
-export type ExtractionSource = 'direct-json' | 'network-json' | 'dom-fallback' | 'failed';
+export type ExtractionSource = 'direct-json' | 'network-json' | 'dom-fallback' | 'failed' | 'skipped';
 export type JsonResponseType = 'page-metadata' | 'content-page' | 'dsdb-resource' | 'token-table' | 'status-table' | 'unknown-json-resource';
 
 export type ExtractionFallbackReason =
@@ -67,6 +67,7 @@ export type ExtractionPageDiagnostic = {
   tokenTablesDecoded?: number;
   tokenTablesRenderedAsPlaceholder?: number;
   tokenTablesUnsupportedSchema?: number;
+  tokenTablesRenderedFromInline?: number;
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
@@ -139,6 +140,34 @@ export type ExtractionRouteDiagnostic = {
   rawJsonDebugFilesWritten?: number;
   routeMetadataWarnings?: string[];
   candidateSelectionReasons?: string[];
+  /** Where this route's path came from: site_meta.routes, or a bundle-supplement subtree. */
+  navigationSource?: 'site-meta' | 'bundle-supplement';
+  /** Where collectionId/documentId were resolved from for the page-data fetch. */
+  pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  /** Set when this route/virtual page was never attempted — distinct from sourceUsed:"failed",
+   *  which is reserved for routes that were actually attempted and errored. Excluded from
+   *  failedPages/virtualPagesFailed/failedPageCount. */
+  skippedReason?: 'missing-page-reference' | 'not-selected' | 'non-content-index' | 'alias-only' | 'redirect' | 'private' | 'blog' | 'legacy-route' | 'platform-specific-unmapped';
+  /** Tables rendered via the inline decode pipeline (extractContentPageToMaterialPage), which does
+   *  not track a separate resolved/decoded stage. Distinguishes "rendered without that granularity"
+   *  from a genuine resolved:0/decoded:0 with tables actually rendered, which would look impossible. */
+  tokenTablesRenderedFromInline?: number;
+  /** What was actually fetched to build this page's content. */
+  contentSource?: 'page-data' | 'page-data+carbon' | 'carbon';
+  /** Whether this cached page came from splitting a tab out of a parent route's content. */
+  virtualSource?: 'tab' | null;
+  /** The real site_meta/bundle route this page was derived from, when it differs from `path` (tabs). */
+  sourceRoute?: string;
+  /** This page's own URL path when it's a virtual tab page (same as `path`, kept for clarity in logs). */
+  virtualRoute?: string;
+  tabName?: string;
+  tabSlug?: string;
+  pageDataFetchedOnce?: boolean;
+  pageDataUrl?: string;
+  pageDataStatus?: number | string;
+  carbonUrl?: string;
+  carbonStatus?: number | string;
+  selectedBecause?: 'budget' | 'required-validation';
 };
 
 export type ExtractionDiagnostics = {
@@ -168,6 +197,9 @@ export type ExtractionDiagnostics = {
   tokenTablesRenderedAsPlaceholder: number;
   tokenTablesUnsupportedSchema: number;
   tokenTablesFailedToRender: number;
+  /** Tables rendered via the inline decode pipeline, where resolved/decoded weren't tracked as a
+   *  separate stage. See ExtractionRouteDiagnostic.tokenTablesRenderedFromInline. */
+  tokenTablesRenderedFromInline: number;
   tokenTablesMissingRequestedTokenSets: number;
   tokenContextDiagnosticsRecorded: number;
   tokenTablesUsingFallbackContext: number;
@@ -191,11 +223,27 @@ export type ExtractionDiagnostics = {
   videoCount: number;
   unresolvedResourceCount: number;
   rawJsonDebugFilesWritten: number;
+  /** Distinct site routes selected for extraction (before tab expansion). */
+  sourcePagesSelected: number;
+  /** Distinct site routes actually attempted (fetched). */
+  sourcePagesAttempted: number;
+  /** Distinct attempted source routes that produced at least one saved cache page. */
+  sourcePagesSucceeded: number;
+  /** Distinct attempted source routes that produced zero saved cache pages. */
+  sourcePagesFailed: number;
+  /** Expected cache pages across attempted source routes (1 per route, or len(tabs) for tab routes). */
+  virtualPagesPlanned: number;
+  /** Cache pages actually written. Same quantity as cachePagesSaved, viewed at the virtual-page level. */
+  virtualPagesSaved: number;
+  /** Cache pages that were attempted (selected, not skipped) but failed to save. */
+  virtualPagesFailed: number;
+  /** Cache pages actually written (cache-file-level count; equals virtualPagesSaved). */
+  cachePagesSaved: number;
   routeDiagnostics: ExtractionRouteDiagnostic[];
   pageDiagnostics: ExtractionPageDiagnostic[];
 };
 
-export type CoverageHealth = 'verified' | 'partial' | 'unverified' | 'failed';
+export type CoverageHealth = 'verified' | 'partial' | 'unverified' | 'failed' | 'broken';
 
 export type CoverageDiagnostics = {
   discoveredPublicUrlCount: number;
@@ -203,6 +251,20 @@ export type CoverageDiagnostics = {
   renderedNavUrlCount: number;
   angularRouteHintCount: number;
   previousCacheRouteHintCount: number;
+  /** Routes discovered from site_meta.js (primary source). */
+  siteMetaRouteCount?: number;
+  /** Public, non-redirect routes from site_meta. */
+  siteMetaPublicRouteCount?: number;
+  /** Private routes skipped from site_meta. */
+  siteMetaPrivateRouteCount?: number;
+  /** External-redirect routes skipped from site_meta. */
+  siteMetaRedirectRouteCount?: number;
+  /** Alias (other_routes) entries from site_meta. */
+  siteMetaAliasCount?: number;
+  /** Routes added because a tracked subtree (e.g. styles, foundations) had zero site_meta coverage. */
+  bundleSupplementRouteCount?: number;
+  /** Which tracked subtrees actually triggered bundle-supplement (subset of tracked prefixes). */
+  supplementedPrefixes?: string[];
   acceptedPageCount: number;
   uncrawledDiscoveredUrlCount: number;
   uncrawledDiscoveredUrls: string[];
@@ -216,6 +278,40 @@ export type CoverageDiagnostics = {
   coverageVerified: boolean;
   coverageWarnings: string[];
   coverageHealth?: CoverageHealth;
+  /** True when this run intentionally limits scope (explicit --max-pages, or maxPages truncated
+   *  route selection) — full-site discovered-vs-accepted coverage-gap checks are scoped down
+   *  accordingly instead of being a hard promotion blocker. */
+  isLimitedRun?: boolean;
+  /** True when the CLI/caller explicitly passed --max-pages (as opposed to no flag at all). */
+  maxPagesExplicit?: boolean;
+  /** Routes dropped purely because maxPages truncated the candidate list. Diagnostic only. */
+  skippedNotSelectedCount?: number;
+
+  // ── Full-refresh coverage classification (diagnostic + the basis for hard validation) ──────
+  // discoveredPublicUrlCount mixes canonical routes with aliases, tab URLs, legacy/static routes,
+  // and platform-specific pages that don't map to extractable content — it stays diagnostic-only.
+  // The fields below separate "site routes" from "cache/virtual pages" and classify every
+  // discovered URL that isn't a selected/attempted canonical route, so the hard promotion target
+  // (plannedVirtualPageCount vs savedVirtualPageCount + failedVirtualPageCount) never gets diluted
+  // by URLs that were never expected to become content pages in the first place.
+  canonicalSiteMetaRouteCount?: number;
+  publicCanonicalRouteCount?: number;
+  aliasUrlCount?: number;
+  redirectedRouteCount?: number;
+  privateRouteCount?: number;
+  blogRouteCount?: number;
+  resolvableSourceRouteCount?: number;
+  unresolvedSourceRouteCount?: number;
+  selectedSourceRouteCount?: number;
+  attemptedSourceRouteCount?: number;
+  plannedVirtualPageCount?: number;
+  savedVirtualPageCount?: number;
+  failedVirtualPageCount?: number;
+  skippedAliasOnlyCount?: number;
+  skippedMissingPageReferenceCount?: number;
+  skippedNonContentIndexCount?: number;
+  skippedLegacyRouteCount?: number;
+  skippedPlatformSpecificUnmappedCount?: number;
 };
 
 export type SuspiciousCrawlPage = {
@@ -272,6 +368,8 @@ export type MaterialIndex = {
   pages: Omit<MaterialPage, 'text' | 'markdown'>[];
 };
 
+export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;
+
 export type CacheStatus = {
   cacheDir: string;
   hasCache: boolean;
@@ -287,9 +385,37 @@ export type CacheStatus = {
   coverageDiagnostics?: CoverageDiagnostics;
   latestLogFile: string | null;
   latestDiagnosticsFile: string | null;
+  directJsonEnabled?: boolean;
+  browserOnlyFallback?: boolean;
+  directJsonDisabledReason?: string;
+  dsdbConfigSource?: DsdbConfigSource;
+  siteMetaFetched?: boolean;
+  siteMetaFailed?: boolean;
+  bundleDiscoveryFailed?: boolean;
+  networkRecoveryAttempted?: boolean;
+  networkRecoverySucceeded?: boolean;
+  networkRecoveryFailureReason?: string | null;
 };
 
-export type CrawlPhase = 'discovering' | 'direct-json' | 'browser-crawl' | 'finalizing' | 'promoting' | 'complete';
+export type CrawlPhase =
+  | 'fetch-shell'
+  | 'fetch-site-meta'
+  | 'enumerate-routes'
+  | 'normalize-routes'
+  | 'filter-routes'
+  | 'fetch-page-data'
+  | 'fetch-carbon'
+  | 'extract-markdown'
+  | 'validate-cache'
+  | 'browser-network-recovery'
+  | 'browser-dom-fallback'
+  | 'promoting'
+  | 'complete'
+  // Legacy aliases kept for backwards compatibility with existing diagnostics/logs
+  | 'discovering'
+  | 'direct-json'
+  | 'browser-crawl'
+  | 'finalizing';
 
 export type CrawlProgress = {
   phase: CrawlPhase;
@@ -321,13 +447,20 @@ export type CrawlProgressHandler = (progress: CrawlProgress) => void;
 
 export type CrawlOptions = {
   baseUrl?: string;
-  maxPages?: number;
+  /** null/undefined means a full refresh with no source-route truncation. */
+  maxPages?: number | null;
+  /** True when the caller explicitly requested a maxPages limit (vs. the default full refresh). */
+  maxPagesExplicit?: boolean;
   minPageCount?: number;
   cacheDir?: string;
   headless?: boolean;
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;
+  /** Browser-based DOM fallback and network recovery are disabled by default — the default
+   *  update path is deterministic direct-JSON extraction only. Set true to opt into the legacy
+   *  Playwright-based fallback/recovery behavior. */
+  allowBrowserFallback?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
   /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
@@ -340,7 +473,8 @@ export type CrawlOptions = {
 };
 
 export type RefreshOptions = {
-  maxPages?: number;
+  maxPages?: number | null;
+  maxPagesExplicit?: boolean;
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;

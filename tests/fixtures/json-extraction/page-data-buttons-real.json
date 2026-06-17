@@ -1,0 +1,550 @@
+{
+  "category": "action",
+  "component_image_1x1": {},
+  "component_image_2x1": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/6f450b88588ebca758a32f5515cee36113ebe4f78ef97cf9362c7a8b4924e6a200050ad17636fdd880b1c6e24f5b87484371a165d99dc99ede5e8efd678f77c8",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/AbRgSrn6MLJOLLUuojBpdZ7hI_-FDbDvdX3ypbecFgPSbQmDv12vNRaXFoGAB2tTm0WvIEy0mfmp_8e_zOiHecFUVyzop8Pyicq8rYmq99O5YOJFGmQ",
+    "width": 1120
+  },
+  "component_image_3x1": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/d7918994e61cc7b8555f92fe13a3c9a7cedd303ad786114fc5ed8738dd296241a9ee8f4e565b8bba29650f5134af7f570681538aacc9adc86c9f8478a553fd6f",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/vhzcGz-7kFvEV6-bQcUDKe8giH6K1kRKM8VNWjtSohuem3Jlxh3dk3AkT5vnCTleBY6MRE1HkNOfwzXv1ozrezQArRAIp2_H96P1W_kOd4CSEuX37UY",
+    "width": 1680
+  },
+  "component_image_3x2": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/1f1f69bee45597b3f5028bee0f359c6b6289f30fdd3142912a87c0323027ad35409d78587da5d3d0f9a027747236f9bd3da501770c92a47fdcb02c16de6cc339",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/wtpame8lAg_PoEUBV1mSxGMCAosvKLPp5tl0J--xg9S1jZ05VOsPVf2oVjCLpWaBfxpQeNcx3BME3duioycGfChIqcqO6yYVV5YMVDE_IFKTgDJcGIfv",
+    "width": 840
+  },
+  "component_image_position": "top center",
+  "dark_component_image_1x1": {},
+  "dark_component_image_2x1": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/a74e378a2171ed003a8385d888e659c37b5edd4069abffcff6b3a06e13ee56fffc5df1e6b80f9d782ff1c7f46cb219014703590ca0f61982b4ad2e07343e0584",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/GTUfuySBwwoeG7Q4X76JAOsxqNsrMMeTh-mJloCg5JbmD7oSJs0OFEhbSWGxXnMYiAGMnIjFDo62ZNC8d1isIKI5iVP3mdQPiXONa4G--naDbVHWXgrt",
+    "width": 1120
+  },
+  "dark_component_image_3x1": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/ea198e58f69b640fba86c227b4e266848839e32cb1940c74ea7220b53c4e208287f1b9c5b44fd3e300fb97cef2c877fa91eb26fb558c1f574c5c58cc406f3ecb",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/H2n-MWZkdZVnTi1ULv9u8hVR7EROfCrpx9wIh9S0F3cEnL-hr7rLdIP9czw7cQDGqttA3uCaUZwWqpMzX807hZakAPfimUg__rl69mxCW7KqnJhbyQM",
+    "width": 1680
+  },
+  "dark_component_image_3x2": {
+    "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/848dad5376b1c27fec4eb029645a77e47b3170f4287be626103fafbf2b36fc4ca5892923e85520f0b6c531a2c6fc94a42724180f2753ba319cdc3271650e4a59",
+    "height": 560,
+    "url": "https://lh3.googleusercontent.com/uGhjbPdAfaeyJc3hxQCynhe-ASDXgjVi7XsFjLh93Dwg2s7ZjUkX5xdisCeWVwZMKtOMQsY7z-4XHvYxhP6Xqgoy1c0vzF1OHhX3jA28RDOcmII6tng",
+    "width": 840
+  },
+  "description": null,
+  "hero": {
+    "background_asset": {},
+    "background_image": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/bfc8cb314a6d6dec4abb79cf3fc96e7f9811698afb81029412e0269613d62e8119ef92f5ca812e9b1b52418eaac3de509ef8aa51df4c4b2176844b01f9a00d1f",
+      "height": 4096,
+      "url": "https://lh3.googleusercontent.com/hUyHwWQfBw_s7cwL71k7gMp-YWENxiO_PbHhgligNckLr3h-cQbZaFoYvTUEgWTzQCH8YlmqS_AMSI-lhwACHcV--aq4S23s0hwekJh-vcPj9ODCtjAG",
+      "width": 4096
+    },
+    "foreground_image": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/1192c6a260210a4898578fba26dcbca27ccc444324befe770898238a239f6cfdbb8a8da27650d7d8e73c31f331409599682c31170c51ef1de027ce8c933f1f56",
+      "height": 1816,
+      "url": "https://lh3.googleusercontent.com/KNtbM8dFAStamgZ4ka5Lc1hBIQcPPmLI_hquZaO8eFlctnYlD2bbG5KgtYyRhkfQI1G8IcMk8tfnXEDoW62IgW-JMuRZE4boXTBRngXuw_2P0imoExA",
+      "width": 856
+    },
+    "foreground_image_alignment": "center",
+    "foreground_image_svg": null,
+    "foreground_text_light": true
+  },
+  "ia_title": "Components / Buttons",
+  "isDisplayed": true,
+  "jetpack": {},
+  "mdc_android": {
+    "banners": [
+      {
+        "description": "<p><span style=\"color: #1f1f1f; font-family: 'Google Sans Text', sans-serif; font-size: 16px;\">Buttons are available in the Material 3 library for Jetpack Compose. Visit the&nbsp;</span><code style=\"box-sizing: border-box; margin: 0px; padding: 0px; border: 0px; font-variant-numeric: inherit; font-variant-east-asian: inherit; font-weight: var(--mio-theme-code-font-weight); font-stretch: inherit; line-height: var(--mio-theme-code-line-height); font-family: var(--mio-theme-code-font-family); font-size: 16px; vertical-align: baseline; color: #1f1f1f;\">androidx.compose.material3</code><span style=\"color: #1f1f1f; font-family: 'Google Sans Text', sans-serif; font-size: 16px;\"> <a href=\"https://developer.android.com/jetpack/androidx/releases/compose-material3\" target=\"_blank\" rel=\"noopener\">library documentation on Android Developers</a> for supported button types:</span></p>",
+        "links": [
+          {
+            "aria_label": "Read about implementing Material Design 3 Buttons (filled) using Jetpack Compose",
+            "href": "https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary#button",
+            "label": "Button (filled) API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 ElevatedButtons using Jetpack Compose",
+            "href": "https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary#elevatedbutton",
+            "label": "ElevatedButton API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 FilledTonalButtons using Jetpack Compose",
+            "href": "https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary#filledtonalbutton",
+            "label": "FilledTonalButton API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 OutlinedButtons using Jetpack Compose",
+            "href": "https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary#outlinedbutton",
+            "label": "OutlinedButton API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 TextButtons using Jetpack Compose",
+            "href": "https://developer.android.com/reference/kotlin/androidx/compose/material3/package-summary#textbutton",
+            "label": "TextButton API reference",
+            "open_new_window": true
+          }
+        ],
+        "title": "Jetpack Compose support available"
+      }
+    ],
+    "hide_generic_not_available_message": true,
+    "hide_intro_block": true,
+    "image": [
+      {
+        "a11y_description": "\"Overview\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/5c8aa6a77a2ad9f9e29759f3dffeeb9542a4f9ee86b54e471256fbebc753aa4b1ebb535ce6de41d17a62283c88234e68d170dec652e5d8a9d3b12ce29b07b11e",
+          "height": 586,
+          "url": "https://lh3.googleusercontent.com/W8c8wj_LBm88DEeIEGobE948eXX7KLnz6mBJ3F_SbzRGlH-wd9yGFzIs2au5Jl-3uuPhXEkSLqMLJMlEFcFLMiOdUbMD3cNgTghMDn0QBZjQXq8aQCo",
+          "width": 1999
+        }
+      },
+      {
+        "a11y_description": "\"Button types - elevated, filled, filled tonal, outlined and text.\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/84f317683c1e4c62a276e5ffcfda47f6e97b22399a1e2bb30c7a085e04b53aa60c48a3d6e7494332b0792443d5b61931c1272adc159efbbc075257b291da58de",
+          "height": 586,
+          "url": "https://lh3.googleusercontent.com/mKX56JxE9LfmLxPTE9T5KUvB7AF2jWVL9sRxI-WefYoJYh_xBKtYPyFaWxwm5Iz-57C1CU3czjYiS_GrMDSVrycKu2vdklXsFAvFalSRTNpRpHByGQI",
+          "width": 1999
+        }
+      },
+      {
+        "a11y_description": "\"Elevated button with purple text 'Elevated button' over a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/4459946b3b54a543d76a783070965c0b72d4e8c2df587a38ccc219199849bc733984e7ab452b9ace4684c66be9047ef0bf319e267bb2e80c317ac3426da90339",
+          "height": 60,
+          "url": "https://lh3.googleusercontent.com/H7oaTZt2S2zmEFmTwMubM52ZMj3N4MPLm_r34F7Fdq_bWSKpnse9nQefkp61v5sRySaSpMN8yki0wmRpAO3RdgjBI6TNdwKIRdsZB6L9X3vGw1688aM",
+          "width": 188
+        }
+      },
+      {
+        "a11y_description": "\"Elevated button with purple text 'Elevated button', grey border and '+' icon\nover a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/288975705c5b7d44b29f05788d463a79c2ed7e0f7d4bfbfebbc7ef2468c6301020781cec5ac570594386194e2b19150ff28df04b34f9f683823f810a20af814c",
+          "height": 60,
+          "url": "https://lh3.googleusercontent.com/lh3kW1Ay2LAW0qM_CSNx64pYRZP2OOn_x91tpwbYlEnThbnmvDNMtitSaw5WOv4l9O4PwfXvr0jJz24JNCx-PGpwAl__gdDAPjWkt6vhJdaqVDo0YDw",
+          "width": 224
+        }
+      },
+      {
+        "a11y_description": "Elevated button anatomy diagram",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/0d23d8764292a15b4407a71e0c5dbd6d2bb4f5bc4a4bca799aa60ea2cfd6caca113b853ae70ab1a5bed63e0f3d09dcb40173d7e0a3f17e722903497a886adf49",
+          "height": 600,
+          "url": "https://lh3.googleusercontent.com/FlzQUU9xGaxo56oGY4FrshgyOIImnUEw28wur7SN0sGM4Nm9zEqvQ8LuAMErFY8gay1VErx7PSPK0-5oxRr50ywR55yTVfHA4ckdCwJIfnjFfiIZBA",
+          "width": 1352
+        }
+      },
+      {
+        "a11y_description": "\"Filled button with white text 'Filled button' and purple container over a\nwhite background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/ac7ef5e75c3c9ffbb3baf0985940f80f704c29430bf225fd8470be5181529bff7e94a0822d8a738a0f43e3aa67be8a5028c600c7b2f5d33ac149ef5cb1185b8d",
+          "height": 59,
+          "url": "https://lh3.googleusercontent.com/o_BNKmXzoMcPKx1RnDi3nMMwC9LMjTQ4PJvePpfQAwBV-EJPWNGx9lM7baxq60IKbB0S6hGE-PD349sXjSUMWOLF3MAa8GzDWDAaW1NxeaEtIiaoPA",
+          "width": 159
+        }
+      },
+      {
+        "a11y_description": "\"Filled button with white text 'Filled button', purple container and '+' icon\nover a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/19ee206eafe3bd54218f368fa54dc41615bbfd8260edeff96097d9e6e7a2704b69ab64db5fa952e52f6a93f318e9542d45df1dd2749c067ee0d0429dd70c28f8",
+          "height": 59,
+          "url": "https://lh3.googleusercontent.com/_zOC_dwWGr89vl2eoBVKud_mqktaOXVzgba8ABHCO8R1644gpb4rUWbl8x0OeIh85uuSd59T28i325B2ypsjBGMT1lpQ7O_C7i-xo5UBKVzqTtv0qQ",
+          "width": 195
+        }
+      },
+      {
+        "a11y_description": "Filled button anatomy diagram",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/3c1f8fd364b9e27968c7f2be36617a14ff0eac44bdc6d32f8869c66738c6ac9c95943eb3269ed9122d48fbcda03a30451a8da97f71232c2a72d246eb2bd64b0a",
+          "height": 600,
+          "url": "https://lh3.googleusercontent.com/IE0vF7A9FygsXOJ_OxL_tpep4HCVUVqejM5kG7gZ-uY8kXzVjdx7t6ItUxWL5WUslfga3AqP3umju-fEV4C7tojdoJG5nLv-jxPdDiwaD65SFqo1ZNs",
+          "width": 1352
+        }
+      },
+      {
+        "a11y_description": "\"Filled tonal button with white text 'Filled tonal button' and purple\ncontainer over a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/1c4d49b0c3ca0097df823c9be5be8c209fc525ca2b59bcd466258cf4b550e12e6aa0078433d582b5a8be1d90a858237d60c5c4bffbe7c3fb18da64e383e53b5f",
+          "height": 63,
+          "url": "https://lh3.googleusercontent.com/C1ydZpdaugRS-Pczk2eAW7J7S8A2KsezODtZERkTAYFs14u65TP3VnMLTeNmmwWweVOx2lgkEcj30rJMMEm-smDAwsMIRfxB3OmH4hPVAhITMzaaAA",
+          "width": 268
+        }
+      },
+      {
+        "a11y_description": "\"Filled tonal button with white text 'Filled tonal button', purple container\nand '+' icon over a white\nbackground.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/9e813902180f7f601e570f17cdf74cab3fc3a190df65bc4928b78f4e0fc18a5a4727fbffd7ae67c5bf035da630d17e78a7b151c2d0ce82c3fd60302e81716241",
+          "height": 62,
+          "url": "https://lh3.googleusercontent.com/hXIt-yfkRCstWNfctt31e0TmG96L7vy4vP0jfox8LZaTgQh8lsw-oXQN_mzFgtqjnLkuboJSlBDakNpiZtABDgplGnXLev60g0Vr9tJyThn08wn0CQE",
+          "width": 303
+        }
+      },
+      {
+        "a11y_description": "Filled tonal button anatomy diagram",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/c64ada0e7995e8c4b1e34acd76bcbf4ad3387ef8ff2d74f9fe052a228a2774a5dbc610c1c30aa5a4a8a57e85d3f31fb9613a74908ecb89cd1dafa7d38d5f37c5",
+          "height": 600,
+          "url": "https://lh3.googleusercontent.com/jodhH-wqNUxywZAW4kU2o5NVbhsrk8zIffVxNuSKnrXhNtDAB-_-iCTW_4K5Zg6fzFkrLTmd8qheDDb97GzRdo0DVgHwxYdf-l9t530W369WGW-mRA",
+          "width": 1352
+        }
+      },
+      {
+        "a11y_description": "\"Outlined button with purple text 'Outlined button' and grey border over a\nwhite background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/1c6dc125d1e94a1418a92b5aebcf1d02d3985b2d3ae9342708fc9a3fd3071939a39515aca499936ddb8987c3ddb36e457142a06a8cd1de6b4fa3853f7c3c9c9d",
+          "height": 58,
+          "url": "https://lh3.googleusercontent.com/sQpPh-OJ2uzKOXa-SAfc-qpyYW_z2Kuw1GTkHoIwoBvRNx6pcvbEcktxeDR_cH2D6Rwihwn-f5-fWSQZuOfausnAJ1SP92cTtCc_UUV_Aw1uax-BXJ4",
+          "width": 184
+        }
+      },
+      {
+        "a11y_description": "\"Outlined button with purple text 'Outlined button', grey border and '+' icon\nover a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/4e094bba187fb6a18b677ca8bd9f15ae03ec3c41bc83f3eb5bf13a215c8d2225b477a2f36d149c8497afda741f9997907066376a32c6e3992bf0cb9cee7d3fc1",
+          "height": 58,
+          "url": "https://lh3.googleusercontent.com/qE50i_lVKlzIyeZszNVb13u13Q5mgphlXE2skC16drYt9ilyuNclxyQCq9aPhZ4Jdg4cOZ7eBKvxi_kPtM187NvUmn8HoQR-seM53tNUnZt9Jk5OhN8",
+          "width": 215
+        }
+      },
+      {
+        "a11y_description": "Outlined button anatomy diagram",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/c8e8c892983d4ba68e0d73368af72087297e9dd45d4405e75efad1c4e1e8ebed807ad275294003b776181edd3e9948f1f18c6909058c47b35317e0d3cde5df35",
+          "height": 600,
+          "url": "https://lh3.googleusercontent.com/3S4p_JkNWsKpsAiFVO7zv0floSlx7sSN2MVAc7UEq3wkCIPHEOfhQbWeFSSkN6HrbvfFeq-i9AoIkCViVqTXgYd4mtOXKg5c6lf8GRLLfoNAkqfXL1Q",
+          "width": 1352
+        }
+      },
+      {
+        "a11y_description": "\"Text button with purple text 'Text button' over a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/651d92e55bc65a52228409030673df744f43e40ca83ea4080fe785086271a59f3fd77b006e12a8ccad62a6f2239251324295334546cf4d3a926d77957f6ab274",
+          "height": 40,
+          "url": "https://lh3.googleusercontent.com/TDoktJs5y3bnfdUV3VP4Wo_-wnzeCdMQepABXvQduUFNabU-Hk_xcyQyZAacbspxgoEuBJjaAGe5WAtKGWa9ndPZ2yIq1t-IBNujCSQclgofEpvQPJMP",
+          "width": 133
+        }
+      },
+      {
+        "a11y_description": "\"Text button with purple text 'Text button' and '+' icon over a white\nbackground.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/4e8b919647d046926cd81bca162f67e78de9b8bde93e4db935c481e60b85c64092a0cb3a6ac8415b4ba5a5717c5c242c0ce78a6233a4274cb9f08e4324eaa10e",
+          "height": 44,
+          "url": "https://lh3.googleusercontent.com/tgLfs-oRiY9SIeG_kfU26GbpC3XRjbxf3qWa8NbpyuS3Ikufsu9qs8hUaWAIgvkS2h7sQNmD6VOmfaipJbil4vBxCiJrSBamnu46FN5ZOprzOEZzVw",
+          "width": 166
+        }
+      },
+      {
+        "a11y_description": "Text button anatomy diagram",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/05565ef24863e2709d28187505728226f36862cb504cf30628dc46bc2e2093f890f692c4a84c45450acdd73fcfb6fd94d79c9989f5444ae85f7640071ce950e4",
+          "height": 600,
+          "url": "https://lh3.googleusercontent.com/7sy5b2VfHr6DBubJrEfDdusRrqKL7po59nMicxZgcpx4H69DVjNkDHFfRPHd9rFvPAbSXrD27Jk0CCgd8gyW57t_qoxjnI9uf1zpTAoKr4FWTM14vi0k",
+          "width": 1352
+        }
+      },
+      {
+        "a11y_description": "\"Toggle button example for Android with text labels - 'Button 1', 'Button 2'\nand 'Button 3' - and grey/purple borders over a white\nbackground.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/398a0fd8438fc30f1fef87e8b7509219b17504e54cd42cbad7ab323c56eb4c57c72aef3d783ae91c4c3efe8b97cbac2fcfeb329a33215c16010fdc57944040c1",
+          "height": 58,
+          "url": "https://lh3.googleusercontent.com/3ksKDptOU6Wu2_0019gq2XTQcopo_bT63nZaTnkzPi6fNsQ10wiTseanFe5UHajil76aRNhLrxjWu_iGKIRI2nrW52u6-W01HwmdwN1VjoIW1f0SfoI",
+          "width": 362
+        }
+      },
+      {
+        "a11y_description": "\"Toggle buttons with icons - heart, add and search - and grey/purple borders\nover a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/97bffe03ac6acc3306ba8bdda5fcaefb44b95b34017333e5a1a9e90b59c64ceb8a9534bd7c832df21962c3a31a0164635b6f04dfcd03833d1903e26aaedcd7c8",
+          "height": 58,
+          "url": "https://lh3.googleusercontent.com/6kzzY4x-i7sKjSFrUpEOSQtcdOJ8VZDcwGQF7mGfRCptaEAqTAQuB9QE3jEsC-R7n5OjUoACNLCneZNm4MaRI2jrCjybJfCE3jZjMaaSlSpJhlRYhg",
+          "width": 207
+        }
+      },
+      {
+        "a11y_description": "Toggle button anatomy",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/4f357fc79c876a87825790fb869f879e328725e82daa90f1ac2d7ffc59dece31bdcdad418cc070df9ee77b76257a6187548aa489dfbd20f8839a7368def1fa97",
+          "height": 500,
+          "url": "https://lh3.googleusercontent.com/xkCBR-vbveSBlcUsVqDmMRbH4c2rnHHcSk_z8NjvTJFTQC9XkRzShbe07yZhMeBex4jmVTCnDtdxGX1a3quFWH3uXtjOwbzhnkvSwGSoxpUmerAj",
+          "width": 1520
+        }
+      },
+      {
+        "a11y_description": "Toggle icon example showing 4 images, heart icon in the upper-right corner of\neach image",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/a81ce4fdae12c7b33db381e6c4e943d81e929cc6f29f1cf1a8bac4d67e0441aafd759d840acc66dae7453d794684b22121bd2283760cfd29a2c37e0a24608b03",
+          "height": 376,
+          "url": "https://lh3.googleusercontent.com/p0nYra-uTlBQ2bIHT68QpM0nuExxi6WTxdYAIyom-z4KnVqhLT2RKSu3QD10xuNGGkRCDtKoAJBTQme7ujIKli9-L7iQNzRzHFnytIQcEAu5OllI54VK",
+          "width": 339
+        }
+      },
+      {
+        "a11y_description": "\"Standard icon button example for Android over a white background.\"",
+        "bordered": false,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/f64bd883c05c09dba5d748c3454b30007184309f7dcce59347977127711672f54c249ddf70f652ad5bda529c9f9b693516fb4cf4a1f74d714b86ad01dd533d4b",
+          "height": 96,
+          "url": "https://lh3.googleusercontent.com/9WIq49KGy9_oncuGFfLV6JjegT_E-E0RrC-B6yc_Sq_BnARn-Piks4nNGrGvJzpklzPqnun894lzoapEhfLcPhWIjpW0WJSWRd40JEzyE8M9QtLIEB0",
+          "width": 96
+        }
+      },
+      {
+        "a11y_description": "\"Filled icon button example for Android over a white background.\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/554d66040b444e5785f70ec3e33fe3fcdaddfae0d0aab61feea171c32cab85a2d62713384b46c627a65210809758f6ca37fbf1ff0febd7f27eab0ebe271f49e4",
+          "height": 150,
+          "url": "https://lh3.googleusercontent.com/ba5E63oJ7hY6Z5IUSc3FYkZV8HRJuj7ajR-yioxXOK1atAvdigFlqltgYJHksWH8E8y4yP8QRUC7Bw2aGgnPUD34I76wCsIRdu8sQe3q2QAx3ZSGAA",
+          "width": 150
+        }
+      },
+      {
+        "a11y_description": "\"Filled tonal icon button example for Android over a white background.\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/db73368845df5336dcf223a40198158c5b6079f2b75d53eb416166e5e115c8bd7bfd890b85bd793c917c6ba34d4656f0de0ee355f51dfe5911961c4140bf1afe",
+          "height": 132,
+          "url": "https://lh3.googleusercontent.com/dJo_NKeDcBuOK6nwNZeElwcDPgOYx6-JDfYRUQK5eW1GR6Y-5JbOFjKRyCKii9vE4Wcfq8a5apn-6au_c3XGwrbpQkAu7UBsgJ-79KOPtlpuZBWUtg",
+          "width": 132
+        }
+      },
+      {
+        "a11y_description": "\"Outlined icon button example for Android over a white background.\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/8791e25bdb89f3d7d76f6afb48c550d4e469de00332b971e7e06c16d0b0ab9a37399a10c544abb0f4bc6dbdceb288d84b1042658dbcbb984cc1bad14db4e4c77",
+          "height": 128,
+          "url": "https://lh3.googleusercontent.com/BJtoLCtirObSrYo_ttLiBc_E-DD3rkgANo47M-0HsUm4GzfVqe8J4dnHv4suPASJVgF0iWLGjSoNkJq5d_AfIQBp7SesQ9Bg0zXAfYCaz6yZUgAj2Ck",
+          "width": 128
+        }
+      },
+      {
+        "a11y_description": "\"Button theming with three buttons - text, outlined and filled - with pink\ncolor theming and cut corners.\"",
+        "bordered": true,
+        "caption": null,
+        "case": null,
+        "file": {
+          "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_293ae6e29e4b420a9648cf846508437a_/849d1a531ddbb874065c872c0c32b5d66fb8a3537de5ed3b4467ddb9fccd5accb07136ca5d415485bfd29e65345aba5335fc0c0ca86a9406f6b120b9b697de40",
+          "height": 50,
+          "url": "https://lh3.googleusercontent.com/pa1fpLVM1dL8MqSYBmJO_pwSErJNtEfTKzPQpqq4kb1z212ictIeBs9ykoqxlVa3jkN4sE5cL9hhzGqGmdk_b52mpWBs6EplqklPn4ztWlt4b3KJ5Q",
+          "width": 500
+        }
+      }
+    ],
+    "is_beta": false,
+    "markdown_content": "<!--docs:\ntitle: \"Buttons\"\nlayout: detail\nsection: components\nexcerpt: \"A customizable button component with updated visual styles.\"\niconId: materialbutton\npath: /catalog/buttons/\n-->\n\n# Buttons\n\n[Buttons](https://material.io/components/buttons/) allow users to take actions,\nand make choices, with a single tap.\n\n<mio-image index=0></mio-image>\n\n**Contents**\n\n*   [Using buttons](#using-buttons)\n*   [Elevated button](#elevated-button)\n*   [Filled button](#filled-button)\n*   [Filled tonal button](#filled-tonal-button)\n*   [Outlined button](#outlined-button)\n*   [Text button](#text-button)\n*   [Toggle button](#toggle-button)\n*   [Icon button](#icon-button)\n*   [Theming](#theming-buttons)\n\n## Using buttons\n\nBefore you can use Material buttons, you need to add a dependency to the\nMaterial Components for Android library. For more information, go to the\n[Getting started](/libraries/mdc-android/getting-started)\npage.\n\n**Note:** `<Button>` is auto-inflated as\n`<com.google.android.material.button.MaterialButton>` via\n`MaterialComponentsViewInflater` when using a `Theme.Material3.*` theme.\n\n### Making buttons accessible\n\nButtons support content labeling for accessibility and are readable by most\nscreen readers, such as TalkBack. Text rendered in buttons is automatically\nprovided to accessibility services. Additional content labels are usually\nunnecessary.\n\nFor more information on content labels, go to the\n[Android accessibility help guide](https://support.google.com/accessibility/android/answer/7158690).\n\n### Types\n\nThere are five types of common buttons: 1\\. [Elevated button](#elevated-button),\n2\\. [Filled button](#filled-button), 3\\.\n[Filled tonal button](#filled-tonal-button), 4\\.\n[Outlined button](#outlined-button), 5\\. [Text button](#text-button).\n\n[Toggle button](#toggle-button) is an additional pattern using a segmented\ncontainer or icon.\n\n<mio-image index=1></mio-image>\n\n## Elevated button\n\n[Elevated buttons](https://material.io/components/buttons/#elevated-button) are\nessentially outlined buttons with a shadow. To prevent shadow creep, only use\nthem when absolutely necessary, such as when the button requires visual\nseparation from a patterned background.\n\n### Elevated button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows an elevated button with a text label.\n\n<mio-image index=2></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.ElevatedButton\"\n    android:id=\"@+id/elevatedButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:text=\"Elevated button\"\n/>\n```\n\nIn code:\n\n```kt\nelevatedButton.setOnClickListener {\n    // Respond to button press\n}\n```\n\n#### Adding an icon to an elevated button\n\nThe following example shows an elevated button with an icon.\n\n<mio-image index=3></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.ElevatedButton.Icon\"\n    ...\n    app:icon=\"@drawable/ic_add_24dp\"\n/>\n```\n\n### Anatomy and key properties\n\nAn elevated button has a text label, a stroked container and an optional icon.\n\n<mio-image index=4></mio-image>\n\n1.  Container\n2.  Label text\n3.  Icon\n\n#### Text label attributes\n\nElement        | Attribute                | Related method(s)                 | Default value\n-------------- | ------------------------ | --------------------------------- | -------------\n**Text label** | `android:text`           | `setText`<br/>`getText`           | `null`\n**Color**      | `android:textColor`      | `setTextColor`<br/>`getTextColor` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Typography** | `android:textAppearance` | `setTextAppearance`               | `?attr/textAppearanceLabelLarge`\n\n#### Container attributes\n\nElement          | Attribute             | Related method(s)                                                            | Default value\n---------------- | --------------------- | ---------------------------------------------------------------------------- | -------------\n**Color**        | `app:backgroundTint`  | `setBackgroundColor`<br/>`setBackgroundTintList`<br/>`getBackgroundTintList` | `?attr/colorSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_background_color_selector.xml))\n**Stroke color** | `app:strokeColor`     | `setStrokeColor`<br/>`setStrokeColorResource`<br/>`getStrokeColor`           | `null`\n**Stroke width** | `app:strokeWidth`     | `setStrokeWidth`<br/>`setStrokeWidthResource`<br/>`getStrokeWidth`           | `0dp`\n**Shape**        | `app:shapeAppearance` | `setShapeAppearanceModel`<br/>`getShapeAppearanceModel`                      | `?attr/shapeAppearanceSmallComponent`\n**Elevation**    | `app:elevation`       | `setElevation`<br/>`getElevation`                                            | `1dp`\n**Ripple color** | `app:rippleColor`     | `setRippleColor`<br/>`setRippleColorResource`<br/>`getRippleColor`           | `?attr/colorOnSurface` at 16% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_ripple_color_selector.xml))\n\n#### Icon attributes\n\nElement                                         | Attribute         | Related method(s)                                         | Default value\n----------------------------------------------- | ----------------- | --------------------------------------------------------- | -------------\n**Icon**                                        | `app:icon`        | `setIcon`<br/>`setIconResource`<br/>`getIcon`             | `null`\n**Color**                                       | `app:iconTint`    | `setIconTint`<br/>`setIconTintResource`<br/>`getIconTint` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Size**                                        | `app:iconSize`    | `setIconSize`<br/>`getIconSize`                           | `wrap_content`\n**Gravity** (position relative to text label)   | `app:iconGravity` | `setIconGravity`<br/>`getIconGravity`                     | `start`\n**Padding** (space between icon and text label) | `app:iconPadding` | `setIconPadding`<br/>`getIconPadding`                     | `8dp`\n\n#### Styles\n\nElement           | Style\n----------------- | ---------------------------------------------\n**Default style** | `Widget.Material3.Button.ElevatedButton`\n**Icon style**    | `Widget.Material3.Button.ElevatedButton.Icon`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Filled button\n\n[Filled button's](https://material.io/components/buttons/#filled-button)\ncontrasting surface color makes it the most prominent button after the FAB. It’s\nused for final or unblocking actions in a flow.\n\n**Note** The filled button is the default style if the style is not set.\n\n### Filled button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows a filled button with a text label and a filled\ncontainer.\n\n<mio-image index=5></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    android:id=\"@+id/filledButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:text=\"Filled button\"\n/>\n```\n\n**Note:** Since this is the default type, you don't need to specify a style tag\nas long as you are using a Material Components Theme. If not, set the style to\n`@style/Widget.Material3.Button`.\n\nIn code:\n\n```kt\nfilledButton.setOnClickListener {\n    // Respond to button press\n}\n```\n\n#### Adding an icon to a filled button\n\nThe following example shows a filled button with an icon.\n\n<mio-image index=6></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.Icon\"\n    ...\n    app:icon=\"@drawable/ic_add_24dp\"\n/>\n```\n\n### Anatomy and key properties\n\nA filled button has a text label, a filled container and an optional icon.\n\n<mio-image index=7></mio-image>\n\n1.  Container\n2.  Label text\n3.  Icon\n\n#### Text label attributes\n\nElement        | Attribute                | Related method(s)                 | Default value\n-------------- | ------------------------ | --------------------------------- | -------------\n**Text label** | `android:text`           | `setText`<br/>`getText`           | `null`\n**Color**      | `android:textColor`      | `setTextColor`<br/>`getTextColor` | `?attr/colorOnPrimary` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_foreground_color_selector.xml))\n**Typography** | `android:textAppearance` | `setTextAppearance`               | `?attr/textAppearanceLabelLarge`\n\n#### Container attributes\n\nElement          | Attribute             | Related method(s)                                                            | Default value\n---------------- | --------------------- | ---------------------------------------------------------------------------- | -------------\n**Color**        | `app:backgroundTint`  | `setBackgroundColor`<br/>`setBackgroundTintList`<br/>`getBackgroundTintList` | `?attr/colorPrimary` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_background_color_selector.xml))\n**Stroke color** | `app:strokeColor`     | `setStrokeColor`<br/>`setStrokeColorResource`<br/>`getStrokeColor`           | `null`\n**Stroke width** | `app:strokeWidth`     | `setStrokeWidth`<br/>`setStrokeWidthResource`<br/>`getStrokeWidth`           | `0dp`\n**Shape**        | `app:shapeAppearance` | `setShapeAppearanceModel`<br/>`getShapeAppearanceModel`                      | `?attr/shapeAppearanceSmallComponent`\n**Elevation**    | `app:elevation`       | `setElevation`<br/>`getElevation`                                            | `2dp`\n**Ripple color** | `app:rippleColor`     | `setRippleColor`<br/>`setRippleColorResource`<br/>`getRippleColor`           | `?attr/colorOnPrimary` at 16% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_ripple_color_selector.xml))\n\n#### Icon attributes\n\nElement                                         | Attribute         | Related method(s)                                         | Default value\n----------------------------------------------- | ----------------- | --------------------------------------------------------- | -------------\n**Icon**                                        | `app:icon`        | `setIcon`<br/>`setIconResource`<br/>`getIcon`             | `null`\n**Color**                                       | `app:iconTint`    | `setIconTint`<br/>`setIconTintResource`<br/>`getIconTint` | `?attr/colorOnPrimary` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_foreground_color_selector.xml))\n**Size**                                        | `app:iconSize`    | `setIconSize`<br/>`getIconSize`                           | `wrap_content`\n**Gravity** (position relative to text label)   | `app:iconGravity` | `setIconGravity`<br/>`getIconGravity`                     | `start`\n**Padding** (space between icon and text label) | `app:iconPadding` | `setIconPadding`<br/>`getIconPadding`                     | `8dp`\n\n#### Styles\n\nElement                   | Style\n------------------------- | -----------------------------------------------\n**Default style**         | `Widget.Material3.Button`\n**Icon style**            | `Widget.Material3.Button.Icon`\n**Unelevated style**      | `Widget.Material3.Button.UnelevatedButton`\n**Unelevated icon style** | `Widget.Material3.Button.UnelevatedButton.Icon`\n\nDefault style theme attribute: `?attr/materialButtonStyle`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Filled tonal button\n\n[Filled tonal buttons](https://material.io/components/buttons/#filled-tonal-button)\nhave a lighter background color and darker label color, making them less\nvisually prominent than a regular filled button. They’re still used for final or\nunblocking actions in a flow, but may be better when these actions don’t require\nquite so much emphasis.\n\n### Filled tonal button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows a filled tonal button with a text label and a filled\ncontainer.\n\n<mio-image index=8></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.TonalButton\"\n    android:id=\"@+id/filledTonalButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:text=\"Filled tonal button\"\n/>\n```\n\nIn code:\n\n```kt\nfilledTonalButton.setOnClickListener {\n    // Respond to button press\n}\n```\n\n#### Adding an icon to a filled tonal button\n\nThe following example shows a filled tonal button with an icon.\n\n<mio-image index=9></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.TonalButton.Icon\"\n    ...\n    app:icon=\"@drawable/ic_add_24dp\"\n/>\n```\n\n### Anatomy and key properties\n\nA filled tonal button has a text label, a filled container and an optional icon.\n\n<mio-image index=10></mio-image>\n\n1.  Container\n2.  Label text\n3.  Icon\n\n#### Text label attributes\n\nElement        | Attribute                | Related method(s)                 | Default value\n-------------- | ------------------------ | --------------------------------- | -------------\n**Text label** | `android:text`           | `setText`<br/>`getText`           | `null`\n**Color**      | `android:textColor`      | `setTextColor`<br/>`getTextColor` | `?attr/colorOnSecondaryContainer` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_foreground_color_selector.xml))\n**Typography** | `android:textAppearance` | `setTextAppearance`               | `?attr/textAppearanceLabelLarge`\n\n#### Container attributes\n\nElement          | Attribute             | Related method(s)                                                            | Default value\n---------------- | --------------------- | ---------------------------------------------------------------------------- | -------------\n**Color**        | `app:backgroundTint`  | `setBackgroundColor`<br/>`setBackgroundTintList`<br/>`getBackgroundTintList` | `?attr/colorSecondaryContainer` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_background_color_selector.xml))\n**Stroke color** | `app:strokeColor`     | `setStrokeColor`<br/>`setStrokeColorResource`<br/>`getStrokeColor`           | `null`\n**Stroke width** | `app:strokeWidth`     | `setStrokeWidth`<br/>`setStrokeWidthResource`<br/>`getStrokeWidth`           | `0dp`\n**Shape**        | `app:shapeAppearance` | `setShapeAppearanceModel`<br/>`getShapeAppearanceModel`                      | `?attr/shapeAppearanceSmallComponent`\n**Elevation**    | `app:elevation`       | `setElevation`<br/>`getElevation`                                            | `2dp`\n**Ripple color** | `app:rippleColor`     | `setRippleColor`<br/>`setRippleColorResource`<br/>`getRippleColor`           | `?attr/colorOnSecondaryContainer` at 16% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_tonal_button_ripple_color_selector.xml))\n\n#### Icon attributes\n\nElement                                         | Attribute         | Related method(s)                                         | Default value\n----------------------------------------------- | ----------------- | --------------------------------------------------------- | -------------\n**Icon**                                        | `app:icon`        | `setIcon`<br/>`setIconResource`<br/>`getIcon`             | `null`\n**Color**                                       | `app:iconTint`    | `setIconTint`<br/>`setIconTintResource`<br/>`getIconTint` | `?attr/colorOnSecondaryContainer` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/color/res/color/m3_button_foreground_color_selector.xml))\n**Size**                                        | `app:iconSize`    | `setIconSize`<br/>`getIconSize`                           | `wrap_content`\n**Gravity** (position relative to text label)   | `app:iconGravity` | `setIconGravity`<br/>`getIconGravity`                     | `start`\n**Padding** (space between icon and text label) | `app:iconPadding` | `setIconPadding`<br/>`getIconPadding`                     | `8dp`\n\n#### Styles\n\nElement           | Style\n----------------- | ------------------------------------------\n**Default style** | `Widget.Material3.Button.TonalButton`\n**Icon style**    | `Widget.Material3.Button.TonalButton.Icon`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Outlined button\n\n[Outlined buttons](https://material.io/components/buttons/#outlined-button) are\nfor actions that need attention but aren’t the primary action, such as “See all”\nor “Add to cart.” This is also the button used to give someone the opportunity\nto change their mind or escape a flow.\n\n### Outlined button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows an outlined button with a text label and stroked\ncontainer.\n\n<mio-image index=11></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"?attr/materialButtonOutlinedStyle\"\n    android:id=\"@+id/outlinedButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:text=\"Outlined button\"\n/>\n```\n\nIn code:\n\n```kt\noutlinedButton.setOnClickListener {\n    // Respond to button press\n}\n```\n\n#### Adding an icon to an outlined button\n\nThe following example shows an outlined button with an icon.\n\n<mio-image index=12></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.OutlinedButton.Icon\"\n    ...\n    app:icon=\"@drawable/ic_add_24dp\"\n/>\n```\n\n### Anatomy and key properties\n\nAn outlined button has a text label, a stroked container and an optional icon.\n\n<mio-image index=13></mio-image>\n\n1.  Container\n2.  Label text\n3.  Icon\n\n#### Text label attributes\n\nElement        | Attribute                | Related method(s)                 | Default value\n-------------- | ------------------------ | --------------------------------- | -------------\n**Text label** | `android:text`           | `setText`<br/>`getText`           | `null`\n**Color**      | `android:textColor`      | `setTextColor`<br/>`getTextColor` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Typography** | `android:textAppearance` | `setTextAppearance`               | `?attr/textAppearanceLabelLarge`\n\n#### Container attributes\n\nElement          | Attribute             | Related method(s)                                                            | Default value\n---------------- | --------------------- | ---------------------------------------------------------------------------- | -------------\n**Color**        | `app:backgroundTint`  | `setBackgroundColor`<br/>`setBackgroundTintList`<br/>`getBackgroundTintList` | `@android:color/transparent` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_background_color_selector.xml))\n**Stroke color** | `app:strokeColor`     | `setStrokeColor`<br/>`setStrokeColorResource`<br/>`getStrokeColor`           | `?attr/colorOnSurface` at 12% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_button_outline_color_selector.xml))\n**Stroke width** | `app:strokeWidth`     | `setStrokeWidth`<br/>`setStrokeWidthResource`<br/>`getStrokeWidth`           | `1dp`\n**Shape**        | `app:shapeAppearance` | `setShapeAppearanceModel`<br/>`getShapeAppearanceModel`                      | `?attr/shapeAppearanceSmallComponent`\n**Elevation**    | `app:elevation`       | `setElevation`<br/>`getElevation`                                            | `0dp`\n**Ripple color** | `app:rippleColor`     | `setRippleColor`<br/>`setRippleColorResource`<br/>`getRippleColor`           | `?attr/colorOnSurface` at 16% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_ripple_color_selector.xml))\n\n#### Icon attributes\n\nElement                                         | Attribute         | Related method(s)                                         | Default value\n----------------------------------------------- | ----------------- | --------------------------------------------------------- | -------------\n**Icon**                                        | `app:icon`        | `setIcon`<br/>`setIconResource`<br/>`getIcon`             | `null`\n**Color**                                       | `app:iconTint`    | `setIconTint`<br/>`setIconTintResource`<br/>`getIconTint` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Size**                                        | `app:iconSize`    | `setIconSize`<br/>`getIconSize`                           | `wrap_content`\n**Gravity** (position relative to text label)   | `app:iconGravity` | `setIconGravity`<br/>`getIconGravity`                     | `start`\n**Padding** (space between icon and text label) | `app:iconPadding` | `setIconPadding`<br/>`getIconPadding`                     | `8dp`\n\n#### Styles\n\nElement           | Style\n----------------- | ---------------------------------------------\n**Default style** | `Widget.Material3.Button.OutlinedButton`\n**Icon style**    | `Widget.Material3.Button.OutlinedButton.Icon`\n\nDefault style theme attribute: `?attr/materialButtonOutlinedStyle`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Text button\n\n[Text buttons](https://material.io/components/buttons/#text-button) have less\nvisual prominence, so should be used for low emphasis actions, such as when\npresenting multiple options.\n\n### Text button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows a text button with a text label.\n\n<mio-image index=14></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.TextButton\"\n    android:id=\"@+id/textButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:text=\"Text button\"\n/>\n```\n\nIn code:\n\n```kt\ntextButton.setOnClickListener {\n    // Respond to button press\n}\n```\n\n#### Adding an icon to a text button\n\nThe following example shows a text button with an icon.\n\n<mio-image index=15></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"@style/Widget.Material3.Button.TextButton.Icon\"\n    ...\n    app:icon=\"@drawable/ic_add_24dp\"\n/>\n```\n\n### Anatomy and key properties\n\nA text button has a text label, a transparent container and an optional icon.\n\n<mio-image index=16></mio-image>\n\n1.  Label text\n2.  Icon\n\n#### Text label attributes\n\nElement        | Attribute                | Related method(s)                 | Default value\n-------------- | ------------------------ | --------------------------------- | -------------\n**Text label** | `android:text`           | `setText`<br/>`getText`           | `null`\n**Color**      | `android:textColor`      | `setTextColor`<br/>`getTextColor` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Typography** | `android:textAppearance` | `setTextAppearance`               | `?attr/textAppearanceLabelLarge`\n\n#### Container attributes\n\nElement          | Attribute             | Related method(s)                                                            | Default value\n---------------- | --------------------- | ---------------------------------------------------------------------------- | -------------\n**Color**        | `app:backgroundTint`  | `setBackgroundColor`<br/>`setBackgroundTintList`<br/>`getBackgroundTintList` | `@android:color/transparent` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_background_color_selector.xml))\n**Stroke color** | `app:strokeColor`     | `setStrokeColor`<br/>`setStrokeColorResource`<br/>`getStrokeColor`           | `null`\n**Stroke width** | `app:strokeWidth`     | `setStrokeWidth`<br/>`setStrokeWidthResource`<br/>`getStrokeWidth`           | `0dp`\n**Shape**        | `app:shapeAppearance` | `setShapeAppearanceModel`<br/>`getShapeAppearanceModel`                      | `?attr/shapeAppearanceSmallComponent`\n**Elevation**    | `app:elevation`       | `setElevation`<br/>`getElevation`                                            | `0dp`\n**Ripple color** | `app:rippleColor`     | `setRippleColor`<br/>`setRippleColorResource`<br/>`getRippleColor`           | `?attr/colorOnSurface` at 16% opacity (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_ripple_color_selector.xml))\n\n#### Icon attributes\n\nElement                                         | Attribute         | Related method(s)                                         | Default value\n----------------------------------------------- | ----------------- | --------------------------------------------------------- | -------------\n**Icon**                                        | `app:icon`        | `setIcon`<br/>`setIconResource`<br/>`getIcon`             | `null`\n**Color**                                       | `app:iconTint`    | `setIconTint`<br/>`setIconTintResource`<br/>`getIconTint` | `?attr/colorOnSurface` (see all [states](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/color/m3_text_button_foreground_color_selector.xml))\n**Size**                                        | `app:iconSize`    | `setIconSize`<br/>`getIconSize`                           | `wrap_content`\n**Gravity** (position relative to text label)   | `app:iconGravity` | `setIconGravity`<br/>`getIconGravity`                     | `start`\n**Padding** (space between icon and text label) | `app:iconPadding` | `setIconPadding`<br/>`getIconPadding`                     | `8dp`\n\n#### Styles\n\nElement                | Style\n---------------------- | -----------------------------------------------------\n**Default style**      | `Widget.Material3.Button.TextButton`\n**Icon style**         | `Widget.Material3.Button.TextButton.Icon`\n**Full Width Buttons** | `Widget.Material3.Button.TextButton.Dialog.FullWidth`\n\nDefault style theme attribute: `?attr/borderlessButtonStyle`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Toggle button\n\n[Toggle buttons](https://material.io/components/buttons/#toggle-button) can be\nused to select from a group of choices.\n\nThere are two types of toggle buttons:\n\n*   [Toggle button](#toggle-button)\n*   [Icon](#icon)\n\n### Toggle button\n\nTo emphasize groups of related toggle buttons, a group should share a common\ncontainer.\n\n#### Toggle button examples\n\nAPI and source code:\n\n*   `MaterialButtonToggleGroup`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButtonToggleGroup)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButtonToggleGroup.java)\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows a toggle button with three buttons that have text\nlabels.\n\n<mio-image index=17></mio-image>\n\nIn the layout:\n\n```xml\n<com.google.android.material.button.MaterialButtonToggleGroup\n    android:id=\"@+id/toggleButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\">\n    <Button\n        style=\"?attr/materialButtonOutlinedStyle\"\n        android:id=\"@+id/button1\"\n        android:layout_width=\"wrap_content\"\n        android:layout_height=\"wrap_content\"\n        android:text=\"Button 1\"\n    />\n    <Button\n        style=\"?attr/materialButtonOutlinedStyle\"\n        android:id=\"@+id/button2\"\n        android:layout_width=\"wrap_content\"\n        android:layout_height=\"wrap_content\"\n        android:text=\"Button 2\"\n    />\n    <Button\n        style=\"?attr/materialButtonOutlinedStyle\"\n        android:id=\"@+id/button3\"\n        android:layout_width=\"wrap_content\"\n        android:layout_height=\"wrap_content\"\n        android:text=\"Button 3\"\n    />\n</com.google.android.material.button.MaterialButtonToggleGroup>\n```\n\nIn code:\n\n```kt\ntoggleButton.addOnButtonCheckedListener { toggleButton, checkedId, isChecked ->\n    // Respond to button selection\n}\n```\n\n#### Implementing an icon-only toggle button\n\nThe following example shows a toggle button with three buttons that have icons.\n\n<mio-image index=18></mio-image>\n\nIn `res/values/styles.xml`:\n\n```xml\n<style name=\"Widget.App.Button.OutlinedButton.IconOnly\" parent=\"Widget.Material3.Button.OutlinedButton\">\n    <item name=\"iconPadding\">0dp</item>\n    <item name=\"android:insetTop\">0dp</item>\n    <item name=\"android:insetBottom\">0dp</item>\n    <item name=\"android:paddingLeft\">12dp</item>\n    <item name=\"android:paddingRight\">12dp</item>\n    <item name=\"android:minWidth\">48dp</item>\n    <item name=\"android:minHeight\">48dp</item>\n</style>\n```\n\nIn the layout:\n\n```xml\n<com.google.android.material.button.MaterialButtonToggleGroup\n    ...>\n    <Button\n        style=\"@style/Widget.App.Button.OutlinedButton.IconOnly\"\n        ...\n        app:icon=\"@drawable/ic_favorite_24dp\"\n    />\n    <Button\n        style=\"@style/Widget.App.Button.OutlinedButton.IconOnly\"\n        ...\n        app:icon=\"@drawable/ic_add_24dp\"\n    />\n    <Button\n        style=\"@style/Widget.App.Button.OutlinedButton.IconOnly\"\n        ...\n        app:icon=\"@drawable/ic_search_24dp\"\n    />\n</com.google.android.material.button.MaterialButtonToggleGroup>\n```\n\n### Anatomy and key properties\n\nA toggle button has a shared stroked container, icons and/or text labels.\n\n<mio-image index=19></mio-image>\n\n1.  Container\n2.  Icon\n\n#### Selection attributes\n\nElement                | Attribute               | Related method(s)                                | Default value\n---------------------- | ----------------------- | ------------------------------------------------ | -------------\n**Single selection**   | `app:singleSelection`   | `setSingleSelection`<br/>`isSingleSelection`     | `false`\n**Selection required** | `app:selectionRequired` | `setSelectionRequired`<br/>`isSelectionRequired` | `false`\n\n#### Styles\n\nElement           | Style\n----------------- | -----------------------------------------------------\n**Default style** | `Widget.Material3.MaterialButtonToggleGroup`\n\nDefault style theme attribute: `?attr/materialButtonToggleGroupStyle`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n### Icon\n\nIcons can be used as toggle buttons when they allow selection, or deselection,\nof a single choice, such as marking an item as a favorite.\n\n#### Icon example\n\nAPI and source code:\n\n*   `CheckBox`\n    *   [Class description](https://developer.android.com/reference/android/widget/CheckBox)\n\n**Note** The `CheckBox` API is just one of several inputs that can implement the\nicon button. See other\n[selection controls](https://material.io/components/selection-controls/) for\nmore details.\n\nThe following example shows an icon that can be used independently or in items\nof a `RecyclerView`.\n\n<mio-image index=20></mio-image>\n\nIn the layout:\n\n```xml\n<CheckBox\n    android:id=\"@+id/icon\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n    android:button=\"@drawable/sl_favourite_24dp\"\n    app:buttonTint=\"@android:color/white\"\n/>\n```\n\nIn `res/drawable/sl_favourite_24dp.xml`:\n\n```xml\n<selector>\n    <item\n        android:drawable=\"@drawable/ic_favourite_outlined_24dp\"\n        android:state_checked=\"false\"\n    />\n    <item\n        android:drawable=\"@drawable/ic_favourite_filled_24dp\"\n        android:state_checked=\"true\"\n    />\n    <item android:drawable=\"@drawable/ic_favourite_outlined_24dp\" />\n</selector>\n```\n\nIn code:\n\n```kt\nicon.setOnCheckedChangeListener { checkBox, isChecked ->\n    // Respond to icon toggle\n}\n```\n\n## Icon button\n\n[Icon buttons](https://material.io/components/buttons/#icon-buttons) help users\ntake supplementary actions with a single tap. There are two types of icon\nbuttons: standard and contained.\n\n*   **Standard icon button:** By default icon buttons will not have a container.\n*   **Contained icon button:** Optionally, it is possible to have a container\n    around the icon.\n\nSee [Icon button examples](#icon-button-examples) section below for more\ninformation.\n\n### Usage\n\n*   Icon buttons should be used when a compact button is required, such as in a\n    toolbar.\n*   Icon buttons can take the form of a wide range of system icons.\n*   Ensure the meaning of the icon is unambiguous.\n*   Ensure that the tooltip describes the button’s action, rather than\n    the icon.\n\n#### Icon button examples\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\n#### Standard Icon button\n\nThe following example shows a standard icon button.\n\n<mio-image index=21></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"?attr/materialIconButtonStyle\"\n    android:id=\"@+id/iconButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n/>\n```\n\nIn code:\n\n```kt\niconButton.addOnButtonCheckedListener { iconButton, checkedId, isChecked ->\n    // Respond to button selection\n}\n```\n\n#### Filled Icon button\n\nThe following example shows a contained icon button that is filled.\n\n<mio-image index=22></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"?attr/materialIconButtonFilledStyle\"\n    android:id=\"@+id/iconButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n/>\n```\n\n#### Filled Tonal Icon button\n\nThe following example shows a tonal icon button.\n\n<mio-image index=23></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"?attr/materialIconButtonFilledTonalStyle\"\n    android:id=\"@+id/iconButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n/>\n```\n\n#### Outlined Icon button\n\nThe following example shows an outlined icon button.\n\n<mio-image index=24></mio-image>\n\nIn the layout:\n\n```xml\n<Button\n    style=\"?attr/materialIconButtonOutlinedStyle\"\n    android:id=\"@+id/iconButton\"\n    android:layout_width=\"wrap_content\"\n    android:layout_height=\"wrap_content\"\n/>\n```\n\n#### Styles & Theme attributes\n\nElement                      | Style                                             | Theme Attribute\n---------------------------- | ------------------------------------------------- | ---------------\n**Default style**            | `Widget.Material3.Button.IconButton`              | `?attr/materialIconButtonStyle`\n**Filled Icon Button**       | `Widget.Material3.Button.IconButton.Filled`       | `?attr/materialIconButtonFilledStyle`\n**Filled Tonal Icon Button** | `Widget.Material3.Button.IconButton.Filled.Tonal` | `?attr/materialIconButtonFilledTonalStyle`\n**Outlined Icon Button**     | `Widget.Material3.Button.IconButton.Outlined`     | `?attr/materialIconButtonOutlinedStyle`\n\nSee the full list of\n[styles](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/styles.xml)\nand\n[attrs](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/res/values/attrs.xml).\n\n## Theming buttons\n\nButtons support\n[Material Theming](https://material.io/components/buttons/#theming) and can be\ncustomized in terms of color, typography and shape.\n\n### Button theming example\n\nAPI and source code:\n\n*   `MaterialButton`\n    *   [Class description](https://developer.android.com/reference/com/google/android/material/button/MaterialButton)\n    *   [Class source](https://github.com/material-components/material-components-android/tree/master/lib/java/com/google/android/material/button/MaterialButton.java)\n\nThe following example shows text, outlined and filled button types with\nMaterial Theming.\n\n<mio-image index=25></mio-image>\n\n#### Implementing button theming\n\nUse theme attributes and styles in `res/values/styles.xml` to add the theme to\nall buttons. This affects other components:\n\n```xml\n<style name=\"Theme.App\" parent=\"Theme.Material3.*\">\n    ...\n    <item name=\"colorPrimary\">@color/shrine_pink_100</item>\n    <item name=\"colorOnPrimary\">@color/shrine_pink_900</item>\n    <item name=\"textAppearanceLabelLarge\">@style/TextAppearance.App.Button</item>\n    <item name=\"shapeAppearanceSmallComponent\">@style/ShapeAppearance.App.SmallComponent</item>\n</style>\n\n<style name=\"TextAppearance.App.Button\" parent=\"TextAppearance.Material3.LabelLarge\">\n    <item name=\"fontFamily\">@font/rubik</item>\n    <item name=\"android:fontFamily\">@font/rubik</item>\n</style>\n\n<style name=\"ShapeAppearance.App.SmallComponent\" parent=\"ShapeAppearance.Material3.SmallComponent\">\n    <item name=\"cornerFamily\">cut</item>\n    <item name=\"cornerSize\">4dp</item>\n</style>\n```\n\nUse default style theme attributes, styles and theme overlays. This adds the\ntheme to all buttons but does not affect other components:\n\n```xml\n<style name=\"Theme.App\" parent=\"Theme.Material3.*\">\n    ...\n    <item name=\"borderlessButtonStyle\">@style/Widget.App.Button.TextButton</item>\n    <item name=\"materialButtonOutlinedStyle\">@style/Widget.App.Button.OutlinedButton</item>\n    <item name=\"materialButtonStyle\">@style/Widget.App.Button</item>\n</style>\n\n<style name=\"Widget.App.Button.TextButton\" parent=\"Widget.Material3.Button.TextButton\">\n    <item name=\"materialThemeOverlay\">@style/ThemeOverlay.App.Button.TextButton</item>\n    <item name=\"android:textAppearance\">@style/TextAppearance.App.Button</item>\n    <item name=\"shapeAppearance\">@style/ShapeAppearance.App.SmallComponent</item>\n</style>\n\n<style name=\"Widget.App.Button.OutlinedButton\" parent=\"Widget.Material3.Button.OutlinedButton\">\n    <item name=\"materialThemeOverlay\">@style/ThemeOverlay.App.Button.TextButton</item>\n    <item name=\"android:textAppearance\">@style/TextAppearance.App.Button</item>\n    <item name=\"shapeAppearance\">@style/ShapeAppearance.App.SmallComponent</item>\n</style>\n\n<style name=\"Widget.App.Button\" parent=\"Widget.Material3.Button\">\n    <item name=\"materialThemeOverlay\">@style/ThemeOverlay.App.Button</item>\n    <item name=\"android:textAppearance\">@style/TextAppearance.App.Button</item>\n    <item name=\"shapeAppearance\">@style/ShapeAppearance.App.SmallComponent</item>\n</style>\n\n<style name=\"ThemeOverlay.App.Button.TextButton\" parent=\"\">\n    <item name=\"colorPrimary\">@color/shrine_pink_900</item>\n</style>\n\n<style name=\"ThemeOverlay.App.Button\" parent=\"\">\n    <item name=\"colorPrimary\">@color/shrine_pink_100</item>\n    <item name=\"colorOnPrimary\">@color/shrine_pink_900</item>\n</style>\n```\n\nUse one of the styles in the layout. That will affect only this button:\n\n```xml\n<Button\n    style=\"@style/Widget.App.Button\"\n    ...\n/>\n```\n",
+    "markdown_path": "docs/components/Button.md",
+    "meta": {
+      "keywords": null,
+      "meta_robots": " ",
+      "schema_structure": "{}",
+      "share_description": null,
+      "share_image": null,
+      "share_title": null
+    },
+    "title": "Buttons",
+    "up_next_section": {
+      "items": []
+    },
+    "document_id": "5096769612152832"
+  },
+  "mdc_flutter": {
+    "banners": [
+      {
+        "description": "<p>Common buttons are available in the Flutter Material library using the <a href=\"https://api.flutter.dev/flutter/material/ThemeData/useMaterial3.html\" target=\"_blank\" rel=\"noopener\"><code>useMaterial3</code></a> flag. For details on how to implement,&nbsp;<a href=\"https://api.flutter.dev/flutter/material/ThemeData/useMaterial3.html\" target=\"_blank\" rel=\"noopener\">visit the API documentation</a>.</p>",
+        "links": [
+          {
+            "aria_label": "Read about implementing Material Design 3 ElevatedButton using Flutter",
+            "href": "https://api.flutter.dev/flutter/material/ElevatedButton-class.html",
+            "label": "ElevatedButton API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 OutlinedButton using Flutter",
+            "href": "https://api.flutter.dev/flutter/material/OutlinedButton-class.html",
+            "label": "OutlinedButton API reference",
+            "open_new_window": true
+          },
+          {
+            "aria_label": "Read about implementing Material Design 3 TextButton using Flutter",
+            "href": "https://api.flutter.dev/flutter/material/TextButton-class.html",
+            "label": "TextButton API reference",
+            "open_new_window": true
+          }
+        ],
+        "title": "Flutter support available"
+      },
+      {
+        "description": "<p>For Filled and Filled Tonal variants, see the <code><a href=\"https://api.flutter.dev/flutter/material/ButtonStyle-class.html\">ButtonStyle</a></code> documentation.</p>",
+        "links": [],
+        "title": null
+      }
+    ],
+    "hide_generic_not_available_message": true,
+    "hide_intro_block": false,
+    "image": [],
+    "is_beta": false,
+    "markdown_content": null,
+    "markdown_path": null,
+    "meta": {
+      "keywords": null,
+      "meta_robots": " ",
+      "schema_structure": "{}",
+      "share_description": null,
+      "share_image": {},
+      "share_title": null
+    },
+    "title": "Buttons",
+    "up_next_section": {
+      "items": []
+    },
+    "document_id": "5460730895400960"
+  },
+  "mdc_web": {},
+  "metadata": {
+    "keywords": "Material, Material Design, Google Material, Google, Material Design 3, Material 3, Material You, Material Design Components, Material Components, components, buttons",
+    "meta_robots": null,
+    "schema_structure": "{}",
+    "share_description": "Buttons help people take action, such as sending an email, sharing a document, or liking a comment. Common buttons prompt most actions in a UI.",
+    "share_image": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/88c76a12091eb2c334be95f3354727f3017e5e91d01617de790b32f815176b9bb9c4cc122534905670cf9ba7d1d0a212527ecfee4f1f282a4bb30348c11dbfab",
+      "height": 560,
+      "url": "https://lh3.googleusercontent.com/iu0ghCr65S7lOuzD1FyNaql_XMiItRV2chZ8KPzCdE_ydVb8vS3GT25DnbVWTIsMYO4upfZyJim6urOt1cm8kOOGKeIYqX3Wbl1agO3BZfPgYOSJcw",
+      "width": 1120
+    },
+    "share_title": "Buttons – Material Design 3"
+  },
+  "page_hero": {
+    "foreground_image_1x1": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/891ca7659b245acd0987eadf2327c38a00986154b270b1168331eaaf1e83b7722128b8599cec1df27dfa5da202e93a301375a80c95b47e3b94c31c3b4a55db9b",
+      "height": 1120,
+      "url": "https://lh3.googleusercontent.com/D_Gp8v2OgaPHZZUO-jN-kEUIAsU7qDMcaTTMit-dQyZ1QnlKsvxb9syLh0qgvpG8SgTS9Dw9Hn-VMa-QyLnCBnY8koPe5Ui5-MCdKsXJIH4mnIAhBv8",
+      "width": 1120
+    },
+    "foreground_image_1x1_dark_mode": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/de43c894b672a5159ca70e7c83faa0635da85816eb04042f367dca38ca996a90bc244b85581ae0a78144b3948aa3e0e7703d481bec75db83deac4fd42faf7c93",
+      "height": 1120,
+      "url": "https://lh3.googleusercontent.com/PpjmFwdL89TFRAw_pjVu1ofOoWNSkgea2gxeJKUa9hsmau_XdjCkN8GZKyx5Mq1gc3isPPlU2aApGQ3B9WsyOT1-6_sw4ec3ab5ZQVblH2DRjNsn8A",
+      "width": 1120
+    },
+    "foreground_image_2x1": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/a4045b541a9f50797797ac89368860212f9f5084402f81a23ad8812849e04060a9cfe3ce083172fac7f059958db3e8a88be80656a50d4fb0fa77cd2a18d2ce66",
+      "height": 1000,
+      "url": "https://lh3.googleusercontent.com/s92gKHDPwsrvDz8RHwCqmTIn8UeMltrd-n75PV9f-t61bExJzU5aO9d8njRs6onP72YuBnNA3BpQK-PlTqxOabioC74nmxFbu7AG0Q1b-ot8SK_053M",
+      "width": 2000
+    },
+    "foreground_image_2x1_dark_mode": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/96c223110c34aeb4a9b051ccf083ec50cd64f56fed32673eade2cbcc7b4746824e3da153a9b706a75d22f7913b8426fb290941a60bc22fadc8777301f924ed28",
+      "height": 1000,
+      "url": "https://lh3.googleusercontent.com/Ud3p1w8XZoAFxDppnauBxuDysFHfOGrCF_ovrmSxU0xEpy79Mb0jV1-vVgIUWYcf-FxqpH6KKkzkrF3J6gOSiuZch__wO0QgaVoWQGEaU3TxjVlaVQ",
+      "width": 2000
+    },
+    "full_width": false,
+    "full_width_content_centered": false,
+    "horizontal_foreground_alignment_override": null,
+    "main_background_image": {},
+    "main_background_image_dark_mode": {},
+    "split_background_asset": {},
+    "split_background_image": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/e2528d654714a412d37efee24e319d53352b54a61c88e46204530fcd672c4f96cd444e4ae19a15b600cab43d96d99d5fc7199ba81195a8b72e80196654608629",
+      "height": 4096,
+      "url": "https://lh3.googleusercontent.com/9yLBSbW9VLn2npEEQxB7Gsr83LyNLRMTeX7WziRyoN4hg_I1yo1WCOmKGqWWdZGeKJokpt-rbkn1QLBqyIZQMjSZU-lqn_I6Jjul7G2jcUlT4gFxLFo",
+      "width": 4096
+    },
+    "split_background_image_dark_mode": {
+      "file_path": "_f68a99ffe9144467a917320028f1ce3b_/_95f9980dd12d4f8886c881994eaa6a79_/bdaeb09e59277042b786dc83f12f80c5d61c09de9c2e7da2d4bb6d4e0c7f5205bbd8568246f428eff1532c684a71b705f41e0de77bc64ef15d85b6d6f921134b",
+      "height": 4096,
+      "url": "https://lh3.googleusercontent.com/zOLqvD_A2H1zg-15Z7YraIDRm0LsbGh_qKxYf-fstm6scXckY4-bpNkir0VqH26Xte8D1c0c_Z0OPiEZD2WgL1HP2yr0GCGEsv0L9OPUqhddwJ1n0Q",
+      "width": 4096
+    },
+    "vertical_foreground_alignment_override": null
+  },
+  "title": "Buttons",
+  "document_id": "5047690081337344",
+  "modified_date": "2025-05-09"
+}

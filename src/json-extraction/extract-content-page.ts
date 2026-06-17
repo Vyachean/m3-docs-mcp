@@ -24,19 +24,26 @@ export async function extractContentPageToMaterialPage({
   pageData,
   contentPage,
   capturedAt,
-  fetchResource
+  fetchResource,
+  sectionIndices,
+  titleOverride
 }: {
   url: string;
   pageData: unknown | null;
   contentPage: unknown | null;
   capturedAt?: string;
   fetchResource: DsdbResourceFetcher;
+  /** When provided, only these section indices (from the decoded content page) are rendered —
+   *  used to split a single fetched content payload into one Markdown page per tab. */
+  sectionIndices?: number[];
+  /** When provided (tab splitting), used instead of the page-data/content-page title. */
+  titleOverride?: string;
 }): Promise<JsonExtractionResult> {
   const decoded = parseContentPage(contentPage);
   const pageDataMeta = extractPageDataMetadata(pageData);
-  const discoveredTitle = pageDataMeta.title ?? decoded.title;
+  const discoveredTitle = titleOverride ?? pageDataMeta.title ?? decoded.title;
   const title = discoveredTitle ?? 'Material 3 page';
-  const sections = decoded.sections;
+  const sections = sectionIndices ? sectionIndices.map((i) => decoded.sections[i]).filter((s): s is typeof decoded.sections[number] => Boolean(s)) : decoded.sections;
   const headings = [discoveredTitle, ...sections.map((s) => s.title).filter(Boolean)].filter(
     (v): v is string => Boolean(v)
   );

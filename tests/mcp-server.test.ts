@@ -266,7 +266,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: 1, force: false });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, force: false });
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
   });
 
@@ -279,6 +279,6 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     await callTool('refresh_material_docs', { maxPages: 77, force: true });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, concurrency: 1, force: true });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, force: true });
   });
 });

@@ -35,7 +35,7 @@ program.command('serve')
 program.command('update')
   .description('Refresh the local Material 3 documentation cache')
   .option('--cache-dir <path>', 'Cache directory')
-  .option('--max-pages <number>', 'Maximum pages to crawl', '250')
+  .option('--max-pages <number>', 'Limit the crawl to this many source routes (smoke/limited run). Omit for a full refresh with no source-route limit.')
   .option('--min-pages <number>', 'Minimum accepted page count before replacing the existing cache', '10')
   .option('--concurrency <number>', `Maximum concurrent Playwright pages, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
@@ -44,7 +44,8 @@ program.command('update')
   .option('--log-dir <path>', 'Directory for update log files (default: <cache-dir>/logs)')
   .option('--verbose', 'Enable verbose/debug log output in the log file')
   .action(async (options) => {
-    const maxPages = parsePositiveIntegerOption('--max-pages', options.maxPages);
+    const maxPagesExplicit = options.maxPages !== undefined;
+    const maxPages = maxPagesExplicit ? parsePositiveIntegerOption('--max-pages', options.maxPages) : null;
     const minPageCount = parsePositiveIntegerOption('--min-pages', options.minPages);
     const concurrency = parseBoundedPositiveIntegerOption('--concurrency', options.concurrency, 1, MAX_CRAWL_CONCURRENCY);
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
@@ -53,11 +54,12 @@ program.command('update')
     const { onProgress, onBeforeLog } = createCliProgressRenderer();
     let updateLogFile: string | null = null;
     let updateDiagnosticsFile: string | null = null;
-    console.error(`Starting Material 3 docs cache refresh: cacheDir=${cacheDir} maxPages=${maxPages} minPages=${minPageCount} concurrency=${concurrency} includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
+    console.error(`Starting Material 3 docs cache refresh: cacheDir=${cacheDir} maxPages=${maxPages ?? 'unlimited (full refresh)'} minPages=${minPageCount} concurrency=${concurrency} includeBlog=${options.includeBlog ?? false}. Press Ctrl+C to stop safely.`);
     try {
       const index = await crawlMaterialDocs({
         cacheDir,
         maxPages,
+        maxPagesExplicit,
         minPageCount,
         concurrency,
         headless: !options.headed,
@@ -152,7 +154,7 @@ export function createCliProgressRenderer(): {
     lastRenderMs = nowMs;
 
     const elapsed = formatDurationMs(progress.elapsedMs);
-    const etaPrefix = progress.phase === 'browser-crawl' ? 'eta≈' : 'eta=';
+    const etaPrefix = (progress.phase === 'browser-dom-fallback' || progress.phase === 'browser-crawl') ? 'eta≈' : 'eta=';
     const etaStr = progress.estimatedRemainingMs !== null
       ? `${etaPrefix}${formatDurationMs(progress.estimatedRemainingMs)}`
       : 'eta=calculating';
@@ -160,7 +162,8 @@ export function createCliProgressRenderer(): {
       ? `rate=${progress.ratePagesPerSecond.toFixed(2)}/s`
       : 'rate=calculating';
     const current = progress.currentUrls[0] ? ` current=${progress.currentUrls[0]}` : '';
-    const line = `Material 3 docs cache refresh: phase=${progress.phase} elapsed=${elapsed} ${etaStr} ${rateStr} saved=${progress.savedPageCount}/${progress.maxPages} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount}/${progress.concurrency}${current}`;
+    const maxPagesStr = progress.maxPages >= Number.MAX_SAFE_INTEGER ? 'unlimited' : String(progress.maxPages);
+    const line = `Material 3 docs cache refresh: phase=${progress.phase} elapsed=${elapsed} ${etaStr} ${rateStr} saved=${progress.savedPageCount}/${maxPagesStr} failed=${progress.failedPageCount} attempted=${progress.attemptedPageCount} queued=${progress.queuedPageCount} active=${progress.activeWorkerCount}/${progress.concurrency}${current}`;
     if (process.stderr.isTTY) {
       const padding = previousLength > line.length ? ' '.repeat(previousLength - line.length) : '';
       process.stderr.write(`\r${line}${padding}`);

@@ -79,11 +79,10 @@ const fetchJsonConcurrencyTracker = vi.hoisted(() => {
       await new Promise<void>((r) => setTimeout(r, 20));
       currentConcurrent -= 1;
       return {
-        pageData: null,
-        contentPage: null,
-        responses: [],
-        fetchResource: async () => null,
-        selectionReasons: []
+        status: 'ok' as const,
+        url: 'https://m3.material.io/page-data/mock/mock.json',
+        httpStatus: 200,
+        data: null
       };
     }),
     reset: () => { currentConcurrent = 0; peakConcurrent = 0; },
@@ -91,9 +90,19 @@ const fetchJsonConcurrencyTracker = vi.hoisted(() => {
   };
 });
 
-vi.mock('../src/json-extraction/fetch-json-page.js', () => ({
-  fetchJsonPageBundle: fetchJsonConcurrencyTracker.fn
-}));
+// The default fetch-page-data pipeline resolves routes via the bundle table and fetches them
+// through fetchPageDataByReference (one call per route) — mock that instead of the legacy
+// slug-guessing fetchJsonPageBundle to track per-route concurrency. fetchCarbonContentByReference
+// is left real: these synthetic routes have no exportedCarbonFileId, so it short-circuits to
+// {status:'not-available'} without making a network call.
+vi.mock('../src/json-extraction/fetch-json-page.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/json-extraction/fetch-json-page.js')>();
+  return {
+    ...actual,
+    fetchPageDataByReference: fetchJsonConcurrencyTracker.fn,
+    fetchJsonPageBundle: fetchJsonConcurrencyTracker.fn
+  };
+});
 
 vi.mock('playwright', () => ({
   chromium: {
@@ -112,11 +121,17 @@ function makeDsdbFetchStub(): ReturnType<typeof vi.fn> {
     (_, i) => `{"slug":"route-${i}","documentId":"doc${i}","collectionId":"col${i}"}`
   ).join(',');
   const mainJs = `"carbonVersion":"1.0.0" var routes=[${routeParts}]`;
+  const siteMetaRoutes: Record<string, { public: true }> = {};
+  for (let i = 0; i < ROUTE_COUNT; i += 1) siteMetaRoutes[`/route-${i}`] = { public: true };
+  const siteMetaJs = `window.site_meta = ${JSON.stringify({ routes: siteMetaRoutes })};`;
 
   return vi.fn(async (url: string | URL | Request) => {
     const urlStr = String(url instanceof Request ? url.url : url);
     if (urlStr === 'https://m3.material.io') {
       return { ok: true, text: async () => baseHtml };
+    }
+    if (urlStr === 'https://m3.material.io/site_meta.js') {
+      return { ok: true, text: async () => siteMetaJs };
     }
     if (urlStr.includes('main.deadbeef.js')) {
       return { ok: true, text: async () => mainJs };
@@ -209,7 +224,7 @@ describe('progress phase reporting', () => {
     await rm(cacheDir, { recursive: true, force: true });
   });
 
-  it('emits discovering and direct-json phases via onProgress', async () => {
+  it('emits fetch-shell and fetch-page-data phases via onProgress', async () => {
     vi.stubGlobal('fetch', makeDsdbFetchStub());
 
     const { crawlMaterialDocs } = await import('../src/crawler.js');
@@ -223,8 +238,8 @@ describe('progress phase reporting', () => {
       onProgress: (p) => phases.push(p.phase)
     });
 
-    expect(phases).toContain('discovering');
-    expect(phases).toContain('direct-json');
+    expect(phases).toContain('fetch-shell');
+    expect(phases).toContain('fetch-page-data');
     expect(phases[phases.length - 1]).toBe('complete');
   }, 10_000);
 
@@ -489,7 +504,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: 3,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+        if (p.phase === 'fetch-page-data') activeCounts.push(p.activeWorkerCount);
       }
     });
 
@@ -509,7 +524,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: 3,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json' && p.currentUrls.length > 0) {
+        if (p.phase === 'fetch-page-data' && p.currentUrls.length > 0) {
           allCurrentUrls.push(p.currentUrls);
         }
       }
@@ -560,7 +575,7 @@ describe('direct JSON progress tracking', () => {
       concurrency: requestedConcurrency,
       force: true,
       onProgress: (p) => {
-        if (p.phase === 'direct-json') activeCounts.push(p.activeWorkerCount);
+        if (p.phase === 'fetch-page-data') activeCounts.push(p.activeWorkerCount);
       }
     });
 

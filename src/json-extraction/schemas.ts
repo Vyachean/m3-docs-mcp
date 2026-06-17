@@ -273,35 +273,35 @@ export function decodeStatusTableResource(raw: unknown): DecodedStatusTable | Un
 // ── Content Page Schemas ──────────────────────────────────────────────────────
 
 export const ContentChunkSchema = z.object({
-  contentChunkType: z.string().optional(),
-  type: z.string().optional(),
-  kind: z.string().optional(),
+  contentChunkType: z.string().nullable().optional(),
+  type: z.string().nullable().optional(),
+  kind: z.string().nullable().optional(),
   // TEXT chunk fields
-  htmlValue: z.string().optional(),
-  html: z.string().optional(),
-  value: z.string().optional(),
-  body: z.string().optional(),
+  htmlValue: z.string().nullable().optional(),
+  html: z.string().nullable().optional(),
+  value: z.string().nullable().optional(),
+  body: z.string().nullable().optional(),
   // IMAGE chunk fields
-  imageUrl: z.string().optional(),
-  url: z.string().optional(),
-  src: z.string().optional(),
-  altText: z.string().optional(),
-  alt: z.string().optional(),
-  title: z.string().optional(),
-  footer: z.string().optional(),
-  caption: z.string().optional(),
-  captionText: z.string().optional(),
+  imageUrl: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  src: z.string().nullable().optional(),
+  altText: z.string().nullable().optional(),
+  alt: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  footer: z.string().nullable().optional(),
+  caption: z.string().nullable().optional(),
+  captionText: z.string().nullable().optional(),
   // VIDEO chunk fields
-  videoUrl: z.string().optional(),
-  embedUrl: z.string().optional(),
-  description: z.string().optional(),
+  videoUrl: z.string().nullable().optional(),
+  embedUrl: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
   // RESOURCE chunk fields
-  libraryModuleType: z.string().optional(),
-  moduleType: z.string().optional(),
-  resourceType: z.string().optional(),
-  resourceName: z.string().optional(),
-  resourcePath: z.string().optional(),
-  resourceUrl: z.string().optional(),
+  libraryModuleType: z.string().nullable().optional(),
+  moduleType: z.string().nullable().optional(),
+  resourceType: z.string().nullable().optional(),
+  resourceName: z.string().nullable().optional(),
+  resourcePath: z.string().nullable().optional(),
+  resourceUrl: z.string().nullable().optional(),
   moduleConfigurationOverrides: z.unknown().optional(),
   moduleConfiguration: z.unknown().optional(),
   tokenSets: z.unknown().optional(),
@@ -408,23 +408,23 @@ export function parseContentPage(raw: unknown): DecodedContentPage {
 
 export const ResourceChunkSchema = z
   .object({
-    libraryModuleType: z.string().optional(),
-    moduleType: z.string().optional(),
-    resourceType: z.string().optional(),
-    resourceName: z.string().optional(),
-    resourcePath: z.string().optional(),
-    resourceUrl: z.string().optional(),
+    libraryModuleType: z.string().nullable().optional(),
+    moduleType: z.string().nullable().optional(),
+    resourceType: z.string().nullable().optional(),
+    resourceName: z.string().nullable().optional(),
+    resourcePath: z.string().nullable().optional(),
+    resourceUrl: z.string().nullable().optional(),
     moduleConfigurationOverrides: z
       .object({
         tokenSets: z.unknown().optional(),
-        resourceName: z.string().optional(),
+        resourceName: z.string().nullable().optional(),
       })
       .passthrough()
       .optional(),
     moduleConfiguration: z
       .object({
         tokenSets: z.unknown().optional(),
-        resourceName: z.string().optional(),
+        resourceName: z.string().nullable().optional(),
       })
       .passthrough()
       .optional(),

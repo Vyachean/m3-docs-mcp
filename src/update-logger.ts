@@ -37,6 +37,19 @@ export type UpdateRunDiagnostics = {
   hasPreviousCache: boolean;
   preservedFailedStagingPath: string | null;
   coverageHealth: string | null;
+  isLimitedRun?: boolean | null;
+  discoveredPublicUrlCount?: number | null;
+  resolvableSourceRouteCount?: number | null;
+  selectedSourceRouteCount?: number | null;
+  attemptedSourceRouteCount?: number | null;
+  plannedVirtualPageCount?: number | null;
+  savedVirtualPageCount?: number | null;
+  failedVirtualPageCount?: number | null;
+  skippedAliasOnlyCount?: number | null;
+  skippedMissingPageReferenceCount?: number | null;
+  skippedNonContentIndexCount?: number | null;
+  skippedLegacyRouteCount?: number | null;
+  skippedPlatformSpecificUnmappedCount?: number | null;
   elapsedMs?: number | null;
   lastPhase?: string | null;
   concurrency?: number | null;
@@ -48,6 +61,16 @@ export type UpdateRunDiagnostics = {
   browserAttemptedPageCount?: number | null;
   lastCurrentUrls?: string[] | null;
   latestProgress?: ProgressSnapshot | null;
+  directJsonEnabled?: boolean | null;
+  browserOnlyFallback?: boolean | null;
+  directJsonDisabledReason?: string | null;
+  dsdbConfigSource?: 'site-meta' | 'bundle' | 'browser-network' | null;
+  siteMetaFetched?: boolean | null;
+  siteMetaFailed?: boolean | null;
+  bundleDiscoveryFailed?: boolean | null;
+  networkRecoveryAttempted?: boolean | null;
+  networkRecoverySucceeded?: boolean | null;
+  networkRecoveryFailureReason?: string | null;
 };
 
 export type ProgressSnapshot = {
@@ -154,6 +177,11 @@ export class UpdateLogger {
 
   async flush(): Promise<void> {
     await this.writeQueue;
+  }
+
+  async writeIntermediateDiagnostics(partial: Partial<UpdateRunDiagnostics>): Promise<void> {
+    const content = JSON.stringify({ ...partial, runId: this.runId, cacheDir: this.cacheDir, logFile: this.logFile, finishedAt: null }, null, 2);
+    await writeFile(this.diagnosticsFile, `${content}\n`, 'utf8').catch(() => undefined);
   }
 
   async writeFinalDiagnostics(diag: UpdateRunDiagnostics): Promise<void> {
