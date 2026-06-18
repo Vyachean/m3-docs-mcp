@@ -47,6 +47,29 @@ async function readDiagnosticsJson(diagPath: string): Promise<Record<string, unk
   }
 }
 
+const DiagnosticsDsdbFieldsSchema = z.object({
+  directJsonEnabled: z.boolean().nullish(),
+  browserOnlyFallback: z.boolean().nullish(),
+  directJsonDisabledReason: z.string().nullish(),
+  dsdbConfigSource: z.union([z.literal('site-meta'), z.literal('bundle'), z.literal('browser-network')]).nullish(),
+  siteMetaFetched: z.boolean().nullish(),
+  siteMetaFailed: z.boolean().nullish(),
+  bundleDiscoveryFailed: z.boolean().nullish(),
+  networkRecoveryAttempted: z.boolean().nullish(),
+  networkRecoverySucceeded: z.boolean().nullish(),
+  networkRecoveryFailureReason: z.string().nullish()
+}).passthrough();
+
+async function readDsdbFieldsFromDiagnostics(diagPath: string): Promise<z.output<typeof DiagnosticsDsdbFieldsSchema> | null> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(diagPath, 'utf8'));
+    const result = DiagnosticsDsdbFieldsSchema.safeParse(raw);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
+
 async function pathIfExists(filePath: string): Promise<string | null> {
   try {
     await stat(filePath);

@@ -400,7 +400,6 @@ export type MaterialPublicIndex = {
   qualitySummary?: QualitySummary;
   pages: MaterialPublicPageManifestEntry[];
 };
-
 export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;
 
 export type CacheStatus = {
@@ -435,7 +434,6 @@ export type CacheDiagnostics = {
   networkRecoverySucceeded?: boolean;
   networkRecoveryFailureReason?: string | null;
 };
-
 export type CrawlPhase =
   | 'fetch-shell'
   | 'fetch-site-meta'
