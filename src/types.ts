@@ -355,6 +355,27 @@ export type CrawlQualityReport = {
   pagesBySection: Record<string, number>;
 };
 
+export type QualitySummary = {
+  suspiciousPageCount: number;
+  rejectedRouteCount: number;
+  duplicateContentGroupCount: number;
+  shortPageCount: number;
+  duplicateTitleGroupCount: number;
+};
+
+export type MaterialPageMeta = Omit<MaterialPage, 'text' | 'markdown'>;
+
+export type MaterialPublicPageManifestEntry = {
+  path: string;
+  title: string;
+  sourceUrl: string;
+  section: string;
+  headings: string[];
+  publishedYear?: number;
+  excerpt?: string;
+  wordCount?: number;
+};
+
 export type MaterialIndex = {
   source: string;
   capturedAt: string;
@@ -362,10 +383,22 @@ export type MaterialIndex = {
   attemptedPageCount: number;
   failedPageCount: number;
   failedUrls: string[];
+  qualitySummary?: QualitySummary;
   qualityReport?: CrawlQualityReport;
   extractionDiagnostics?: ExtractionDiagnostics;
   coverageDiagnostics?: CoverageDiagnostics;
-  pages: Omit<MaterialPage, 'text' | 'markdown'>[];
+  pages: MaterialPageMeta[];
+};
+
+export type MaterialPublicIndex = {
+  source: string;
+  capturedAt: string;
+  pageCount: number;
+  attemptedPageCount: number;
+  failedPageCount: number;
+  failedUrls: string[];
+  qualitySummary?: QualitySummary;
+  pages: MaterialPublicPageManifestEntry[];
 };
 
 export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;
@@ -373,18 +406,24 @@ export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null
 export type CacheStatus = {
   cacheDir: string;
   hasCache: boolean;
+  source: string | null;
   capturedAt: string | null;
   pageCount: number;
   attemptedPageCount: number;
   failedPageCount: number;
   failedUrls: string[];
   ageMs: number | null;
+  ttlMs: number;
   isFresh: boolean;
   coverageHealth?: CoverageHealth;
-  extractionDiagnostics?: ExtractionDiagnostics;
-  coverageDiagnostics?: CoverageDiagnostics;
-  latestLogFile: string | null;
+  qualitySummary?: QualitySummary;
+};
+
+export type CacheDiagnostics = {
+  cacheDir: string;
   latestDiagnosticsFile: string | null;
+  latestLogFile: string | null;
+  diagnostics: Record<string, unknown> | null;
   directJsonEnabled?: boolean;
   browserOnlyFallback?: boolean;
   directJsonDisabledReason?: string;

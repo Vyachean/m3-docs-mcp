@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
+import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getCacheDiagnostics, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import { createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
 import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage } from '../src/types.js';
 
@@ -154,7 +154,34 @@ describe('cache helpers', () => {
 
   it('writes and reads the documentation index', async () => {
     await writeIndex(index, cacheDir);
-    await expect(readIndex(cacheDir)).resolves.toEqual(index);
+    await expect(readIndex(cacheDir)).resolves.toMatchObject({
+      source: index.source,
+      capturedAt: index.capturedAt,
+      pageCount: index.pageCount,
+      attemptedPageCount: index.attemptedPageCount,
+      failedPageCount: index.failedPageCount,
+      failedUrls: index.failedUrls,
+      pages: [{
+        id: page.path,
+        title: page.title,
+        url: page.url,
+        path: page.path,
+        section: page.section,
+        headings: page.headings,
+        capturedAt: index.capturedAt
+      }]
+    });
+    const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
+    expect(rawIndex.extractionDiagnostics).toBeUndefined();
+    expect(rawIndex.coverageDiagnostics).toBeUndefined();
+    expect(rawIndex.qualityReport).toBeUndefined();
+    expect(rawIndex.pages).toEqual([{
+      path: page.path,
+      title: page.title,
+      sourceUrl: page.url,
+      section: page.section,
+      headings: page.headings
+    }]);
     const age = await cacheAgeMs(cacheDir);
     expect(age).toEqual(expect.any(Number));
     expect(age).toBeGreaterThanOrEqual(0);
@@ -190,11 +217,13 @@ describe('cache helpers', () => {
     await expect(cacheStatus(cacheDir, 2)).resolves.toMatchObject({
       cacheDir,
       hasCache: true,
+      source: index.source,
       capturedAt: index.capturedAt,
       pageCount: 1,
       attemptedPageCount: 1,
       failedPageCount: 0,
       failedUrls: [],
+      ttlMs: 2 * 60 * 60 * 1000,
       isFresh: false
     });
   });
@@ -203,14 +232,28 @@ describe('cache helpers', () => {
     await expect(cacheStatus(cacheDir, 2)).resolves.toMatchObject({
       cacheDir,
       hasCache: false,
+      source: null,
       capturedAt: null,
       pageCount: 0,
       attemptedPageCount: 0,
       failedPageCount: 0,
       failedUrls: [],
       ageMs: null,
+      ttlMs: 2 * 60 * 60 * 1000,
       isFresh: false
     });
+  });
+
+  it('keeps verbose diagnostics out of default cacheStatus', async () => {
+    await writeIndex({
+      ...index,
+      extractionDiagnostics: createEmptyExtractionDiagnostics(),
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    }, cacheDir);
+
+    const status = await cacheStatus(cacheDir);
+    expect(status).not.toHaveProperty('extractionDiagnostics');
+    expect(status).not.toHaveProperty('coverageDiagnostics');
   });
 
   it('creates staging cache directories next to the target cache', async () => {
@@ -229,7 +272,10 @@ describe('cache helpers', () => {
 
     await promoteStagingCache(stagingDir, cacheDir);
 
-    expect(await readIndex(cacheDir)).toEqual(nextIndex);
+    expect(await readIndex(cacheDir)).toMatchObject({
+      capturedAt: nextIndex.capturedAt,
+      pages: [{ id: page.path, url: page.url, path: page.path }]
+    });
     await expect(readFile(indexPath(stagingDir), 'utf8')).rejects.toThrow();
     await expect(readFile(indexPath(`${cacheDir}.previous`), 'utf8')).rejects.toThrow();
   });
@@ -241,8 +287,35 @@ describe('cache helpers', () => {
 
     await promoteStagingCache(stagingDir, cacheDir);
 
-    await expect(readIndex(cacheDir)).resolves.toEqual(index);
+    await expect(readIndex(cacheDir)).resolves.toMatchObject({
+      capturedAt: index.capturedAt,
+      pages: [{ id: page.path, url: page.url, path: page.path }]
+    });
     await expect(readFile(indexPath(stagingDir), 'utf8')).rejects.toThrow();
+  });
+
+  it('reads verbose diagnostics only from diagnostics/latest-update.json', async () => {
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await ensureCacheDirs(cacheDir);
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      extractionDiagnostics: {
+        routeDiagnostics: [{ path: 'components/buttons/specs.md', sourceUsed: 'failed' }]
+      },
+      coverageDiagnostics: {
+        uncrawledDiscoveredUrls: ['/missing']
+      },
+      networkRecoveryFailureReason: 'boom'
+    }), 'utf8');
+
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.latestDiagnosticsFile).toBe(path.join(diagDir, 'latest-update.json'));
+    expect(diagnostics.diagnostics).toMatchObject({
+      extractionDiagnostics: {
+        routeDiagnostics: [{ path: 'components/buttons/specs.md', sourceUsed: 'failed' }]
+      }
+    });
+    expect(diagnostics.networkRecoveryFailureReason).toBe('boom');
   });
 
   it('rejects suspicious crawl results before cache promotion', () => {

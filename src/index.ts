@@ -84,12 +84,14 @@ program.command('update')
       console.log(JSON.stringify({
         cacheDir,
         capturedAt: index.capturedAt,
+        source: index.source,
         pageCount: index.pageCount,
         attemptedPageCount: index.attemptedPageCount,
         failedPageCount: index.failedPageCount,
         failedUrls: index.failedUrls,
-        extractionDiagnostics: index.extractionDiagnostics,
-        coverageDiagnostics: index.coverageDiagnostics
+        coverageHealth: index.coverageDiagnostics?.coverageHealth ?? null,
+        qualitySummary: index.qualitySummary ?? null,
+        diagnosticsFile: updateDiagnosticsFile
       }, null, 2));
     } catch (error) {
       onProgress(null);

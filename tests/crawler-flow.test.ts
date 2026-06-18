@@ -528,7 +528,21 @@ describe('crawlMaterialDocs', () => {
     await expect(crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 1, minPageCount: 1 })).rejects.toThrow('below 80% of the previous cache');
 
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
-    expect(persistedIndex).toEqual(oldIndex);
+    expect(persistedIndex).toMatchObject({
+      source: oldIndex.source,
+      capturedAt: oldIndex.capturedAt,
+      pageCount: oldIndex.pageCount,
+      attemptedPageCount: oldIndex.attemptedPageCount,
+      failedPageCount: oldIndex.failedPageCount,
+      failedUrls: oldIndex.failedUrls
+    });
+    expect(persistedIndex.pages).toEqual(oldIndex.pages.map((page) => ({
+      path: page.path,
+      title: page.title,
+      sourceUrl: page.url,
+      section: page.section,
+      headings: page.headings
+    })));
   });
 
   it('allows explicitly forced replacement of a larger old cache', async () => {

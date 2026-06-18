@@ -5,7 +5,7 @@ import { getDefaultCacheDir } from './cache.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
-import type { CacheStatus, CrawlProgress } from './types.js';
+import type { CacheDiagnostics, CacheStatus, CrawlProgress, SearchResult } from './types.js';
 
 function jsonText(value: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
@@ -49,7 +49,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   }, async ({ query, limit }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'results', []);
     if (unavailable) return unavailable;
-    return jsonText({ status, refresh: startupRefresh.state(), results: await store.searchDocs(query, limit) });
+    return jsonText({ cache: status, refresh: startupRefresh.state(), results: (await store.searchDocs(query, limit)).map(toSearchResultPayload) });
   });
 
   server.tool('get_material_page', 'Return one cached Material 3 documentation page by cache path or source URL. Does not block on long cache refreshes.', {
@@ -57,25 +57,49 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   }, async ({ pathOrUrl }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'page', null);
     if (unavailable) return unavailable;
-    return jsonText({ status, refresh: startupRefresh.state(), page: await store.getPage(pathOrUrl) });
+    return jsonText({ cache: status, refresh: startupRefresh.state(), page: toPagePayload(await store.getPage(pathOrUrl)) });
   });
 
   server.tool('get_component_docs', 'Return all cached Material 3 documentation pages matching a component name. Does not block on long cache refreshes.', {
-    componentName: z.string().trim().min(1)
-  }, async ({ componentName }) => {
+    componentName: z.string().trim().min(1),
+    includeMarkdown: z.boolean().default(false),
+    maxPages: z.number().int().min(1).max(25).default(10),
+    maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
+  }, async ({ componentName, includeMarkdown, maxPages, maxMarkdownChars }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'pages', []);
     if (unavailable) return unavailable;
-    return jsonText({ status, refresh: startupRefresh.state(), pages: await store.getComponentDocs(componentName) });
+    return jsonText({
+      cache: status,
+      refresh: startupRefresh.state(),
+      component: componentName,
+      pages: (await store.getComponentDocs(componentName, { includeMarkdown, maxPages, maxMarkdownChars })).map(toComponentPagePayload)
+    });
   });
 
   server.tool('list_material_components', 'List component slugs discovered in the cached Material 3 documentation. Does not block on long cache refreshes.', {}, async () => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'components', []);
     if (unavailable) return unavailable;
-    return jsonText({ status, refresh: startupRefresh.state(), components: await store.listComponents() });
+    return jsonText({ cache: status, refresh: startupRefresh.state(), components: await store.listComponents() });
   });
 
   server.tool('material_docs_cache_status', 'Return local Material 3 documentation cache and background refresh status.', {}, async () => {
     return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), autoUpdate });
+  });
+
+  server.tool('material_docs_cache_diagnostics', 'Return explicit Material 3 cache diagnostics from diagnostics/latest-update.json. Summary-only by default.', {
+    summaryOnly: z.boolean().default(true),
+    route: z.string().trim().min(1).optional(),
+    path: z.string().trim().min(1).optional(),
+    failedOnly: z.boolean().default(false),
+    skippedOnly: z.boolean().default(false),
+    limit: z.number().int().min(1).max(200).default(25),
+    includeFullDiagnostics: z.boolean().default(false)
+  }, async ({ summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics }) => {
+    return jsonText({
+      cache: await store.getStatus(maxAgeHours),
+      refresh: startupRefresh.state(),
+      diagnostics: filterDiagnostics(await store.getDiagnostics(), { summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics })
+    });
   });
 
   server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
@@ -88,6 +112,100 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+function toSearchResultPayload(result: SearchResult) {
+  return {
+    title: result.title,
+    path: result.path,
+    sourceUrl: result.url,
+    section: result.section,
+    headings: result.headings,
+    excerpt: result.excerpt,
+    score: result.score
+  };
+}
+
+function toPagePayload(page: Awaited<ReturnType<MaterialDocsStore['getPage']>>) {
+  return {
+    meta: {
+      ...page.meta,
+      sourceUrl: page.meta.url
+    },
+    markdown: page.markdown
+  };
+}
+
+function toComponentPagePayload(page: Awaited<ReturnType<MaterialDocsStore['getComponentDocs']>>[number]) {
+  return {
+    title: page.title,
+    path: page.path,
+    sourceUrl: page.url,
+    section: page.section,
+    headings: page.headings,
+    ...(page.markdown !== undefined ? { markdown: page.markdown } : {})
+  };
+}
+
+function filterDiagnostics(
+  cacheDiagnostics: CacheDiagnostics,
+  options: {
+    summaryOnly: boolean;
+    route?: string;
+    path?: string;
+    failedOnly: boolean;
+    skippedOnly: boolean;
+    limit: number;
+    includeFullDiagnostics: boolean;
+  }
+) {
+  const raw = cacheDiagnostics.diagnostics;
+  if (!raw) {
+    return {
+      latestDiagnosticsFile: cacheDiagnostics.latestDiagnosticsFile,
+      latestLogFile: cacheDiagnostics.latestLogFile,
+      summary: null
+    };
+  }
+  const extractionDiagnostics = asRecord(raw.extractionDiagnostics);
+  const routeDiagnostics = asArray(extractionDiagnostics?.routeDiagnostics).filter(isRecord);
+  const filteredRoutes = routeDiagnostics
+    .filter((entry) => !options.route || entry.url === options.route || entry.sourceRoute === options.route)
+    .filter((entry) => !options.path || entry.path === options.path || entry.virtualRoute === options.path)
+    .filter((entry) => !options.failedOnly || entry.sourceUsed === 'failed')
+    .filter((entry) => !options.skippedOnly || entry.sourceUsed === 'skipped')
+    .slice(0, options.limit);
+
+  const summary = {
+    runId: raw.runId ?? null,
+    startedAt: raw.startedAt ?? null,
+    finishedAt: raw.finishedAt ?? null,
+    promotionDecision: raw.promotionDecision ?? null,
+    coverageHealth: raw.coverageHealth ?? null,
+    attemptedPages: raw.attemptedPages ?? null,
+    savedPages: raw.savedPages ?? null,
+    failedPages: raw.failedPages ?? null,
+    latestDiagnosticsFile: cacheDiagnostics.latestDiagnosticsFile,
+    latestLogFile: cacheDiagnostics.latestLogFile,
+    filteredRouteDiagnostics: filteredRoutes
+  };
+
+  if (options.includeFullDiagnostics && !options.summaryOnly) {
+    return { ...summary, fullDiagnostics: raw };
+  }
+  return summary;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function createStartupRefreshController(store: MaterialDocsStore, maxPages: number, concurrency: number) {

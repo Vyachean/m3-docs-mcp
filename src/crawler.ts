@@ -2282,6 +2282,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     attemptedPageCount: dsdbAttemptedCount + seen.size,
     failedPageCount: failedUrls.length + sourceVirtualCounters.virtualPagesFailed,
     failedUrls,
+    qualitySummary: {
+      suspiciousPageCount: qualityReport.suspiciousPages.length,
+      rejectedRouteCount: qualityReport.rejectedRoutes.length,
+      duplicateContentGroupCount: qualityReport.duplicateContent.length,
+      shortPageCount: qualityReport.shortPages.length,
+      duplicateTitleGroupCount: qualityReport.duplicateTitles.length
+    },
     qualityReport,
     extractionDiagnostics,
     coverageDiagnostics,

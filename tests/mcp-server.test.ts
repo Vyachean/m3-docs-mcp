@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
   type MockStore = {
     cacheDir?: string;
     getStatus: ReturnType<typeof vi.fn<(maxAgeHours?: number) => Promise<CacheStatus>>>;
+    getDiagnostics: ReturnType<typeof vi.fn>;
     refresh: ReturnType<typeof vi.fn<(options?: RefreshOptions) => Promise<MaterialIndex>>>;
     searchDocs: ReturnType<typeof vi.fn<(query: string, limit: number) => Promise<SearchResult[]>>>;
     getPage: ReturnType<typeof vi.fn>;
@@ -43,20 +44,21 @@ const mocks = vi.hoisted(() => {
   const makeStatus = (overrides: Partial<CacheStatus> = {}): CacheStatus => ({
     cacheDir: '/cache',
     hasCache: true,
+    source: 'https://m3.material.io',
     capturedAt: '2026-05-18T00:00:00.000Z',
     pageCount: 1,
     attemptedPageCount: 1,
     failedPageCount: 0,
     failedUrls: [],
     ageMs: 60_000,
+    ttlMs: 24 * 60 * 60 * 1000,
     isFresh: true,
-    latestLogFile: null,
-    latestDiagnosticsFile: null,
     ...overrides
   });
 
   const makeStore = (status: CacheStatus = makeStatus()): MockStore => ({
     getStatus: vi.fn(async () => status),
+    getDiagnostics: vi.fn(async () => ({ cacheDir: '/cache', latestDiagnosticsFile: null, latestLogFile: null, diagnostics: null })),
     refresh: vi.fn(async () => makeIndex()),
     searchDocs: vi.fn(async () => []),
     getPage: vi.fn(async () => null),
@@ -155,6 +157,7 @@ describe('serveMcp', () => {
       'get_component_docs',
       'list_material_components',
       'material_docs_cache_status',
+      'material_docs_cache_diagnostics',
       'refresh_material_docs'
     ]);
     expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
@@ -192,6 +195,9 @@ describe('serveMcp', () => {
     const componentSchema = schemaFor('get_component_docs');
     expect(componentSchema.componentName.safeParse(' Dialogs ').data).toBe('Dialogs');
     expect(componentSchema.componentName.safeParse('  ').success).toBe(false);
+    expect(componentSchema.includeMarkdown.safeParse(undefined).data).toBe(false);
+    expect(componentSchema.maxPages.safeParse(undefined).data).toBe(10);
+    expect(componentSchema.maxMarkdownChars.safeParse(undefined).data).toBe(20_000);
 
     const refreshSchema = schemaFor('refresh_material_docs');
     expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
@@ -250,9 +256,18 @@ describe('serveMcp', () => {
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
     expect(result).toMatchObject({
-      results: [searchResult],
+      results: [{
+        title: searchResult.title,
+        path: searchResult.path,
+        sourceUrl: searchResult.url,
+        section: searchResult.section,
+        headings: searchResult.headings,
+        excerpt: searchResult.excerpt,
+        score: searchResult.score
+      }],
       refresh: { running: true, completedAt: null, error: null }
     });
+    expect(result).not.toHaveProperty('status');
     expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
   });

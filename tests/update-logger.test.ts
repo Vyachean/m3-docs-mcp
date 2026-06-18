@@ -211,12 +211,12 @@ describe('cache path helpers for logs and diagnostics', () => {
   });
 });
 
-describe('cacheStatus includes log and diagnostics paths', () => {
+describe('getCacheDiagnostics exposes log and diagnostics paths explicitly', () => {
   it('returns null for both when no files exist', async () => {
-    const { cacheStatus } = await import('../src/cache.js');
-    const status = await cacheStatus(tmpDir);
-    expect(status.latestLogFile).toBeNull();
-    expect(status.latestDiagnosticsFile).toBeNull();
+    const { getCacheDiagnostics } = await import('../src/cache.js');
+    const diagnostics = await getCacheDiagnostics(tmpDir);
+    expect(diagnostics.latestLogFile).toBeNull();
+    expect(diagnostics.latestDiagnosticsFile).toBeNull();
   });
 
   it('returns file paths when log and diagnostics files exist', async () => {
@@ -228,9 +228,9 @@ describe('cacheStatus includes log and diagnostics paths', () => {
     logger.log('info', 'test', { message: 'hello' });
     await logger.writeFinalDiagnostics(makeRunDiagnostics());
 
-    const { cacheStatus } = await import('../src/cache.js');
-    const status = await cacheStatus(tmpDir);
-    expect(status.latestLogFile).toBe(latestLogPath(tmpDir));
-    expect(status.latestDiagnosticsFile).toBe(latestDiagnosticsPath(tmpDir));
+    const { getCacheDiagnostics } = await import('../src/cache.js');
+    const diagnostics = await getCacheDiagnostics(tmpDir);
+    expect(diagnostics.latestLogFile).toBe(latestLogPath(tmpDir));
+    expect(diagnostics.latestDiagnosticsFile).toBe(latestDiagnosticsPath(tmpDir));
   });
 });
