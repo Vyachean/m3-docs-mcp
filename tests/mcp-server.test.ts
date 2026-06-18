@@ -346,6 +346,7 @@ describe('serveMcp', () => {
     expect(diagnostics.routeDiagnosticsAvailable).toBe(true);
     expect(diagnostics.routeDiagnosticsCount).toBe(2);
     expect(diagnostics).not.toHaveProperty('fullDiagnostics');
+    expect(diagnostics).not.toHaveProperty('filteredRouteDiagnostics');
     expect(diagnostics.compactSummary).toMatchObject({
       pageCount: 3,
       attemptedPageCount: 4,
@@ -353,10 +354,6 @@ describe('serveMcp', () => {
       failedUrls: ['https://m3.material.io/components/missing'],
       coverageHealth: 'partial'
     });
-    expect(diagnostics.filteredRouteDiagnostics).toEqual([
-      { path: 'components/button/specs.md', url: 'https://m3.material.io/components/button/specs', sourceUsed: 'direct-json' },
-      { path: 'components/missing.md', url: 'https://m3.material.io/components/missing', sourceUsed: 'failed', fallbackReason: 'json-fetch-failed' }
-    ]);
   });
 
   it('filters route diagnostics by failed/skipped/path/route and respects limit', async () => {
@@ -368,9 +365,9 @@ describe('serveMcp', () => {
       diagnostics: {
         extractionDiagnostics: {
           routeDiagnostics: [
-            { path: 'components/button/specs.md', virtualRoute: 'components/button/specs.md', url: 'https://m3.material.io/components/button/specs', sourceUsed: 'direct-json' },
-            { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', fallbackReason: 'json-fetch-failed' },
-            { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference' }
+            { path: 'components/buttons/specs.md', virtualRoute: 'components/buttons/specs.md', url: 'https://m3.material.io/components/buttons/specs', sourceUsed: 'direct-json', finalMethod: 'direct-json' },
+            { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] },
+            { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
           ]
         }
       }
@@ -379,28 +376,94 @@ describe('serveMcp', () => {
 
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
 
+    const summaryOnly = await callTool('material_docs_cache_diagnostics', { summaryOnly: true });
+    expect(summaryOnly.diagnostics as Record<string, unknown>).not.toHaveProperty('filteredRouteDiagnostics');
+
+    const expandedSummary = await callTool('material_docs_cache_diagnostics', { summaryOnly: false });
+    expect((expandedSummary.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/buttons/specs.md', virtualRoute: 'components/buttons/specs.md', url: 'https://m3.material.io/components/buttons/specs', sourceUsed: 'direct-json', finalMethod: 'direct-json' },
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] },
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
     const failedOnly = await callTool('material_docs_cache_diagnostics', { failedOnly: true });
     expect((failedOnly.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
-      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', fallbackReason: 'json-fetch-failed' }
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
     ]);
 
     const skippedOnly = await callTool('material_docs_cache_diagnostics', { skippedOnly: true });
     expect((skippedOnly.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
-      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference' }
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
     ]);
 
     const byPath = await callTool('material_docs_cache_diagnostics', { path: '/components/skipped.md' });
     expect((byPath.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
-      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference' }
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
     ]);
 
     const byRoute = await callTool('material_docs_cache_diagnostics', { route: 'https://m3.material.io/components/failed' });
     expect((byRoute.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
-      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', fallbackReason: 'json-fetch-failed' }
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
     ]);
 
-    const limited = await callTool('material_docs_cache_diagnostics', { limit: 1 });
+    const limited = await callTool('material_docs_cache_diagnostics', { summaryOnly: false, limit: 1 });
     expect(((limited.diagnostics as Record<string, unknown>).filteredRouteDiagnostics as unknown[])).toHaveLength(1);
+  });
+
+  it('keeps normal MCP tool responses compact and free of diagnostics dumps', async () => {
+    const status = mocks.makeStatus({ coverageHealth: 'partial' });
+    const store = mocks.makeStore(status);
+    store.searchDocs.mockResolvedValue([{
+      title: 'Buttons',
+      url: 'https://m3.material.io/components/buttons/specs',
+      path: 'components/buttons/specs.md',
+      section: 'components/buttons',
+      headings: ['Buttons'],
+      score: 1,
+      excerpt: 'Buttons docs'
+    }]);
+    store.getPage.mockResolvedValue({
+      meta: {
+        id: 'buttons',
+        title: 'Buttons',
+        url: 'https://m3.material.io/components/buttons/specs',
+        path: 'components/buttons/specs.md',
+        section: 'components/buttons',
+        headings: ['Buttons'],
+        capturedAt: '2026-05-18T00:00:00.000Z'
+      },
+      markdown: '# Buttons'
+    });
+    store.getComponentDocs.mockResolvedValue([{
+      path: 'components/buttons/specs.md',
+      title: 'Buttons',
+      url: 'https://m3.material.io/components/buttons/specs',
+      section: 'components/buttons',
+      headings: ['Buttons'],
+      markdown: '# Buttons'
+    }]);
+    store.listComponents.mockResolvedValue([{ component: 'buttons', section: 'components/buttons', path: 'components/buttons/specs.md' }]);
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const responses = await Promise.all([
+      callTool('search_material_docs', { query: 'buttons', limit: 5 }),
+      callTool('get_material_page', { pathOrUrl: 'components/buttons/specs.md' }),
+      callTool('get_component_docs', { componentName: 'Buttons', includeMarkdown: true, maxPages: 5, maxMarkdownChars: 2000 }),
+      callTool('list_material_components', {}),
+      callTool('material_docs_cache_status', {})
+    ]);
+
+    for (const response of responses) {
+      const json = JSON.stringify(response);
+      expect(json).not.toContain('extractionDiagnostics');
+      expect(json).not.toContain('coverageDiagnostics');
+      expect(json).not.toContain('routeDiagnostics');
+      expect(json).not.toContain('tokenContextDiagnostics');
+      expect(json).not.toContain('statusTableDiagnostics');
+      expect(json).not.toContain('uncrawledDiscoveredUrls');
+    }
   });
 
   it('returns full diagnostics only when explicitly requested', async () => {
@@ -446,6 +509,6 @@ describe('serveMcp', () => {
 
     expect(diagnostics.routeDiagnosticsAvailable).toBe(false);
     expect(diagnostics.routeDiagnosticsMessage).toBe('Route diagnostics are not present in diagnostics/latest-update.json.');
-    expect(diagnostics.filteredRouteDiagnostics).toEqual([]);
+    expect(diagnostics).not.toHaveProperty('filteredRouteDiagnostics');
   });
 });

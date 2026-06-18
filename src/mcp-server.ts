@@ -172,6 +172,12 @@ function filterDiagnostics(
   const hasRouteDiagnostics = extractionDiagnostics !== null && Array.isArray(extractionDiagnostics.routeDiagnostics);
   const normalizedRoute = normalizeFilterValue(options.route);
   const normalizedPath = normalizeFilterValue(options.path);
+  const includeRouteLevelData = options.includeFullDiagnostics
+    || options.summaryOnly === false
+    || options.failedOnly
+    || options.skippedOnly
+    || normalizedPath !== null
+    || normalizedRoute !== null;
   const filteredRoutes = routeDiagnostics
     .filter((entry) => !normalizedRoute || matchesRouteFilter(entry, normalizedRoute))
     .filter((entry) => !normalizedPath || matchesPathFilter(entry, normalizedPath))
@@ -205,7 +211,7 @@ function filterDiagnostics(
     routeDiagnosticsAvailable: hasRouteDiagnostics,
     routeDiagnosticsMessage: hasRouteDiagnostics ? null : 'Route diagnostics are not present in diagnostics/latest-update.json.',
     routeDiagnosticsCount: routeDiagnostics.length,
-    filteredRouteDiagnostics: filteredRoutes
+    ...(includeRouteLevelData ? { filteredRouteDiagnostics: filteredRoutes } : {})
   };
 
   if (options.includeFullDiagnostics) {
@@ -256,6 +262,7 @@ function matchesPathFilter(entry: Record<string, unknown>, pathValue: string): b
 }
 
 function isFailedRouteDiagnostic(entry: Record<string, unknown>): boolean {
+  if (isSkippedRouteDiagnostic(entry)) return false;
   return entry.sourceUsed === 'failed'
     || entry.finalMethod === null
     || typeof entry.fallbackReason === 'string'
