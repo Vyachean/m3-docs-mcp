@@ -318,6 +318,87 @@ describe('cache helpers', () => {
     expect(diagnostics.networkRecoveryFailureReason).toBe('boom');
   });
 
+  it('latest-update.json can persist verbose diagnostics while index.json stays compact', async () => {
+    const fullIndex = materialIndex(1, {
+      qualitySummary: {
+        suspiciousPageCount: 1,
+        rejectedRouteCount: 1,
+        duplicateContentGroupCount: 0,
+        shortPageCount: 0,
+        duplicateTitleGroupCount: 0
+      },
+      qualityReport: {
+        suspiciousPages: [{ url: 'https://m3.material.io/components/page-0/overview', path: 'components/page-0/overview.md', title: 'Page 0', reason: 'short-markdown' }],
+        rejectedRoutes: [{ url: 'https://m3.material.io/components/missing', path: 'components/missing.md', title: 'Missing', reason: 'missing-page-reference', classification: 'route-mismatch', status: 'failed' }],
+        duplicateContent: [],
+        shortPages: [],
+        duplicateTitles: [],
+        pagesBySection: {}
+      },
+      extractionDiagnostics: (() => {
+        const diag = createEmptyExtractionDiagnostics();
+        pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs'));
+        pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/missing', {
+          path: 'components/missing.md',
+          sourceUsed: 'skipped',
+          finalMethod: null,
+          jsonSucceeded: false,
+          skippedReason: 'missing-page-reference',
+          sourceRoute: 'components/missing',
+          virtualRoute: 'components/missing.md'
+        }));
+        return diag;
+      })(),
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+    await writeIndex(fullIndex, cacheDir);
+
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      runId: 'run-1',
+      startedAt: '2026-06-18T00:00:00.000Z',
+      finishedAt: '2026-06-18T00:00:05.000Z',
+      elapsedMs: 5000,
+      cacheDir,
+      stagingDir: `${cacheDir}.staging`,
+      commandSummary: { command: 'update', maxPages: 25, maxPagesExplicit: true, allowBrowserFallback: false },
+      promotionDecision: 'promoted',
+      hasPreviousCache: true,
+      previousPageCount: 9,
+      generatedPageCount: 5,
+      attemptedPages: 6,
+      savedPages: 5,
+      failedPages: 1,
+      failedRoutes: ['https://m3.material.io/components/missing'],
+      qualitySummary: fullIndex.qualitySummary,
+      coverageHealth: fullIndex.coverageDiagnostics?.coverageHealth ?? null,
+      extractionDiagnostics: fullIndex.extractionDiagnostics,
+      coverageDiagnostics: fullIndex.coverageDiagnostics,
+      qualityReport: fullIndex.qualityReport
+    }), 'utf8');
+
+    const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
+    expect(rawIndex.extractionDiagnostics).toBeUndefined();
+    expect(rawIndex.coverageDiagnostics).toBeUndefined();
+    expect(rawIndex.qualityReport).toBeUndefined();
+
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.diagnostics).toMatchObject({
+      extractionDiagnostics: {
+        routeDiagnostics: expect.arrayContaining([
+          expect.objectContaining({ path: 'components/missing.md', skippedReason: 'missing-page-reference' })
+        ])
+      },
+      coverageDiagnostics: expect.any(Object),
+      qualityReport: {
+        rejectedRoutes: expect.arrayContaining([
+          expect.objectContaining({ reason: 'missing-page-reference' })
+        ])
+      }
+    });
+  });
+
   it('rejects suspicious crawl results before cache promotion', () => {
     expect(() => assertValidIndex({ ...index, pageCount: 0, pages: [] }, 1)).toThrow('below the required minimum');
     expect(() => assertValidIndex({ ...index, pageCount: 1 }, 1)).not.toThrow();

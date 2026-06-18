@@ -102,7 +102,7 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     });
   });
 
-  server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using Playwright. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
+  server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using the deterministic JSON-based pipeline. Browser fallback is disabled by default. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
     maxPages: z.number().int().min(1).max(1000).optional(),
     concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
     force: z.boolean().default(false)
@@ -169,31 +169,101 @@ function filterDiagnostics(
   }
   const extractionDiagnostics = asRecord(raw.extractionDiagnostics);
   const routeDiagnostics = asArray(extractionDiagnostics?.routeDiagnostics).filter(isRecord);
+  const hasRouteDiagnostics = extractionDiagnostics !== null && Array.isArray(extractionDiagnostics.routeDiagnostics);
+  const normalizedRoute = normalizeFilterValue(options.route);
+  const normalizedPath = normalizeFilterValue(options.path);
   const filteredRoutes = routeDiagnostics
-    .filter((entry) => !options.route || entry.url === options.route || entry.sourceRoute === options.route)
-    .filter((entry) => !options.path || entry.path === options.path || entry.virtualRoute === options.path)
-    .filter((entry) => !options.failedOnly || entry.sourceUsed === 'failed')
-    .filter((entry) => !options.skippedOnly || entry.sourceUsed === 'skipped')
+    .filter((entry) => !normalizedRoute || matchesRouteFilter(entry, normalizedRoute))
+    .filter((entry) => !normalizedPath || matchesPathFilter(entry, normalizedPath))
+    .filter((entry) => !options.failedOnly || isFailedRouteDiagnostic(entry))
+    .filter((entry) => !options.skippedOnly || isSkippedRouteDiagnostic(entry))
     .slice(0, options.limit);
 
+  const qualitySummary = asRecord(raw.qualitySummary);
+  const coverageDiagnostics = asRecord(raw.coverageDiagnostics);
   const summary = {
     runId: raw.runId ?? null,
     startedAt: raw.startedAt ?? null,
     finishedAt: raw.finishedAt ?? null,
+    elapsedMs: raw.elapsedMs ?? null,
     promotionDecision: raw.promotionDecision ?? null,
-    coverageHealth: raw.coverageHealth ?? null,
-    attemptedPages: raw.attemptedPages ?? null,
-    savedPages: raw.savedPages ?? null,
-    failedPages: raw.failedPages ?? null,
+    hasPreviousCache: raw.hasPreviousCache ?? null,
+    previousPageCount: raw.previousPageCount ?? null,
+    generatedPageCount: raw.generatedPageCount ?? raw.savedPages ?? null,
+    promotionFailureReason: raw.promotionFailureReason ?? null,
+    commandSummary: asRecord(raw.commandSummary),
+    compactSummary: {
+      pageCount: raw.generatedPageCount ?? raw.savedPages ?? null,
+      attemptedPageCount: raw.attemptedPages ?? null,
+      failedPageCount: raw.failedPages ?? null,
+      failedUrls: asArray(raw.failedRoutes),
+      qualitySummary,
+      coverageHealth: raw.coverageHealth ?? coverageDiagnostics?.coverageHealth ?? null
+    },
     latestDiagnosticsFile: cacheDiagnostics.latestDiagnosticsFile,
     latestLogFile: cacheDiagnostics.latestLogFile,
+    routeDiagnosticsAvailable: hasRouteDiagnostics,
+    routeDiagnosticsMessage: hasRouteDiagnostics ? null : 'Route diagnostics are not present in diagnostics/latest-update.json.',
+    routeDiagnosticsCount: routeDiagnostics.length,
     filteredRouteDiagnostics: filteredRoutes
   };
 
-  if (options.includeFullDiagnostics && !options.summaryOnly) {
+  if (options.includeFullDiagnostics) {
     return { ...summary, fullDiagnostics: raw };
   }
   return summary;
+}
+
+function normalizeFilterValue(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/^\/+|\/+$/g, '').toLowerCase();
+}
+
+function normalizeRouteDiagnosticUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.replace(/\/+$/g, '').toLowerCase();
+}
+
+function normalizeRouteDiagnosticPath(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
+  if (!trimmed) return null;
+  return trimmed.toLowerCase();
+}
+
+function matchesRouteFilter(entry: Record<string, unknown>, route: string): boolean {
+  const candidates = [
+    normalizeRouteDiagnosticUrl(entry.url),
+    normalizeRouteDiagnosticUrl(entry.sourceRoute),
+    normalizeRouteDiagnosticPath(entry.sourceRoute),
+    normalizeRouteDiagnosticPath(entry.virtualRoute),
+    normalizeRouteDiagnosticPath(entry.path)
+  ].filter((value): value is string => value !== null);
+  return candidates.includes(route);
+}
+
+function matchesPathFilter(entry: Record<string, unknown>, pathValue: string): boolean {
+  const candidates = [
+    normalizeRouteDiagnosticPath(entry.path),
+    normalizeRouteDiagnosticPath(entry.virtualRoute),
+    normalizeRouteDiagnosticPath(entry.sourceRoute)
+  ].filter((value): value is string => value !== null);
+  return candidates.includes(pathValue);
+}
+
+function isFailedRouteDiagnostic(entry: Record<string, unknown>): boolean {
+  return entry.sourceUsed === 'failed'
+    || entry.finalMethod === null
+    || typeof entry.fallbackReason === 'string'
+    || (Array.isArray(entry.fallbackReasons) && entry.fallbackReasons.length > 0);
+}
+
+function isSkippedRouteDiagnostic(entry: Record<string, unknown>): boolean {
+  return entry.sourceUsed === 'skipped' || typeof entry.skippedReason === 'string';
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
