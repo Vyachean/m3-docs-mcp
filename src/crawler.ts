@@ -1064,8 +1064,8 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     });
     await logger.writeFinalDiagnostics(buildRunDiagnostics({
       logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
-      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: null,
-      lastProgress, concurrency: trackingOptions.concurrency ?? 1, dsdbState: crawledDsdbState
+      crawledIndex, previousIndex, promotionDecision, promotionFailureReason: null, preservedFailedStagingPath: null,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1, dsdbState: crawledDsdbState, options: trackingOptions
     }));
     return crawledIndex;
   } catch (error) {
@@ -1095,8 +1095,8 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     });
     await logger.writeFinalDiagnostics(buildRunDiagnostics({
       logger, startedAt, targetCacheDir, stagingDir: stagingCacheDir,
-      crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath: preservedPath,
-      lastProgress, concurrency: trackingOptions.concurrency ?? 1, dsdbState: crawledDsdbState
+      crawledIndex, previousIndex, promotionDecision, promotionFailureReason: error instanceof Error ? error.message : String(error), preservedFailedStagingPath: preservedPath,
+      lastProgress, concurrency: trackingOptions.concurrency ?? 1, dsdbState: crawledDsdbState, options: trackingOptions
     }));
     throw buildPromotionFailureError(error, crawledIndex, previousIndex, preservedPath, logger.logFile, logger.diagnosticsFile, lastProgress);
   }
@@ -1139,7 +1139,7 @@ function emitRouteEvents(logger: UpdateLogger, index: MaterialIndex): void {
 }
 
 function buildRunDiagnostics({
-  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, preservedFailedStagingPath, lastProgress, concurrency, dsdbState
+  logger, startedAt, targetCacheDir, stagingDir, crawledIndex, previousIndex, promotionDecision, promotionFailureReason, preservedFailedStagingPath, lastProgress, concurrency, dsdbState, options
 }: {
   logger: UpdateLogger;
   startedAt: string;
@@ -1148,10 +1148,12 @@ function buildRunDiagnostics({
   crawledIndex: MaterialIndex | null;
   previousIndex: MaterialIndex | null;
   promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
+  promotionFailureReason: string | null;
   preservedFailedStagingPath: string | null;
   lastProgress: CrawlProgress | null;
   concurrency: number;
   dsdbState: DsdbDiscoveryState | null;
+  options: CrawlOptions;
 }) {
   const diag = crawledIndex?.extractionDiagnostics;
   const covDiag = crawledIndex?.coverageDiagnostics;
@@ -1165,10 +1167,22 @@ function buildRunDiagnostics({
     cacheDir: targetCacheDir,
     stagingDir,
     logFile: logger.logFile,
+    commandSummary: {
+      command: 'update',
+      concurrency,
+      allowBrowserFallback: options.allowBrowserFallback ?? false,
+      includeBlog: options.includeBlog ?? false,
+      force: options.force ?? false,
+      maxPages: options.maxPages ?? null,
+      maxPagesExplicit: options.maxPagesExplicit ?? false
+    },
     attemptedPages: crawledIndex?.attemptedPageCount ?? 0,
     savedPages: crawledIndex?.pageCount ?? 0,
     failedPages: crawledIndex?.failedPageCount ?? 0,
     failedRoutes: crawledIndex?.failedUrls ?? [],
+    previousPageCount: previousIndex?.pageCount ?? null,
+    generatedPageCount: crawledIndex?.pageCount ?? 0,
+    promotionFailureReason,
     skippedBlogCount: covDiag?.skippedBlogCount ?? 0,
     tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
     tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
@@ -1191,6 +1205,10 @@ function buildRunDiagnostics({
     hasPreviousCache: previousIndex !== null,
     preservedFailedStagingPath,
     coverageHealth: covDiag?.coverageHealth ?? null,
+    qualitySummary: crawledIndex?.qualitySummary ?? null,
+    extractionDiagnostics: diag ?? null,
+    coverageDiagnostics: covDiag ?? null,
+    qualityReport: crawledIndex?.qualityReport ?? null,
     // Full-refresh coverage summary: discoveredPublicUrlCount is diagnostic only (mixes canonical
     // routes with aliases/tabs/legacy/platform URLs) — the actual promotion target is
     // plannedVirtualPageCount vs savedVirtualPageCount + failedVirtualPageCount.
@@ -2282,6 +2300,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     attemptedPageCount: dsdbAttemptedCount + seen.size,
     failedPageCount: failedUrls.length + sourceVirtualCounters.virtualPagesFailed,
     failedUrls,
+    qualitySummary: {
+      suspiciousPageCount: qualityReport.suspiciousPages.length,
+      rejectedRouteCount: qualityReport.rejectedRoutes.length,
+      duplicateContentGroupCount: qualityReport.duplicateContent.length,
+      shortPageCount: qualityReport.shortPages.length,
+      duplicateTitleGroupCount: qualityReport.duplicateTitles.length
+    },
     qualityReport,
     extractionDiagnostics,
     coverageDiagnostics,

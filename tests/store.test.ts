@@ -107,10 +107,13 @@ describe('MaterialDocsStore', () => {
   it('returns all docs for a component regardless of spaces and case', async () => {
     const store = await seedStore();
     await expect(store.getComponentDocs('DIALOGS')).resolves.toEqual([
-      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
+      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, section: dialogPage.section, headings: dialogPage.headings }
     ]);
     await expect(store.getComponentDocs(' Dialogs   overview ')).resolves.toEqual([
-      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, markdown: dialogPage.markdown }
+      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, section: dialogPage.section, headings: dialogPage.headings }
+    ]);
+    await expect(store.getComponentDocs('DIALOGS', { includeMarkdown: true })).resolves.toEqual([
+      { path: dialogPage.path, title: dialogPage.title, url: dialogPage.url, section: dialogPage.section, headings: dialogPage.headings, markdown: dialogPage.markdown }
     ]);
     await expect(store.getComponentDocs('   ')).resolves.toEqual([]);
   });
@@ -131,7 +134,7 @@ describe('MaterialDocsStore', () => {
 
     const store = new MaterialDocsStore(cacheDir);
     await expect(store.getComponentDocs('Icon  Buttons')).resolves.toEqual([
-      { path: iconButtonPage.path, title: iconButtonPage.title, url: iconButtonPage.url, markdown: iconButtonPage.markdown }
+      { path: iconButtonPage.path, title: iconButtonPage.title, url: iconButtonPage.url, section: iconButtonPage.section, headings: iconButtonPage.headings }
     ]);
   });
 
@@ -147,7 +150,10 @@ describe('MaterialDocsStore', () => {
     await writePage(nestedNonComponentPage, cacheDir);
 
     const store = new MaterialDocsStore(cacheDir);
-    await expect(store.listComponents()).resolves.toEqual(['buttons', 'dialogs']);
+    await expect(store.listComponents()).resolves.toEqual([
+      { component: 'buttons', section: 'components/buttons', path: 'components/buttons/overview.md' },
+      { component: 'dialogs', section: 'components/dialogs', path: 'components/dialogs/overview.md' }
+    ]);
   });
 
   it('searches cached markdown and returns useful result metadata', async () => {

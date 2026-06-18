@@ -3,7 +3,17 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
-import type { CacheStatus, CoverageHealth, CoverageDiagnostics, MaterialIndex, MaterialPage } from './types.js';
+import type {
+  CacheDiagnostics,
+  CacheStatus,
+  CoverageHealth,
+  CoverageDiagnostics,
+  MaterialIndex,
+  MaterialPage,
+  MaterialPublicIndex,
+  MaterialPublicPageManifestEntry,
+  QualitySummary
+} from './types.js';
 
 const DiagnosticsDsdbFieldsSchema = z.object({
   directJsonEnabled: z.boolean().nullish(),
@@ -23,6 +33,15 @@ async function readDsdbFieldsFromDiagnostics(diagPath: string): Promise<z.output
     const raw: unknown = JSON.parse(await readFile(diagPath, 'utf8'));
     const result = DiagnosticsDsdbFieldsSchema.safeParse(raw);
     return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readDiagnosticsJson(diagPath: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(diagPath, 'utf8'));
+    return isRecord(raw) ? raw : null;
   } catch {
     return null;
   }
@@ -118,7 +137,7 @@ export async function ensureCacheDirs(cacheDir = getDefaultCacheDir()): Promise<
 
 export async function readIndex(cacheDir = getDefaultCacheDir()): Promise<MaterialIndex | null> {
   try {
-    return normalizeIndex(JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Partial<MaterialIndex>);
+    return normalizeIndex(JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Partial<MaterialIndex> & { pages?: Array<Partial<MaterialPublicPageManifestEntry> & { url?: string }> });
   } catch {
     return null;
   }
@@ -126,7 +145,7 @@ export async function readIndex(cacheDir = getDefaultCacheDir()): Promise<Materi
 
 export async function writeIndex(index: MaterialIndex, cacheDir = getDefaultCacheDir()): Promise<void> {
   await ensureCacheDirs(cacheDir);
-  await writeFile(indexPath(cacheDir), `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+  await writeFile(indexPath(cacheDir), `${JSON.stringify(toPublicIndex(index), null, 2)}\n`, 'utf8');
 }
 
 export async function writePage(page: MaterialPage, cacheDir = getDefaultCacheDir()): Promise<void> {
@@ -158,27 +177,36 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
   const index = await readIndex(cacheDir);
   const ageMs = await cacheAgeMs(cacheDir);
   const coverageHealth = index?.coverageDiagnostics?.coverageHealth;
-  const diagPath = latestDiagnosticsPath(cacheDir);
-  const [latestLogFile, latestDiagnosticsFile, dsdbFields] = await Promise.all([
-    pathIfExists(latestLogPath(cacheDir)),
-    pathIfExists(diagPath),
-    readDsdbFieldsFromDiagnostics(diagPath)
-  ]);
   return {
     cacheDir,
     hasCache: Boolean(index),
+    source: index?.source ?? null,
     capturedAt: index?.capturedAt ?? null,
     pageCount: index?.pageCount ?? 0,
     attemptedPageCount: index?.attemptedPageCount ?? 0,
     failedPageCount: index?.failedPageCount ?? 0,
     failedUrls: index?.failedUrls ?? [],
     ageMs,
+    ttlMs: maxAgeHours * 60 * 60 * 1000,
     isFresh: isCacheFresh(ageMs, maxAgeHours),
     ...(coverageHealth !== undefined ? { coverageHealth } : {}),
-    ...(index?.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
-    ...(index?.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
-    latestLogFile,
+    ...(index?.qualitySummary ? { qualitySummary: index.qualitySummary } : {})
+  };
+}
+
+export async function getCacheDiagnostics(cacheDir = getDefaultCacheDir()): Promise<CacheDiagnostics> {
+  const diagPath = latestDiagnosticsPath(cacheDir);
+  const [latestLogFile, latestDiagnosticsFile, dsdbFields, diagnostics] = await Promise.all([
+    pathIfExists(latestLogPath(cacheDir)),
+    pathIfExists(diagPath),
+    readDsdbFieldsFromDiagnostics(diagPath),
+    readDiagnosticsJson(diagPath)
+  ]);
+  return {
+    cacheDir,
     latestDiagnosticsFile,
+    latestLogFile,
+    diagnostics,
     ...(dsdbFields?.directJsonEnabled != null ? { directJsonEnabled: dsdbFields.directJsonEnabled } : {}),
     ...(dsdbFields?.browserOnlyFallback != null ? { browserOnlyFallback: dsdbFields.browserOnlyFallback } : {}),
     ...(dsdbFields?.directJsonDisabledReason != null ? { directJsonDisabledReason: dsdbFields.directJsonDisabledReason } : {}),
@@ -384,7 +412,7 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
 }
 
 function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
-  const pages = index.pages ?? [];
+  const pages = (index.pages ?? []).map((page) => normalizePageMeta(page, index.capturedAt ?? ''));
   return {
     source: index.source ?? 'https://m3.material.io',
     capturedAt: index.capturedAt ?? '',
@@ -392,10 +420,61 @@ function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {
     attemptedPageCount: index.attemptedPageCount ?? index.pageCount ?? pages.length,
     failedPageCount: index.failedPageCount ?? 0,
     failedUrls: index.failedUrls ?? [],
+    ...(index.qualitySummary ? { qualitySummary: index.qualitySummary } : {}),
     ...(index.extractionDiagnostics ? { extractionDiagnostics: index.extractionDiagnostics } : {}),
     ...(index.coverageDiagnostics ? { coverageDiagnostics: index.coverageDiagnostics } : {}),
     ...(index.qualityReport ? { qualityReport: index.qualityReport } : {}),
     pages
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizePageMeta(page: Partial<MaterialIndex['pages'][number]> & { sourceUrl?: string; url?: string }, capturedAt: string): MaterialIndex['pages'][number] {
+  const pagePath = page.path ?? '';
+  const sourceUrl = page.sourceUrl ?? page.url ?? '';
+  return {
+    id: page.id ?? pagePath,
+    title: page.title ?? pagePath,
+    url: sourceUrl,
+    path: pagePath,
+    section: page.section ?? '',
+    headings: page.headings ?? [],
+    capturedAt: page.capturedAt ?? capturedAt,
+    ...(page.publishedYear !== undefined ? { publishedYear: page.publishedYear } : {})
+  };
+}
+
+function summarizeQualityReport(report: MaterialIndex['qualityReport']): QualitySummary | undefined {
+  if (!report) return undefined;
+  return {
+    suspiciousPageCount: report.suspiciousPages.length,
+    rejectedRouteCount: report.rejectedRoutes.length,
+    duplicateContentGroupCount: report.duplicateContent.length,
+    shortPageCount: report.shortPages.length,
+    duplicateTitleGroupCount: report.duplicateTitles.length
+  };
+}
+
+function toPublicIndex(index: MaterialIndex): MaterialPublicIndex {
+  return {
+    source: index.source,
+    capturedAt: index.capturedAt,
+    pageCount: index.pageCount,
+    attemptedPageCount: index.attemptedPageCount,
+    failedPageCount: index.failedPageCount,
+    failedUrls: index.failedUrls,
+    ...(index.qualitySummary || index.qualityReport ? { qualitySummary: index.qualitySummary ?? summarizeQualityReport(index.qualityReport) } : {}),
+    pages: index.pages.map((page) => ({
+      path: page.path,
+      title: page.title,
+      sourceUrl: page.url,
+      section: page.section,
+      headings: page.headings,
+      ...(page.publishedYear !== undefined ? { publishedYear: page.publishedYear } : {})
+    }))
   };
 }
 

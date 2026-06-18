@@ -1,10 +1,10 @@
 import { stat } from 'node:fs/promises';
 import MiniSearch from 'minisearch';
-import { cacheStatus, getDefaultCacheDir, indexPath, readIndex, readPage } from './cache.js';
+import { cacheStatus, getCacheDiagnostics, getDefaultCacheDir, indexPath, readIndex, readPage } from './cache.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
-import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
+import type { CacheDiagnostics, CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
 
 const MATERIAL_BASE_URL = 'https://m3.material.io';
 const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
@@ -56,6 +56,10 @@ export class MaterialDocsStore {
     return cacheStatus(this.cacheDir, maxAgeHours);
   }
 
+  async getDiagnostics(): Promise<CacheDiagnostics> {
+    return getCacheDiagnostics(this.cacheDir);
+  }
+
   async getIndex(): Promise<MaterialIndex> {
     return this.readCurrentIndex();
   }
@@ -71,7 +75,10 @@ export class MaterialDocsStore {
     return { meta: page, markdown: await readPage(page.path, this.cacheDir) };
   }
 
-  async getComponentDocs(componentName: string): Promise<Array<{ path: string; title: string; url: string; markdown: string }>> {
+  async getComponentDocs(
+    componentName: string,
+    options: { includeMarkdown?: boolean; maxPages?: number; maxMarkdownChars?: number } = {}
+  ): Promise<Array<{ path: string; title: string; url: string; section: string; headings: string[]; markdown?: string }>> {
     const normalizedName = componentName.trim();
     if (!normalizedName) return [];
 
@@ -79,17 +86,31 @@ export class MaterialDocsStore {
     const titleQuery = normalizeSearchText(normalizedName);
     const index = await this.getIndex();
     const matched = index.pages.filter((p) => p.section.toLowerCase().includes(`components/${query}`) || p.path.toLowerCase().includes(`/components/${query}`) || normalizeSearchText(p.title).includes(titleQuery));
-    return Promise.all(matched.map(async (p) => ({ path: p.path, title: p.title, url: p.url, markdown: await readPage(p.path, this.cacheDir) })));
+    const limited = matched.slice(0, options.maxPages ?? 10);
+    if (!options.includeMarkdown) {
+      return limited.map((p) => ({ path: p.path, title: p.title, url: p.url, section: p.section, headings: p.headings }));
+    }
+    const maxMarkdownChars = options.maxMarkdownChars ?? 20_000;
+    return Promise.all(limited.map(async (p) => ({
+      path: p.path,
+      title: p.title,
+      url: p.url,
+      section: p.section,
+      headings: p.headings,
+      markdown: (await readPage(p.path, this.cacheDir)).slice(0, maxMarkdownChars)
+    })));
   }
 
-  async listComponents(): Promise<string[]> {
+  async listComponents(): Promise<Array<{ component: string; section: string; path: string }>> {
     const index = await this.getIndex();
-    const components = new Set<string>();
+    const components = new Map<string, { component: string; section: string; path: string }>();
     for (const page of index.pages) {
       const match = page.path.match(/^components\/([^/]+)\//);
-      if (match?.[1]) components.add(match[1]);
+      if (match?.[1] && !components.has(match[1])) {
+        components.set(match[1], { component: match[1], section: page.section, path: page.path });
+      }
     }
-    return Array.from(components).sort();
+    return Array.from(components.values()).sort((a, b) => a.component.localeCompare(b.component));
   }
 
   async searchDocs(query: string, limit = 10): Promise<SearchResult[]> {

@@ -188,7 +188,7 @@ Each cache index stores a `coverageHealth` field alongside `coverageWarnings` in
 | `unverified` | The crawl extracted content successfully but coverage cannot be confirmed — for example, because Playwright was unavailable or URL discovery returned nothing. |
 | `failed` | A significant unexpected coverage gap or regression was detected. Promotion is blocked unless `--force` is used. |
 
-A `partial` or `unverified` cache remains fully usable for search and page retrieval. `material_docs_cache_status` exposes `coverageHealth` directly so agents can decide how to interpret results. Search and get tool responses include the cache status object, which contains `coverageHealth` and the full `coverageWarnings` list.
+A `partial` or `unverified` cache remains fully usable for search and page retrieval. `material_docs_cache_status` exposes `coverageHealth` directly so agents can decide how to interpret results without receiving the full diagnostics payload by default.
 
 First-cache coverage policy: if a crawl that was not intentionally limited by `--max-pages` discovers substantially more public documentation URLs than it accepted, the cache promotion is rejected — the same coverage gap check that applies to subsequent crawls is also enforced on the first cache. Use `--force` to promote anyway if you have confirmed the gap is expected.
 
@@ -203,11 +203,11 @@ Direct JSON is a fast content path, not the only coverage source. During `update
 
 The browser crawler still opens links exactly as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` as a fallback when the discovered route does not render stable matching content. Before extraction, it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
 
-Each refreshed index includes:
+Each refreshed cache now writes:
 
-- `qualityReport` for duplicate page bodies, suspicious route/content mismatches, short pages, duplicate titles, and page counts by section;
-- `extractionDiagnostics` for JSON-vs-DOM extraction counts, token table coverage/context diagnostics, status table placeholder diagnostics, unknown chunk/resource types, image/video counts, unresolved resources, and per-page fallback reasons;
-- `coverageDiagnostics` for discovered public URL counts, discovery-source counts, uncrawled discovered routes, `max-pages` partial-crawl markers, and whether coverage was verified or left partial/unverified.
+- `index.json` as a compact public manifest with cache-level metadata plus page lookup/search metadata only;
+- `pages/**/*.md` as the cached page bodies;
+- `diagnostics/latest-update.json` as the verbose refresh/debug record, including extraction and coverage diagnostics.
 
 This helps diagnose both SPA route failures such as `/components/buttons` rendering the parent `Components` listing instead of the Buttons documentation, and JSON-shape drift where a page had to fall back to the browser path.
 
@@ -232,6 +232,8 @@ Arguments:
 
 `limit` defaults to 10 and is capped at 25.
 
+Returns compact `cache` metadata plus `results` with `title`, `path`, `sourceUrl`, `section`, `headings`, `excerpt`, and `score`.
+
 ### `get_material_page`
 
 Returns one cached page by source URL or local cache path. URL query strings, fragments, trailing slashes, leading slashes, optional `.md` suffixes, and component overview aliases are normalized before lookup.
@@ -244,25 +246,34 @@ Arguments:
 }
 ```
 
+Returns compact `cache` metadata plus a single `page` object with `meta` and `markdown`.
+
 ### `get_component_docs`
 
-Returns all cached pages matching a Material component name.
+Returns cached pages matching a Material component name. By default it returns bounded page summaries, not full markdown.
 
 Arguments:
 
 ```json
 {
-  "componentName": "dialogs"
+  "componentName": "dialogs",
+  "includeMarkdown": false,
+  "maxPages": 10,
+  "maxMarkdownChars": 20000
 }
 ```
 
 ### `list_material_components`
 
-Lists component slugs discovered under `components/*`.
+Lists compact component entries discovered under `components/*`.
 
 ### `material_docs_cache_status`
 
-Returns local cache status and startup background refresh status. The `status` object includes a top-level `coverageHealth` field (`"verified"`, `"partial"`, `"unverified"`, or `"failed"`) and the full `coverageDiagnostics` object with `coverageWarnings`. Search and page-retrieval tools include the same `status` object in their responses so agents can check coverage health alongside results.
+Returns local cache status and startup background refresh status. The default `status` payload is compact: cache path, freshness, age/TTL, counts, source, `coverageHealth`, and `qualitySummary`.
+
+### `material_docs_cache_diagnostics`
+
+Returns explicit cache diagnostics from `diagnostics/latest-update.json`. Summary-only by default, with filters for route/path/failed/skipped subsets and an explicit full-dump opt-in.
 
 ### `refresh_material_docs`
 

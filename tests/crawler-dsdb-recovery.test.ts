@@ -7,7 +7,7 @@ import {
   buildSlugOnlyRoutesFromDocPaths,
   extractCarbonVersionFromNetworkUrls
 } from '../src/crawler.js';
-import { cacheStatus } from '../src/cache.js';
+import { getCacheDiagnostics } from '../src/cache.js';
 import { normalizeMaterialPublicDocPath, normalizeMaterialUrl } from '../src/crawler-utils.js';
 import type { CrawlProgress } from '../src/types.js';
 
@@ -505,7 +505,7 @@ describe('DSDB recovery integration', () => {
     expect(raw['directJsonDisabledReason']).toBeNull();
   }, 20_000);
 
-  it('exposes networkRecoveryFailureReason in cacheStatus after failed recovery', async () => {
+  it('exposes networkRecoveryFailureReason in explicit cache diagnostics after failed recovery', async () => {
     // Write a diagnostics file simulating a failed network recovery
     const diagDir = path.join(cacheDir, 'diagnostics');
     await mkdir(diagDir, { recursive: true });
@@ -519,15 +519,15 @@ describe('DSDB recovery integration', () => {
       directJsonDisabledReason: 'no-dsdb-urls-captured'
     }));
 
-    const status = await cacheStatus(cacheDir);
-    expect(status.networkRecoveryFailureReason).toBe('no-dsdb-urls-captured');
-    expect(status.browserOnlyFallback).toBe(true);
-    expect(status.bundleDiscoveryFailed).toBe(true);
-    expect(status.networkRecoveryAttempted).toBe(true);
-    expect(status.networkRecoverySucceeded).toBe(false);
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.networkRecoveryFailureReason).toBe('no-dsdb-urls-captured');
+    expect(diagnostics.browserOnlyFallback).toBe(true);
+    expect(diagnostics.bundleDiscoveryFailed).toBe(true);
+    expect(diagnostics.networkRecoveryAttempted).toBe(true);
+    expect(diagnostics.networkRecoverySucceeded).toBe(false);
   });
 
-  it('does not expose networkRecoveryFailureReason in cacheStatus when recovery succeeds', async () => {
+  it('does not expose networkRecoveryFailureReason in explicit cache diagnostics when recovery succeeds', async () => {
     const diagDir = path.join(cacheDir, 'diagnostics');
     await mkdir(diagDir, { recursive: true });
     await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
@@ -539,10 +539,10 @@ describe('DSDB recovery integration', () => {
       browserOnlyFallback: false
     }));
 
-    const status = await cacheStatus(cacheDir);
-    expect(status.networkRecoveryFailureReason).toBeUndefined();
-    expect(status.directJsonEnabled).toBe(true);
-    expect(status.dsdbConfigSource).toBe('browser-network');
-    expect(status.browserOnlyFallback).toBe(false);
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.networkRecoveryFailureReason).toBeUndefined();
+    expect(diagnostics.directJsonEnabled).toBe(true);
+    expect(diagnostics.dsdbConfigSource).toBe('browser-network');
+    expect(diagnostics.browserOnlyFallback).toBe(false);
   });
 });

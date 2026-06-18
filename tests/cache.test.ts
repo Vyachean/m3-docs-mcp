@@ -1,8 +1,8 @@
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
+import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getCacheDiagnostics, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import { createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
 import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage } from '../src/types.js';
 
@@ -154,7 +154,34 @@ describe('cache helpers', () => {
 
   it('writes and reads the documentation index', async () => {
     await writeIndex(index, cacheDir);
-    await expect(readIndex(cacheDir)).resolves.toEqual(index);
+    await expect(readIndex(cacheDir)).resolves.toMatchObject({
+      source: index.source,
+      capturedAt: index.capturedAt,
+      pageCount: index.pageCount,
+      attemptedPageCount: index.attemptedPageCount,
+      failedPageCount: index.failedPageCount,
+      failedUrls: index.failedUrls,
+      pages: [{
+        id: page.path,
+        title: page.title,
+        url: page.url,
+        path: page.path,
+        section: page.section,
+        headings: page.headings,
+        capturedAt: index.capturedAt
+      }]
+    });
+    const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
+    expect(rawIndex.extractionDiagnostics).toBeUndefined();
+    expect(rawIndex.coverageDiagnostics).toBeUndefined();
+    expect(rawIndex.qualityReport).toBeUndefined();
+    expect(rawIndex.pages).toEqual([{
+      path: page.path,
+      title: page.title,
+      sourceUrl: page.url,
+      section: page.section,
+      headings: page.headings
+    }]);
     const age = await cacheAgeMs(cacheDir);
     expect(age).toEqual(expect.any(Number));
     expect(age).toBeGreaterThanOrEqual(0);
@@ -190,11 +217,13 @@ describe('cache helpers', () => {
     await expect(cacheStatus(cacheDir, 2)).resolves.toMatchObject({
       cacheDir,
       hasCache: true,
+      source: index.source,
       capturedAt: index.capturedAt,
       pageCount: 1,
       attemptedPageCount: 1,
       failedPageCount: 0,
       failedUrls: [],
+      ttlMs: 2 * 60 * 60 * 1000,
       isFresh: false
     });
   });
@@ -203,14 +232,28 @@ describe('cache helpers', () => {
     await expect(cacheStatus(cacheDir, 2)).resolves.toMatchObject({
       cacheDir,
       hasCache: false,
+      source: null,
       capturedAt: null,
       pageCount: 0,
       attemptedPageCount: 0,
       failedPageCount: 0,
       failedUrls: [],
       ageMs: null,
+      ttlMs: 2 * 60 * 60 * 1000,
       isFresh: false
     });
+  });
+
+  it('keeps verbose diagnostics out of default cacheStatus', async () => {
+    await writeIndex({
+      ...index,
+      extractionDiagnostics: createEmptyExtractionDiagnostics(),
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    }, cacheDir);
+
+    const status = await cacheStatus(cacheDir);
+    expect(status).not.toHaveProperty('extractionDiagnostics');
+    expect(status).not.toHaveProperty('coverageDiagnostics');
   });
 
   it('creates staging cache directories next to the target cache', async () => {
@@ -229,7 +272,10 @@ describe('cache helpers', () => {
 
     await promoteStagingCache(stagingDir, cacheDir);
 
-    expect(await readIndex(cacheDir)).toEqual(nextIndex);
+    expect(await readIndex(cacheDir)).toMatchObject({
+      capturedAt: nextIndex.capturedAt,
+      pages: [{ id: page.path, url: page.url, path: page.path }]
+    });
     await expect(readFile(indexPath(stagingDir), 'utf8')).rejects.toThrow();
     await expect(readFile(indexPath(`${cacheDir}.previous`), 'utf8')).rejects.toThrow();
   });
@@ -241,8 +287,116 @@ describe('cache helpers', () => {
 
     await promoteStagingCache(stagingDir, cacheDir);
 
-    await expect(readIndex(cacheDir)).resolves.toEqual(index);
+    await expect(readIndex(cacheDir)).resolves.toMatchObject({
+      capturedAt: index.capturedAt,
+      pages: [{ id: page.path, url: page.url, path: page.path }]
+    });
     await expect(readFile(indexPath(stagingDir), 'utf8')).rejects.toThrow();
+  });
+
+  it('reads verbose diagnostics only from diagnostics/latest-update.json', async () => {
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await ensureCacheDirs(cacheDir);
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      extractionDiagnostics: {
+        routeDiagnostics: [{ path: 'components/buttons/specs.md', sourceUsed: 'failed' }]
+      },
+      coverageDiagnostics: {
+        uncrawledDiscoveredUrls: ['/missing']
+      },
+      networkRecoveryFailureReason: 'boom'
+    }), 'utf8');
+
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.latestDiagnosticsFile).toBe(path.join(diagDir, 'latest-update.json'));
+    expect(diagnostics.diagnostics).toMatchObject({
+      extractionDiagnostics: {
+        routeDiagnostics: [{ path: 'components/buttons/specs.md', sourceUsed: 'failed' }]
+      }
+    });
+    expect(diagnostics.networkRecoveryFailureReason).toBe('boom');
+  });
+
+  it('latest-update.json can persist verbose diagnostics while index.json stays compact', async () => {
+    const fullIndex = materialIndex(1, {
+      qualitySummary: {
+        suspiciousPageCount: 1,
+        rejectedRouteCount: 1,
+        duplicateContentGroupCount: 0,
+        shortPageCount: 0,
+        duplicateTitleGroupCount: 0
+      },
+      qualityReport: {
+        suspiciousPages: [{ url: 'https://m3.material.io/components/page-0/overview', path: 'components/page-0/overview.md', title: 'Page 0', reason: 'short-markdown' }],
+        rejectedRoutes: [{ url: 'https://m3.material.io/components/missing', path: 'components/missing.md', title: 'Missing', reason: 'missing-page-reference', classification: 'route-mismatch', status: 'failed' }],
+        duplicateContent: [],
+        shortPages: [],
+        duplicateTitles: [],
+        pagesBySection: {}
+      },
+      extractionDiagnostics: (() => {
+        const diag = createEmptyExtractionDiagnostics();
+        pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs'));
+        pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/missing', {
+          path: 'components/missing.md',
+          sourceUsed: 'skipped',
+          finalMethod: null,
+          jsonSucceeded: false,
+          skippedReason: 'missing-page-reference',
+          sourceRoute: 'components/missing',
+          virtualRoute: 'components/missing.md'
+        }));
+        return diag;
+      })(),
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+    });
+    await writeIndex(fullIndex, cacheDir);
+
+    const diagDir = path.join(cacheDir, 'diagnostics');
+    await mkdir(diagDir, { recursive: true });
+    await writeFile(path.join(diagDir, 'latest-update.json'), JSON.stringify({
+      runId: 'run-1',
+      startedAt: '2026-06-18T00:00:00.000Z',
+      finishedAt: '2026-06-18T00:00:05.000Z',
+      elapsedMs: 5000,
+      cacheDir,
+      stagingDir: `${cacheDir}.staging`,
+      commandSummary: { command: 'update', maxPages: 25, maxPagesExplicit: true, allowBrowserFallback: false },
+      promotionDecision: 'promoted',
+      hasPreviousCache: true,
+      previousPageCount: 9,
+      generatedPageCount: 5,
+      attemptedPages: 6,
+      savedPages: 5,
+      failedPages: 1,
+      failedRoutes: ['https://m3.material.io/components/missing'],
+      qualitySummary: fullIndex.qualitySummary,
+      coverageHealth: fullIndex.coverageDiagnostics?.coverageHealth ?? null,
+      extractionDiagnostics: fullIndex.extractionDiagnostics,
+      coverageDiagnostics: fullIndex.coverageDiagnostics,
+      qualityReport: fullIndex.qualityReport
+    }), 'utf8');
+
+    const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
+    expect(rawIndex.extractionDiagnostics).toBeUndefined();
+    expect(rawIndex.coverageDiagnostics).toBeUndefined();
+    expect(rawIndex.qualityReport).toBeUndefined();
+
+    const diagnostics = await getCacheDiagnostics(cacheDir);
+    expect(diagnostics.diagnostics).toMatchObject({
+      extractionDiagnostics: {
+        routeDiagnostics: expect.arrayContaining([
+          expect.objectContaining({ path: 'components/missing.md', skippedReason: 'missing-page-reference' })
+        ])
+      },
+      coverageDiagnostics: expect.any(Object),
+      qualityReport: {
+        rejectedRoutes: expect.arrayContaining([
+          expect.objectContaining({ reason: 'missing-page-reference' })
+        ])
+      }
+    });
   });
 
   it('rejects suspicious crawl results before cache promotion', () => {

@@ -8,13 +8,26 @@ export type UpdateRunDiagnostics = {
   runId: string;
   startedAt: string;
   finishedAt: string | null;
+  elapsedMs?: number | null;
   cacheDir: string;
   stagingDir: string | null;
   logFile: string;
+  commandSummary?: {
+    command: string;
+    concurrency?: number | null;
+    allowBrowserFallback?: boolean | null;
+    includeBlog?: boolean | null;
+    force?: boolean | null;
+    maxPages?: number | null;
+    maxPagesExplicit?: boolean | null;
+  } | null;
   attemptedPages: number;
   savedPages: number;
   failedPages: number;
   failedRoutes: string[];
+  previousPageCount?: number | null;
+  generatedPageCount?: number | null;
+  promotionFailureReason?: string | null;
   skippedBlogCount: number;
   tokenTablesRequested: number;
   tokenTablesResolved: number;
@@ -37,6 +50,10 @@ export type UpdateRunDiagnostics = {
   hasPreviousCache: boolean;
   preservedFailedStagingPath: string | null;
   coverageHealth: string | null;
+  qualitySummary?: Record<string, unknown> | null;
+  extractionDiagnostics?: Record<string, unknown> | null;
+  coverageDiagnostics?: Record<string, unknown> | null;
+  qualityReport?: Record<string, unknown> | null;
   isLimitedRun?: boolean | null;
   discoveredPublicUrlCount?: number | null;
   resolvableSourceRouteCount?: number | null;
@@ -50,7 +67,6 @@ export type UpdateRunDiagnostics = {
   skippedNonContentIndexCount?: number | null;
   skippedLegacyRouteCount?: number | null;
   skippedPlatformSpecificUnmappedCount?: number | null;
-  elapsedMs?: number | null;
   lastPhase?: string | null;
   concurrency?: number | null;
   lastRatePagesPerSecond?: number | null;

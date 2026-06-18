@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
   type MockStore = {
     cacheDir?: string;
     getStatus: ReturnType<typeof vi.fn<(maxAgeHours?: number) => Promise<CacheStatus>>>;
+    getDiagnostics: ReturnType<typeof vi.fn>;
     refresh: ReturnType<typeof vi.fn<(options?: RefreshOptions) => Promise<MaterialIndex>>>;
     searchDocs: ReturnType<typeof vi.fn<(query: string, limit: number) => Promise<SearchResult[]>>>;
     getPage: ReturnType<typeof vi.fn>;
@@ -43,20 +44,21 @@ const mocks = vi.hoisted(() => {
   const makeStatus = (overrides: Partial<CacheStatus> = {}): CacheStatus => ({
     cacheDir: '/cache',
     hasCache: true,
+    source: 'https://m3.material.io',
     capturedAt: '2026-05-18T00:00:00.000Z',
     pageCount: 1,
     attemptedPageCount: 1,
     failedPageCount: 0,
     failedUrls: [],
     ageMs: 60_000,
+    ttlMs: 24 * 60 * 60 * 1000,
     isFresh: true,
-    latestLogFile: null,
-    latestDiagnosticsFile: null,
     ...overrides
   });
 
   const makeStore = (status: CacheStatus = makeStatus()): MockStore => ({
     getStatus: vi.fn(async () => status),
+    getDiagnostics: vi.fn(async () => ({ cacheDir: '/cache', latestDiagnosticsFile: null, latestLogFile: null, diagnostics: null })),
     refresh: vi.fn(async () => makeIndex()),
     searchDocs: vi.fn(async () => []),
     getPage: vi.fn(async () => null),
@@ -155,6 +157,7 @@ describe('serveMcp', () => {
       'get_component_docs',
       'list_material_components',
       'material_docs_cache_status',
+      'material_docs_cache_diagnostics',
       'refresh_material_docs'
     ]);
     expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
@@ -192,6 +195,9 @@ describe('serveMcp', () => {
     const componentSchema = schemaFor('get_component_docs');
     expect(componentSchema.componentName.safeParse(' Dialogs ').data).toBe('Dialogs');
     expect(componentSchema.componentName.safeParse('  ').success).toBe(false);
+    expect(componentSchema.includeMarkdown.safeParse(undefined).data).toBe(false);
+    expect(componentSchema.maxPages.safeParse(undefined).data).toBe(10);
+    expect(componentSchema.maxMarkdownChars.safeParse(undefined).data).toBe(20_000);
 
     const refreshSchema = schemaFor('refresh_material_docs');
     expect(refreshSchema.maxPages.safeParse(1).success).toBe(true);
@@ -250,9 +256,18 @@ describe('serveMcp', () => {
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
     expect(result).toMatchObject({
-      results: [searchResult],
+      results: [{
+        title: searchResult.title,
+        path: searchResult.path,
+        sourceUrl: searchResult.url,
+        section: searchResult.section,
+        headings: searchResult.headings,
+        excerpt: searchResult.excerpt,
+        score: searchResult.score
+      }],
       refresh: { running: true, completedAt: null, error: null }
     });
+    expect(result).not.toHaveProperty('status');
     expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
   });
@@ -280,5 +295,220 @@ describe('serveMcp', () => {
     await callTool('refresh_material_docs', { maxPages: 77, force: true });
 
     expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, force: true });
+  });
+
+  it('describes refresh_material_docs as deterministic JSON-first refresh with browser fallback disabled by default', async () => {
+    const store = mocks.makeStore();
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const refreshTool = mocks.toolDefinitions.find((tool) => tool.name === 'refresh_material_docs');
+    expect(refreshTool?.description).toContain('deterministic JSON-based pipeline');
+    expect(refreshTool?.description).toContain('Browser fallback is disabled by default');
+    expect(refreshTool?.description).not.toContain('using Playwright');
+  });
+
+  it('returns summary-only diagnostics by default', async () => {
+    const store = mocks.makeStore();
+    store.getDiagnostics.mockResolvedValue({
+      cacheDir: '/cache',
+      latestDiagnosticsFile: '/cache/diagnostics/latest-update.json',
+      latestLogFile: '/cache/logs/latest.jsonl',
+      diagnostics: {
+        runId: 'run-1',
+        startedAt: '2026-06-18T00:00:00.000Z',
+        finishedAt: '2026-06-18T00:00:05.000Z',
+        promotionDecision: 'promoted',
+        hasPreviousCache: true,
+        previousPageCount: 9,
+        generatedPageCount: 3,
+        attemptedPages: 4,
+        failedPages: 1,
+        failedRoutes: ['https://m3.material.io/components/missing'],
+        qualitySummary: { suspiciousPageCount: 0, rejectedRouteCount: 1, duplicateContentGroupCount: 0, shortPageCount: 0, duplicateTitleGroupCount: 0 },
+        extractionDiagnostics: {
+          routeDiagnostics: [
+            { path: 'components/button/specs.md', url: 'https://m3.material.io/components/button/specs', sourceUsed: 'direct-json' },
+            { path: 'components/missing.md', url: 'https://m3.material.io/components/missing', sourceUsed: 'failed', fallbackReason: 'json-fetch-failed' }
+          ],
+          pagesFailed: 1
+        },
+        coverageDiagnostics: { coverageHealth: 'partial', uncrawledDiscoveredUrls: ['/missing'] }
+      }
+    });
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+    const result = await callTool('material_docs_cache_diagnostics', {});
+    const diagnostics = result.diagnostics as Record<string, unknown>;
+
+    expect(diagnostics.routeDiagnosticsAvailable).toBe(true);
+    expect(diagnostics.routeDiagnosticsCount).toBe(2);
+    expect(diagnostics).not.toHaveProperty('fullDiagnostics');
+    expect(diagnostics).not.toHaveProperty('filteredRouteDiagnostics');
+    expect(diagnostics.compactSummary).toMatchObject({
+      pageCount: 3,
+      attemptedPageCount: 4,
+      failedPageCount: 1,
+      failedUrls: ['https://m3.material.io/components/missing'],
+      coverageHealth: 'partial'
+    });
+  });
+
+  it('filters route diagnostics by failed/skipped/path/route and respects limit', async () => {
+    const store = mocks.makeStore();
+    store.getDiagnostics.mockResolvedValue({
+      cacheDir: '/cache',
+      latestDiagnosticsFile: '/cache/diagnostics/latest-update.json',
+      latestLogFile: '/cache/logs/latest.jsonl',
+      diagnostics: {
+        extractionDiagnostics: {
+          routeDiagnostics: [
+            { path: 'components/buttons/specs.md', virtualRoute: 'components/buttons/specs.md', url: 'https://m3.material.io/components/buttons/specs', sourceUsed: 'direct-json', finalMethod: 'direct-json' },
+            { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] },
+            { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+          ]
+        }
+      }
+    });
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const summaryOnly = await callTool('material_docs_cache_diagnostics', { summaryOnly: true });
+    expect(summaryOnly.diagnostics as Record<string, unknown>).not.toHaveProperty('filteredRouteDiagnostics');
+
+    const expandedSummary = await callTool('material_docs_cache_diagnostics', { summaryOnly: false });
+    expect((expandedSummary.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/buttons/specs.md', virtualRoute: 'components/buttons/specs.md', url: 'https://m3.material.io/components/buttons/specs', sourceUsed: 'direct-json', finalMethod: 'direct-json' },
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] },
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
+    const failedOnly = await callTool('material_docs_cache_diagnostics', { failedOnly: true });
+    expect((failedOnly.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
+    const skippedOnly = await callTool('material_docs_cache_diagnostics', { skippedOnly: true });
+    expect((skippedOnly.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
+    const byPath = await callTool('material_docs_cache_diagnostics', { path: '/components/skipped.md' });
+    expect((byPath.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/skipped.md', sourceRoute: 'components/skipped', virtualRoute: 'components/skipped.md', url: 'https://m3.material.io/components/skipped', sourceUsed: 'skipped', skippedReason: 'missing-page-reference', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
+    const byRoute = await callTool('material_docs_cache_diagnostics', { route: 'https://m3.material.io/components/failed' });
+    expect((byRoute.diagnostics as Record<string, unknown>).filteredRouteDiagnostics).toEqual([
+      { path: 'components/failed.md', sourceRoute: 'components/failed', url: 'https://m3.material.io/components/failed', sourceUsed: 'failed', finalMethod: null, fallbackReasons: ['json-fetch-failed'] }
+    ]);
+
+    const limited = await callTool('material_docs_cache_diagnostics', { summaryOnly: false, limit: 1 });
+    expect(((limited.diagnostics as Record<string, unknown>).filteredRouteDiagnostics as unknown[])).toHaveLength(1);
+  });
+
+  it('keeps normal MCP tool responses compact and free of diagnostics dumps', async () => {
+    const status = mocks.makeStatus({ coverageHealth: 'partial' });
+    const store = mocks.makeStore(status);
+    store.searchDocs.mockResolvedValue([{
+      title: 'Buttons',
+      url: 'https://m3.material.io/components/buttons/specs',
+      path: 'components/buttons/specs.md',
+      section: 'components/buttons',
+      headings: ['Buttons'],
+      score: 1,
+      excerpt: 'Buttons docs'
+    }]);
+    store.getPage.mockResolvedValue({
+      meta: {
+        id: 'buttons',
+        title: 'Buttons',
+        url: 'https://m3.material.io/components/buttons/specs',
+        path: 'components/buttons/specs.md',
+        section: 'components/buttons',
+        headings: ['Buttons'],
+        capturedAt: '2026-05-18T00:00:00.000Z'
+      },
+      markdown: '# Buttons'
+    });
+    store.getComponentDocs.mockResolvedValue([{
+      path: 'components/buttons/specs.md',
+      title: 'Buttons',
+      url: 'https://m3.material.io/components/buttons/specs',
+      section: 'components/buttons',
+      headings: ['Buttons'],
+      markdown: '# Buttons'
+    }]);
+    store.listComponents.mockResolvedValue([{ component: 'buttons', section: 'components/buttons', path: 'components/buttons/specs.md' }]);
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const responses = await Promise.all([
+      callTool('search_material_docs', { query: 'buttons', limit: 5 }),
+      callTool('get_material_page', { pathOrUrl: 'components/buttons/specs.md' }),
+      callTool('get_component_docs', { componentName: 'Buttons', includeMarkdown: true, maxPages: 5, maxMarkdownChars: 2000 }),
+      callTool('list_material_components', {}),
+      callTool('material_docs_cache_status', {})
+    ]);
+
+    for (const response of responses) {
+      const json = JSON.stringify(response);
+      expect(json).not.toContain('extractionDiagnostics');
+      expect(json).not.toContain('coverageDiagnostics');
+      expect(json).not.toContain('routeDiagnostics');
+      expect(json).not.toContain('tokenContextDiagnostics');
+      expect(json).not.toContain('statusTableDiagnostics');
+      expect(json).not.toContain('uncrawledDiscoveredUrls');
+    }
+  });
+
+  it('returns full diagnostics only when explicitly requested', async () => {
+    const diagnosticsPayload = {
+      extractionDiagnostics: {
+        routeDiagnostics: [{ path: 'components/button/specs.md', sourceUsed: 'direct-json' }]
+      },
+      coverageDiagnostics: {
+        coverageHealth: 'verified'
+      }
+    };
+    const store = mocks.makeStore();
+    store.getDiagnostics.mockResolvedValue({
+      cacheDir: '/cache',
+      latestDiagnosticsFile: '/cache/diagnostics/latest-update.json',
+      latestLogFile: '/cache/logs/latest.jsonl',
+      diagnostics: diagnosticsPayload
+    });
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+    const result = await callTool('material_docs_cache_diagnostics', { includeFullDiagnostics: true });
+
+    expect((result.diagnostics as Record<string, unknown>).fullDiagnostics).toEqual(diagnosticsPayload);
+  });
+
+  it('reports when route diagnostics are absent instead of pretending there are none', async () => {
+    const store = mocks.makeStore();
+    store.getDiagnostics.mockResolvedValue({
+      cacheDir: '/cache',
+      latestDiagnosticsFile: '/cache/diagnostics/latest-update.json',
+      latestLogFile: '/cache/logs/latest.jsonl',
+      diagnostics: {
+        extractionDiagnostics: {},
+        coverageDiagnostics: { coverageHealth: 'unverified' }
+      }
+    });
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+    const result = await callTool('material_docs_cache_diagnostics', {});
+    const diagnostics = result.diagnostics as Record<string, unknown>;
+
+    expect(diagnostics.routeDiagnosticsAvailable).toBe(false);
+    expect(diagnostics.routeDiagnosticsMessage).toBe('Route diagnostics are not present in diagnostics/latest-update.json.');
+    expect(diagnostics).not.toHaveProperty('filteredRouteDiagnostics');
   });
 });
