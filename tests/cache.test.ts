@@ -874,6 +874,43 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');
   });
 
+  it('fails full refresh promotion when a required component route is present in sources but missing from output', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs'));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/lists/specs'));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('styles/color/roles'));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('foundations/design-tokens/overview'));
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        isLimitedRun: false,
+        requiredRouteCoverage: [
+          {
+            key: 'switch',
+            label: 'Switch',
+            sourcePresent: true,
+            saved: false,
+            siteMetaRoutes: ['/components/switches'],
+            bundleRoutes: ['/components/switch'],
+            pagePaths: [],
+            missingReason: 'missing-cache-output'
+          }
+        ]
+      })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required component routes are missing from cache output: switch');
+  });
+
   it('fails a --max-pages 20 smoke promotion when a required sample is absent from both pages and routeDiagnostics', () => {
     const diag = createEmptyExtractionDiagnostics();
     for (const slug of REQUIRED_SAMPLE_SLUGS.slice(1)) {

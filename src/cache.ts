@@ -409,6 +409,15 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
       'Keeping the existing cache. Use --force to promote anyway.'
     );
   }
+
+  const missingRequiredComponents = (nextIndex.coverageDiagnostics?.requiredRouteCoverage ?? [])
+    .filter((entry) => entry.sourcePresent && !entry.saved);
+  if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && missingRequiredComponents.length > 0) {
+    throw new Error(
+      `Required component routes are missing from cache output: ${missingRequiredComponents.map((entry) => entry.key).join(', ')}. ` +
+      'Keeping the existing cache. Use --force to promote anyway.'
+    );
+  }
 }
 
 function normalizeIndex(index: Partial<MaterialIndex>): MaterialIndex {

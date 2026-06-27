@@ -28,9 +28,20 @@ export type BundleRouteEntry = {
   tabs?: BundleTabEntry[];
 };
 
+export type RouteAliasMatchedBy = 'bundle-alternate-slug' | `component-alias:${string}`;
+
 export type PageReferenceResolution =
-  | { pageReferenceSource: 'bundle-table'; entry: BundleRouteEntry }
-  | { pageReferenceSource: 'missing' };
+  | {
+    pageReferenceSource: 'bundle-table';
+    entry: BundleRouteEntry;
+    normalizedRoute: string;
+    bundleMatchedRoute: string;
+    aliasMatchedBy?: RouteAliasMatchedBy;
+  }
+  | {
+    pageReferenceSource: 'missing';
+    normalizedRoute: string;
+  };
 
 type FetchLike = typeof fetch;
 
@@ -220,6 +231,17 @@ function normalizeSlugForMatch(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
 
+const EXPLICIT_COMPONENT_ROUTE_ALIASES: Readonly<Record<string, { target: string; aliasMatchedBy: RouteAliasMatchedBy }>> = {
+  'components/switches': {
+    target: 'components/switch',
+    aliasMatchedBy: 'component-alias:switches-to-switch'
+  },
+  'components/switch/overview': {
+    target: 'components/switch',
+    aliasMatchedBy: 'component-alias:switch-overview-to-parent'
+  }
+};
+
 /**
  * Resolves a route path to its bundle route entry by exact slug match, falling back to
  * alternateSlugs. Does not invent new routes — returns "missing" when no entry matches.
@@ -227,12 +249,41 @@ function normalizeSlugForMatch(path: string): string {
 export function resolvePageReference(path: string, bundleRoutes: BundleRouteEntry[]): PageReferenceResolution {
   const target = normalizeSlugForMatch(path);
   const exact = bundleRoutes.find((entry) => entry.slug === target);
-  if (exact) return { pageReferenceSource: 'bundle-table', entry: exact };
+  if (exact) {
+    return {
+      pageReferenceSource: 'bundle-table',
+      entry: exact,
+      normalizedRoute: target,
+      bundleMatchedRoute: exact.slug
+    };
+  }
 
   const viaAlias = bundleRoutes.find((entry) => entry.alternateSlugs?.includes(target));
-  if (viaAlias) return { pageReferenceSource: 'bundle-table', entry: viaAlias };
+  if (viaAlias) {
+    return {
+      pageReferenceSource: 'bundle-table',
+      entry: viaAlias,
+      normalizedRoute: target,
+      bundleMatchedRoute: viaAlias.slug,
+      aliasMatchedBy: 'bundle-alternate-slug'
+    };
+  }
 
-  return { pageReferenceSource: 'missing' };
+  const explicitAlias = EXPLICIT_COMPONENT_ROUTE_ALIASES[target];
+  if (explicitAlias) {
+    const aliasedEntry = bundleRoutes.find((entry) => entry.slug === explicitAlias.target);
+    if (aliasedEntry) {
+      return {
+        pageReferenceSource: 'bundle-table',
+        entry: aliasedEntry,
+        normalizedRoute: target,
+        bundleMatchedRoute: aliasedEntry.slug,
+        aliasMatchedBy: explicitAlias.aliasMatchedBy
+      };
+    }
+  }
+
+  return { pageReferenceSource: 'missing', normalizedRoute: target };
 }
 
 function normalizeLabelForMatch(value: string): string {

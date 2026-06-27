@@ -98,6 +98,9 @@ export type ExtractionRouteDiagnostic = {
   url: string;
   path: string;
   sourceUsed: ExtractionSource;
+  siteMetaRoute?: string;
+  normalizedRoute?: string;
+  bundleMatchedRoute?: string;
   finalMethod: ExtractionMethod | null;
   jsonAttempted: boolean;
   jsonSucceeded: boolean;
@@ -144,6 +147,8 @@ export type ExtractionRouteDiagnostic = {
   navigationSource?: 'site-meta' | 'bundle-supplement';
   /** Where collectionId/documentId were resolved from for the page-data fetch. */
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  /** How the resolved bundle route was matched when it did not win by exact route equality. */
+  aliasMatchedBy?: 'bundle-alternate-slug' | `component-alias:${string}`;
   /** Set when this route/virtual page was never attempted — distinct from sourceUsed:"failed",
    *  which is reserved for routes that were actually attempted and errored. Excluded from
    *  failedPages/virtualPagesFailed/failedPageCount. */
@@ -167,6 +172,8 @@ export type ExtractionRouteDiagnostic = {
   pageDataStatus?: number | string;
   carbonUrl?: string;
   carbonStatus?: number | string;
+  collectionId?: string;
+  documentId?: string;
   selectedBecause?: 'budget' | 'required-validation';
 };
 
@@ -312,6 +319,42 @@ export type CoverageDiagnostics = {
   skippedNonContentIndexCount?: number;
   skippedLegacyRouteCount?: number;
   skippedPlatformSpecificUnmappedCount?: number;
+  routeResolutionSummary?: RouteResolutionSummary;
+  requiredRouteCoverage?: RequiredRouteCoverageEntry[];
+};
+
+export type RouteResolutionSummaryEntry = {
+  url: string;
+  path: string;
+  sourceUsed: ExtractionSource;
+  siteMetaRoute?: string;
+  normalizedRoute?: string;
+  bundleMatchedRoute?: string;
+  pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  aliasMatchedBy?: 'bundle-alternate-slug' | `component-alias:${string}`;
+  skippedReason?: ExtractionRouteDiagnostic['skippedReason'];
+  sourceRoute?: string;
+  virtualRoute?: string;
+  collectionId?: string;
+  documentId?: string;
+};
+
+export type RequiredRouteCoverageEntry = {
+  key: string;
+  label: string;
+  sourcePresent: boolean;
+  saved: boolean;
+  siteMetaRoutes: string[];
+  bundleRoutes: string[];
+  pagePaths: string[];
+  missingReason?: 'missing-cache-output';
+};
+
+export type RouteResolutionSummary = {
+  skippedRoutes: RouteResolutionSummaryEntry[];
+  aliasResolvedRoutes: RouteResolutionSummaryEntry[];
+  failedVirtualPages: RouteResolutionSummaryEntry[];
+  requiredRouteCoverage: RequiredRouteCoverageEntry[];
 };
 
 export type SuspiciousCrawlPage = {
