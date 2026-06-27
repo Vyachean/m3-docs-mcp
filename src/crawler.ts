@@ -17,7 +17,7 @@ import { createDsdbResourceFetcher, fetchCarbonContentByReference, fetchJsonPage
 import { SiteMetaParseError, fetchSiteMeta, type SiteMeta } from './json-extraction/fetch-site-meta.js';
 import { countCapturedResponseTypes, writeRawJsonDebugFiles, type JsonCapturedResponse, type JsonPageBundle } from './json-extraction/json-bundle.js';
 import { filterRoutes, normalizeSiteMetaRoutes, type NormalizedRoute } from './json-extraction/normalize-routes.js';
-import { buildRoutePlan } from './json-extraction/route-graph.js';
+import { buildCompactRoutePlanSummary, buildRoutePlan } from './json-extraction/route-graph.js';
 import {
   extractBundleRouteTable,
   extractCarbonVersion as extractCarbonVersionFromBundleText,
@@ -2369,7 +2369,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       .map(toRouteResolutionSummaryEntry),
     requiredRouteCoverage
   };
-  coverageDiagnostics.routePlanSummary = routePlanSummary ?? undefined;
+  if (routePlanSummary) {
+    const unresolvedAcceptedRoutes = Array.from(new Map(
+      routePlanSummary.extractionCandidates.map((entry) => [entry.canonicalRoute ?? entry.route, entry] as const)
+    ).values()).filter((entry) => {
+      const canonical = (entry.canonicalRoute ?? entry.route).replace(/^\/+/, '');
+      const canonicalPrefix = `${canonical}/`;
+      return !pages.some((page) => page.path === `${canonical}.md` || page.path.startsWith(canonicalPrefix));
+    });
+    coverageDiagnostics.routePlanSummary = buildCompactRoutePlanSummary({
+      routePlanSummary,
+      unresolvedAcceptedRoutes
+    });
+    coverageDiagnostics.fullRoutePlanSummary = routePlanSummary;
+  }
 
   // Full-refresh hard coverage gap: validated against the deterministic pipeline's own planned vs.
   // saved+failed virtual pages and selected vs. attempted source routes — never against

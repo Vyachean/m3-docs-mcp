@@ -6,6 +6,7 @@ import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import type {
   CacheDiagnostics,
   CacheStatus,
+  CompactRoutePlanBucketExample,
   CoverageHealth,
   CoverageDiagnostics,
   MaterialIndex,
@@ -14,6 +15,8 @@ import type {
   MaterialPublicPageManifestEntry,
   QualitySummary
 } from './types.js';
+
+const ROUTE_PLAN_PROBLEM_EXAMPLE_LIMIT = 5;
 
 const DiagnosticsDsdbFieldsSchema = z.object({
   directJsonEnabled: z.boolean().nullish(),
@@ -410,7 +413,8 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  const routePlanSummary = nextIndex.coverageDiagnostics?.routePlanSummary;
+  const routePlanSummary = nextIndex.coverageDiagnostics?.fullRoutePlanSummary;
+  const compactRoutePlanSummary = nextIndex.coverageDiagnostics?.routePlanSummary;
   if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && routePlanSummary) {
     if (routePlanSummary.ambiguousRoutes.length > 0) {
       throw new Error(
@@ -425,6 +429,21 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
       const canonicalPrefix = `${canonical}/`;
       return !nextIndex.pages.some((page) => page.path === `${canonical}.md` || page.path.startsWith(canonicalPrefix));
     });
+    if (unresolvedAcceptedRoutes.length > 0) {
+      throw new Error(
+        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map((entry) => entry.canonicalRoute ?? entry.route).join(', ')}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+  } else if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && compactRoutePlanSummary) {
+    const ambiguousExamples = compactRoutePlanSummary.problematicExamples.ambiguousRoutes;
+    if ((compactRoutePlanSummary.reconciliationStatusCounts.rejectedAmbiguous ?? 0) > 0) {
+      throw new Error(
+        `Public documentation routes were ambiguous during reconciliation: ${ambiguousExamples.map((entry) => entry.route).join(', ') || 'see diagnostics'}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+    const unresolvedAcceptedRoutes = compactRoutePlanSummary.problematicExamples.unresolvedAcceptedRoutes;
     if (unresolvedAcceptedRoutes.length > 0) {
       throw new Error(
         `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map((entry) => entry.canonicalRoute ?? entry.route).join(', ')}. ` +
@@ -481,6 +500,30 @@ function summarizeQualityReport(report: MaterialIndex['qualityReport']): Quality
   };
 }
 
+function toCompactRoutePlanExample(entry: {
+  route: string;
+  canonicalRoute?: string;
+  outputPath?: string;
+  reconciliationStatus: string;
+  publicDocsClassification: string;
+  navTitle?: string;
+  routeTitle?: string;
+  skippedReason?: string;
+  failureReason?: string;
+}): CompactRoutePlanBucketExample {
+  return {
+    route: entry.route,
+    ...(entry.canonicalRoute ? { canonicalRoute: entry.canonicalRoute } : {}),
+    ...(entry.outputPath ? { outputPath: entry.outputPath } : {}),
+    reconciliationStatus: entry.reconciliationStatus as CompactRoutePlanBucketExample['reconciliationStatus'],
+    publicDocsClassification: entry.publicDocsClassification as CompactRoutePlanBucketExample['publicDocsClassification'],
+    ...(entry.navTitle ? { navTitle: entry.navTitle } : {}),
+    ...(entry.routeTitle ? { routeTitle: entry.routeTitle } : {}),
+    ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
+    ...(entry.failureReason ? { failureReason: entry.failureReason } : {}),
+  };
+}
+
 function toPublicIndex(index: MaterialIndex): MaterialPublicIndex {
   return {
     source: index.source,
@@ -490,6 +533,12 @@ function toPublicIndex(index: MaterialIndex): MaterialPublicIndex {
     failedPageCount: index.failedPageCount,
     failedUrls: index.failedUrls,
     ...(index.qualitySummary || index.qualityReport ? { qualitySummary: index.qualitySummary ?? summarizeQualityReport(index.qualityReport) } : {}),
+    ...(index.coverageDiagnostics ? {
+      coverageDiagnostics: {
+        ...(index.coverageDiagnostics.coverageHealth ? { coverageHealth: index.coverageDiagnostics.coverageHealth } : {}),
+        ...(index.coverageDiagnostics.routePlanSummary ? { routePlanSummary: index.coverageDiagnostics.routePlanSummary } : {}),
+      }
+    } : {}),
     pages: index.pages.map((page) => ({
       path: page.path,
       title: page.title,

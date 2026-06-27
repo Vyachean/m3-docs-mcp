@@ -1,5 +1,5 @@
 import { normalizeMaterialPublicDocPath } from '../crawler-utils.js';
-import type { PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary } from '../types.js';
+import type { CompactRoutePlanSummary, PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary, RouteReconciliationStatus } from '../types.js';
 import type { SiteMeta } from './fetch-site-meta.js';
 import type { NormalizedRoute } from './normalize-routes.js';
 import type { BundleRouteEntry } from './page-reference-resolver.js';
@@ -16,6 +16,7 @@ type RouteCandidate = {
   exportedCarbonFileId?: string | null;
   carbonPath?: string | null;
   pageCanonId?: string | null;
+  verifiedIdentity?: boolean;
   tabs?: string[];
   alternateSlugs?: string[];
 };
@@ -23,6 +24,8 @@ type RouteCandidate = {
 type ReconciledRoute = RoutePlanEntry & {
   bundleEntry?: BundleRouteEntry;
 };
+
+const COMPACT_ROUTE_PLAN_EXAMPLE_LIMIT = 5;
 
 function normalizeRoute(path: string): string {
   if (path === '/' || path === '') return '/';
@@ -54,6 +57,7 @@ function addCandidate(map: Map<string, RouteCandidate>, route: string, source: R
   if (patch.exportedCarbonFileId && !current.exportedCarbonFileId) current.exportedCarbonFileId = patch.exportedCarbonFileId;
   if (patch.carbonPath && !current.carbonPath) current.carbonPath = patch.carbonPath;
   if (patch.pageCanonId && !current.pageCanonId) current.pageCanonId = patch.pageCanonId;
+  if (patch.verifiedIdentity !== undefined) current.verifiedIdentity = patch.verifiedIdentity;
   if (patch.tabs && !current.tabs) current.tabs = patch.tabs;
   if (patch.alternateSlugs) {
     current.alternateSlugs = Array.from(new Set([...(current.alternateSlugs ?? []), ...patch.alternateSlugs]));
@@ -174,12 +178,14 @@ function collectVerifiedIdentityMatches(candidate: RouteCandidate, bundleRoutes:
     }
   }
   if (candidate.collectionId && candidate.documentId) {
-    const byVerifiedPair = bundleRoutes.filter(
-      (entry) => entry.collectionId === candidate.collectionId && entry.documentId === candidate.documentId
-    );
-    if (byVerifiedPair.length > 0) {
-      identityFieldsUsed.push('collectionId+documentId');
-      for (const entry of byVerifiedPair) matches.add(entry);
+    if (candidate.verifiedIdentity) {
+      const byVerifiedPair = bundleRoutes.filter(
+        (entry) => entry.collectionId === candidate.collectionId && entry.documentId === candidate.documentId
+      );
+      if (byVerifiedPair.length > 0) {
+        identityFieldsUsed.push('collectionId+documentId');
+        for (const entry of byVerifiedPair) matches.add(entry);
+      }
     }
   }
   return { matches: Array.from(matches), identityFieldsUsed };
@@ -345,6 +351,7 @@ export function buildRoutePlan(params: {
       documentId: route.documentId,
       exportedCarbonFileId: routeRecord.exportedCarbonFileId ?? null,
       pageCanonId: routeRecord.pageCanonId ?? null,
+      verifiedIdentity: false,
       routeTitle: routeRecord.routeTitle,
       navTitle: routeRecord.navTitle,
     });
@@ -366,6 +373,7 @@ export function buildRoutePlan(params: {
       exportedCarbonFileId: entry.exportedCarbonFileId ?? null,
       carbonPath: entry.carbonPath ?? null,
       pageCanonId: entry.pageCanonId ?? null,
+      verifiedIdentity: true,
       routeTitle: entry.title,
       tabs: entry.tabs?.map((tab) => tab.label),
       alternateSlugs: entry.alternateSlugs,
@@ -435,5 +443,54 @@ export function buildRoutePlan(params: {
     ambiguousRoutes,
     nonPublicRoutes,
     extractionCandidates,
+  };
+}
+
+function summarizeEntry(entry: RoutePlanEntry): CompactRoutePlanSummary['problematicExamples']['staleRoutes'][number] {
+  return {
+    route: entry.route,
+    ...(entry.canonicalRoute ? { canonicalRoute: entry.canonicalRoute } : {}),
+    ...(entry.outputPath ? { outputPath: entry.outputPath } : {}),
+    reconciliationStatus: entry.reconciliationStatus,
+    publicDocsClassification: entry.publicDocsClassification,
+    ...(entry.navTitle ? { navTitle: entry.navTitle } : {}),
+    ...(entry.routeTitle ? { routeTitle: entry.routeTitle } : {}),
+    ...(entry.skippedReason ? { skippedReason: entry.skippedReason } : {}),
+    ...(entry.failureReason ? { failureReason: entry.failureReason } : {}),
+  };
+}
+
+export function buildCompactRoutePlanSummary(params: {
+  routePlanSummary: RoutePlanSummary;
+  unresolvedAcceptedRoutes?: RoutePlanEntry[];
+}): CompactRoutePlanSummary {
+  const { routePlanSummary, unresolvedAcceptedRoutes = [] } = params;
+  const statusCounts: Partial<Record<RouteReconciliationStatus, number>> = {};
+  const classificationCounts: Partial<Record<PublicDocsClassification, number>> = {};
+  const allEntries = [
+    ...routePlanSummary.acceptedRoutes,
+    ...routePlanSummary.staleRoutes,
+    ...routePlanSummary.ambiguousRoutes,
+    ...routePlanSummary.nonPublicRoutes,
+  ];
+  for (const entry of allEntries) {
+    statusCounts[entry.reconciliationStatus] = (statusCounts[entry.reconciliationStatus] ?? 0) + 1;
+    classificationCounts[entry.publicDocsClassification] = (classificationCounts[entry.publicDocsClassification] ?? 0) + 1;
+  }
+
+  return {
+    acceptedRouteCount: routePlanSummary.acceptedRoutes.length,
+    staleRouteCount: routePlanSummary.staleRoutes.length,
+    ambiguousRouteCount: routePlanSummary.ambiguousRoutes.length,
+    nonPublicRouteCount: routePlanSummary.nonPublicRoutes.length,
+    extractionCandidateCount: routePlanSummary.extractionCandidates.length,
+    reconciliationStatusCounts: statusCounts,
+    publicDocsClassificationCounts: classificationCounts,
+    problematicExamples: {
+      staleRoutes: routePlanSummary.staleRoutes.slice(0, COMPACT_ROUTE_PLAN_EXAMPLE_LIMIT).map(summarizeEntry),
+      ambiguousRoutes: routePlanSummary.ambiguousRoutes.slice(0, COMPACT_ROUTE_PLAN_EXAMPLE_LIMIT).map(summarizeEntry),
+      nonPublicRoutes: routePlanSummary.nonPublicRoutes.slice(0, COMPACT_ROUTE_PLAN_EXAMPLE_LIMIT).map(summarizeEntry),
+      unresolvedAcceptedRoutes: unresolvedAcceptedRoutes.slice(0, COMPACT_ROUTE_PLAN_EXAMPLE_LIMIT).map(summarizeEntry),
+    }
   };
 }

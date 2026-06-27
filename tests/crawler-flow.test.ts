@@ -1109,15 +1109,23 @@ describe('crawlMaterialDocs', () => {
       collectionId: 'ComponentsM3',
       documentId: 'doc-switch'
     });
-    expect(index.coverageDiagnostics?.routePlanSummary?.acceptedRoutes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          route: '/components/switches',
-          canonicalRoute: '/components/switch',
-          reconciliationStatus: 'normalizedSlugMatch'
-        })
-      ])
-    );
+    expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
+      reconciliationStatusCounts: { normalizedSlugMatch: 1 }
+    });
+    const diagnosticsJson = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
+    expect(diagnosticsJson).toMatchObject({
+      coverageDiagnostics: {
+        fullRoutePlanSummary: {
+          acceptedRoutes: expect.arrayContaining([
+            expect.objectContaining({
+              route: '/components/switches',
+              canonicalRoute: '/components/switch',
+              reconciliationStatus: 'normalizedSlugMatch'
+            })
+          ])
+        }
+      }
+    });
   }, 10_000);
 
   it('keeps exact route matches ahead of aliases and does not duplicate switch routes', async () => {
@@ -1158,9 +1166,10 @@ describe('crawlMaterialDocs', () => {
       bundleMatchedRoute: '/components/switch'
     });
     expect(aliasOnlyDiagnostic?.reconciliationStatus).toBe('normalizedSlugMatch');
-    expect(index.coverageDiagnostics?.routePlanSummary?.acceptedRoutes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ route: '/components/switches', canonicalRoute: '/components/switch' })])
-    );
+    expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
+      acceptedRouteCount: 2,
+      reconciliationStatusCounts: expect.objectContaining({ exact: 1, normalizedSlugMatch: 1 })
+    });
   }, 10_000);
 
   it('classifies a bare top-level index route with no real content as skipped:non-content-index, not failed', async () => {

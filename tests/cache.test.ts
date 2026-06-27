@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getCacheDiagnostics, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import { createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
-import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage } from '../src/types.js';
+import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage, RoutePlanSummary } from '../src/types.js';
 
 const REQUIRED_SAMPLE_SLUGS = ['components/buttons/specs', 'components/lists/specs', 'styles/color/roles', 'foundations/design-tokens/overview'];
 
@@ -319,6 +319,36 @@ describe('cache helpers', () => {
   });
 
   it('latest-update.json can persist verbose diagnostics while index.json stays compact', async () => {
+    const fullRoutePlanSummary: RoutePlanSummary = {
+      acceptedRoutes: [{
+        route: '/components/switches',
+        canonicalRoute: '/components/switch',
+        outputPath: 'components/switch.md',
+        sources: ['site_meta', 'bundle'],
+        publicDocsClassification: 'public-docs' as const,
+        reconciliationStatus: 'normalizedSlugMatch' as const
+      }],
+      staleRoutes: [{
+        route: '/components/orphan',
+        sources: ['site_meta'],
+        publicDocsClassification: 'public-docs' as const,
+        reconciliationStatus: 'rejectedStale' as const
+      }],
+      removedRoutes: [],
+      ambiguousRoutes: [{
+        route: '/components/cards',
+        sources: ['site_meta'],
+        publicDocsClassification: 'public-docs' as const,
+        reconciliationStatus: 'rejectedAmbiguous' as const
+      }],
+      nonPublicRoutes: [{
+        route: '/develop/android/compose',
+        sources: ['bundle'],
+        publicDocsClassification: 'unsupported-platform-or-policy' as const,
+        reconciliationStatus: 'rejectedNonPublic' as const
+      }],
+      extractionCandidates: []
+    };
     const fullIndex = materialIndex(1, {
       qualitySummary: {
         suspiciousPageCount: 1,
@@ -349,7 +379,25 @@ describe('cache helpers', () => {
         }));
         return diag;
       })(),
-      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: false })
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        isLimitedRun: false,
+        routePlanSummary: {
+          acceptedRouteCount: 1,
+          staleRouteCount: 1,
+          ambiguousRouteCount: 1,
+          nonPublicRouteCount: 1,
+          extractionCandidateCount: 1,
+          reconciliationStatusCounts: { normalizedSlugMatch: 1, rejectedStale: 1, rejectedAmbiguous: 1, rejectedNonPublic: 1 },
+          publicDocsClassificationCounts: { 'public-docs': 3, 'unsupported-platform-or-policy': 1 },
+          problematicExamples: {
+            staleRoutes: [{ route: '/components/orphan', reconciliationStatus: 'rejectedStale', publicDocsClassification: 'public-docs' }],
+            ambiguousRoutes: [{ route: '/components/cards', reconciliationStatus: 'rejectedAmbiguous', publicDocsClassification: 'public-docs' }],
+            nonPublicRoutes: [{ route: '/develop/android/compose', reconciliationStatus: 'rejectedNonPublic', publicDocsClassification: 'unsupported-platform-or-policy' }],
+            unresolvedAcceptedRoutes: []
+          }
+        },
+        fullRoutePlanSummary
+      })
     });
     await writeIndex(fullIndex, cacheDir);
 
@@ -380,8 +428,11 @@ describe('cache helpers', () => {
 
     const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
     expect(rawIndex.extractionDiagnostics).toBeUndefined();
-    expect(rawIndex.coverageDiagnostics).toBeUndefined();
     expect(rawIndex.qualityReport).toBeUndefined();
+    expect(rawIndex.coverageDiagnostics).toMatchObject({
+      coverageHealth: fullIndex.coverageDiagnostics?.coverageHealth
+    });
+    expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('fullRoutePlanSummary');
 
     const diagnostics = await getCacheDiagnostics(cacheDir);
     expect(diagnostics.diagnostics).toMatchObject({
@@ -395,6 +446,16 @@ describe('cache helpers', () => {
         rejectedRoutes: expect.arrayContaining([
           expect.objectContaining({ reason: 'missing-page-reference' })
         ])
+      }
+    });
+    expect(diagnostics.diagnostics).toMatchObject({
+      coverageDiagnostics: {
+        fullRoutePlanSummary: {
+          acceptedRoutes: expect.arrayContaining([expect.objectContaining({ route: '/components/switches' })]),
+          staleRoutes: expect.arrayContaining([expect.objectContaining({ route: '/components/orphan' })]),
+          ambiguousRoutes: expect.arrayContaining([expect.objectContaining({ route: '/components/cards' })]),
+          nonPublicRoutes: expect.arrayContaining([expect.objectContaining({ route: '/develop/android/compose' })]),
+        }
       }
     });
   });
@@ -894,26 +955,102 @@ describe('cache helpers', () => {
       coverageDiagnostics: {
         ...minimalCoverageDiagnostics({ isLimitedRun: false }),
         routePlanSummary: {
-          acceptedRoutes: [],
-          staleRoutes: [],
-          removedRoutes: [],
-          ambiguousRoutes: [],
-          nonPublicRoutes: [],
-          extractionCandidates: [
-            {
-              route: '/components/switches',
-              canonicalRoute: '/components/switch',
-              outputPath: 'components/switch.md',
-              sources: ['site_meta', 'bundle'],
-              publicDocsClassification: 'public-docs',
-              reconciliationStatus: 'normalizedSlugMatch'
-            }
-          ]
+          acceptedRouteCount: 1,
+          staleRouteCount: 0,
+          ambiguousRouteCount: 0,
+          nonPublicRouteCount: 0,
+          extractionCandidateCount: 1,
+          reconciliationStatusCounts: { normalizedSlugMatch: 1 },
+          publicDocsClassificationCounts: { 'public-docs': 1 },
+          problematicExamples: {
+            staleRoutes: [],
+            ambiguousRoutes: [],
+            nonPublicRoutes: [],
+            unresolvedAcceptedRoutes: [
+              {
+                route: '/components/switches',
+                canonicalRoute: '/components/switch',
+                outputPath: 'components/switch.md',
+                publicDocsClassification: 'public-docs',
+                reconciliationStatus: 'normalizedSlugMatch'
+              }
+            ]
+          }
         }
       }
     });
 
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switch');
+  });
+
+  it('serializes a compact route plan summary into index.json', async () => {
+    const nextIndex = materialIndex(1, {
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        coverageHealth: 'partial',
+        routePlanSummary: {
+          acceptedRouteCount: 3,
+          staleRouteCount: 1,
+          ambiguousRouteCount: 2,
+          nonPublicRouteCount: 4,
+          extractionCandidateCount: 3,
+          reconciliationStatusCounts: {
+            exact: 1,
+            normalizedSlugMatch: 2,
+            rejectedAmbiguous: 2,
+            rejectedNonPublic: 4,
+            rejectedStale: 1
+          },
+          publicDocsClassificationCounts: {
+            'public-docs': 6,
+            'unsupported-platform-or-policy': 2,
+            'missing-extraction-metadata': 1,
+            'outside-public-docs': 1
+          },
+          problematicExamples: {
+            staleRoutes: [{ route: '/components/legacy', reconciliationStatus: 'rejectedStale', publicDocsClassification: 'public-docs' }],
+            ambiguousRoutes: [{ route: '/components/cards', reconciliationStatus: 'rejectedAmbiguous', publicDocsClassification: 'public-docs' }],
+            nonPublicRoutes: [{ route: '/develop/android/compose', reconciliationStatus: 'rejectedNonPublic', publicDocsClassification: 'unsupported-platform-or-policy' }],
+            unresolvedAcceptedRoutes: [{ route: '/components/switches', canonicalRoute: '/components/switch', reconciliationStatus: 'normalizedSlugMatch', publicDocsClassification: 'public-docs' }]
+          }
+        },
+        fullRoutePlanSummary: {
+          acceptedRoutes: [{
+            route: '/components/switches',
+            canonicalRoute: '/components/switch',
+            outputPath: 'components/switch.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'normalizedSlugMatch'
+          }],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: []
+        }
+      })
+    });
+
+    await writeIndex(nextIndex, cacheDir);
+
+    const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
+    expect(rawIndex.coverageDiagnostics).toMatchObject({
+      coverageHealth: 'partial',
+      routePlanSummary: {
+        acceptedRouteCount: 3,
+        ambiguousRouteCount: 2,
+        publicDocsClassificationCounts: expect.objectContaining({
+          'unsupported-platform-or-policy': 2
+        }),
+        problematicExamples: {
+          unresolvedAcceptedRoutes: [
+            expect.objectContaining({ canonicalRoute: '/components/switch' })
+          ]
+        }
+      }
+    });
+    expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('acceptedRoutes');
+    expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('fullRoutePlanSummary');
   });
 
   it('fails a --max-pages 20 smoke promotion when a required sample is absent from both pages and routeDiagnostics', () => {

@@ -322,7 +322,8 @@ export type CoverageDiagnostics = {
   skippedPlatformSpecificUnmappedCount?: number;
   routeResolutionSummary?: RouteResolutionSummary;
   requiredRouteCoverage?: RequiredRouteCoverageEntry[];
-  routePlanSummary?: RoutePlanSummary;
+  routePlanSummary?: CompactRoutePlanSummary;
+  fullRoutePlanSummary?: RoutePlanSummary;
 };
 
 export type RouteResolutionSummaryEntry = {
@@ -415,6 +416,27 @@ export type RoutePlanSummary = {
   extractionCandidates: RoutePlanEntry[];
 };
 
+export type CompactRoutePlanBucketExample = Pick<
+  RoutePlanEntry,
+  'route' | 'canonicalRoute' | 'outputPath' | 'reconciliationStatus' | 'publicDocsClassification' | 'navTitle' | 'routeTitle' | 'skippedReason' | 'failureReason'
+>;
+
+export type CompactRoutePlanSummary = {
+  acceptedRouteCount: number;
+  staleRouteCount: number;
+  ambiguousRouteCount: number;
+  nonPublicRouteCount: number;
+  extractionCandidateCount: number;
+  reconciliationStatusCounts: Partial<Record<RouteReconciliationStatus, number>>;
+  publicDocsClassificationCounts: Partial<Record<PublicDocsClassification, number>>;
+  problematicExamples: {
+    staleRoutes: CompactRoutePlanBucketExample[];
+    ambiguousRoutes: CompactRoutePlanBucketExample[];
+    nonPublicRoutes: CompactRoutePlanBucketExample[];
+    unresolvedAcceptedRoutes: CompactRoutePlanBucketExample[];
+  };
+};
+
 export type SuspiciousCrawlPage = {
   url: string;
   path: string;
@@ -499,6 +521,7 @@ export type MaterialPublicIndex = {
   failedPageCount: number;
   failedUrls: string[];
   qualitySummary?: QualitySummary;
+  coverageDiagnostics?: Pick<CoverageDiagnostics, 'coverageHealth' | 'routePlanSummary'>;
   pages: MaterialPublicPageManifestEntry[];
 };
 export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;

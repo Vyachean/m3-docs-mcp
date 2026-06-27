@@ -222,4 +222,31 @@ describe('buildRoutePlan', () => {
       documentId: 'doc-switch'
     }));
   });
+
+  it('does not reconcile a legacy site_meta id pair to an unrelated bundle route', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [
+        route('/components/switches', { collectionId: 'ComponentsM3', documentId: 'doc-checkbox' })
+      ],
+      bundleRoutes: [
+        { slug: 'components/switch', documentId: 'doc-switch', collectionId: 'ComponentsM3' },
+        { slug: 'components/checkbox', documentId: 'doc-checkbox', collectionId: 'ComponentsM3' }
+      ],
+      sitemapPaths: []
+    });
+
+    expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({
+      route: '/components/switches',
+      canonicalRoute: '/components/switch',
+      reconciliationStatus: 'normalizedSlugMatch'
+    }));
+    expect(plan.acceptedRoutes).not.toContainEqual(expect.objectContaining({
+      route: '/components/switches',
+      canonicalRoute: '/components/checkbox',
+      reconciliationStatus: 'contentIdentityMatch'
+    }));
+  });
 });
