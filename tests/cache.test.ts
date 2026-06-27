@@ -479,15 +479,166 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(degradedIndex, previousIndex, { force: true })).not.toThrow();
   });
 
-  it('rejects crawls with too many failed pages unless forced', () => {
-    const failedIndex = materialIndex(20, {
+  it('falls back to the legacy attemptedPageCount/failedPageCount ratio for old indexes without extraction diagnostics', () => {
+    // No extractionDiagnostics field at all (built by hand, bypassing the materialIndex helper,
+    // which always attaches one) — this is the only shape that should still exercise the legacy,
+    // unit-mixed fallback ratio check.
+    const failedIndex: MaterialIndex = {
+      source: 'https://m3.material.io',
+      capturedAt: '2026-05-18T00:00:00.000Z',
+      pageCount: 20,
       attemptedPageCount: 25,
       failedPageCount: 6,
-      failedUrls: Array.from({ length: 6 }, (_, i) => `https://m3.material.io/failing-${i}`)
+      failedUrls: Array.from({ length: 6 }, (_, i) => `https://m3.material.io/failing-${i}`),
+      pages: Array.from({ length: 20 }, (_, i) => ({
+        ...page,
+        id: `page-${i}`,
+        path: `components/page-${i}/overview.md`,
+        url: `https://m3.material.io/components/page-${i}/overview`
+      }))
+    };
+
+    expect(() => assertSafeCachePromotion(failedIndex, null)).toThrow('above the allowed 20%');
+    expect(() => assertSafeCachePromotion(failedIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('promotes a full refresh whose source-route failures are zero but virtual-page failures are within the allowed ratio (CI regression: attempted=77, saved=222, failed=22)', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    diag.sourcePagesAttempted = 77;
+    diag.sourcePagesFailed = 0;
+    diag.virtualPagesPlanned = 244;
+    diag.virtualPagesSaved = 222;
+    diag.virtualPagesFailed = 22;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({
+        isLimitedRun: false,
+        resolvableSourceRouteCount: 77,
+        selectedSourceRouteCount: 77,
+        attemptedSourceRouteCount: 77,
+        plannedVirtualPageCount: 244,
+        savedVirtualPageCount: 222,
+        failedVirtualPageCount: 22,
+        coverageWarnings: []
+      })
     });
 
-    expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20))).toThrow('above the allowed 20%');
-    expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20), { force: true })).not.toThrow();
+    // 22/244 ~= 9%, well under the 20% allowance — promotion must pass even though the old
+    // failedPageCount/attemptedPageCount mix (22/77 = 29%) would have incorrectly rejected it.
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('rejects a full refresh whose source-route failure ratio is above the allowed threshold', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    diag.sourcePagesAttempted = 50;
+    diag.sourcePagesFailed = 15; // 30% — above the 20% allowance
+    diag.virtualPagesPlanned = 50;
+    diag.virtualPagesSaved = 35;
+    diag.virtualPagesFailed = 15;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      // isLimitedRun:true keeps this test isolated to the source-route ratio check by skipping
+      // the full-refresh-only coverage-gap / resolvable-route-count checks.
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('above the allowed 20%');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/attempted source routes/);
+    expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('rejects a full refresh whose virtual-page failure ratio is above the allowed threshold', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    diag.sourcePagesAttempted = 50;
+    diag.sourcePagesFailed = 0; // source routes are fine — only some of their tab pages failed
+    diag.virtualPagesPlanned = 100;
+    diag.virtualPagesSaved = 70;
+    diag.virtualPagesFailed = 30; // 30% — above the 20% allowance
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('above the allowed 20%');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/planned virtual pages/);
+    expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('rejects promotion when modern extraction diagnostics are missing their source-route counters', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    // Simulate a malformed/partial diagnostics object: present, but missing the counters.
+    delete (diag as Partial<typeof diag>).sourcePagesAttempted;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('missing source-route failure counters');
+    expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
+  });
+
+  it('rejects promotion when modern extraction diagnostics are missing their virtual-page counters', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    diag.sourcePagesAttempted = 50;
+    diag.sourcePagesFailed = 0;
+    delete (diag as Partial<typeof diag>).virtualPagesFailed;
+
+    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+      ...page,
+      id: `req-${i}`,
+      path: `${slug}.md`,
+      url: `https://m3.material.io/${slug}`
+    }));
+
+    const nextIndex = materialIndex(pages.length, {
+      pages,
+      extractionDiagnostics: diag,
+      coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true })
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('missing virtual-page failure counters');
+    expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
   });
 
   it('allows includeBlog:false promotion when a /blog route was only policy-skipped, not attempted', () => {
