@@ -490,6 +490,107 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(failedIndex, materialIndex(20), { force: true })).not.toThrow();
   });
 
+  it('allows includeBlog:false promotion when a /blog route was only policy-skipped, not attempted', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, {
+      url: 'https://m3.material.io/blog',
+      path: 'blog.md',
+      sourceUsed: 'skipped',
+      skippedReason: 'blog',
+      finalMethod: null,
+      jsonAttempted: false,
+      jsonSucceeded: false,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      directJsonAttempted: false,
+      networkJsonAttempted: false,
+      domFallbackAttempted: false,
+      unknownChunkTypes: [],
+      unknownResourceTypes: [],
+      tokenTables: 0,
+      tokenTablesRendered: 0,
+      missingRequestedTokenSets: []
+    });
+
+    const nextIndex = materialIndex(REQUIRED_SAMPLE_SLUGS.length, {
+      pages: REQUIRED_SAMPLE_SLUGS.map((slug) => ({ ...page, id: slug, path: `${slug}.md`, url: `https://m3.material.io/${slug}` })),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 4,
+        sitemapUrlCount: 4,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 4,
+        uncrawledDiscoveredUrlCount: 0,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 0,
+        skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 1,
+        skippedBlogCount: 1,
+        skippedByPolicyUrls: ['/blog'],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
+        coverageVerified: true,
+        coverageWarnings: [],
+        coverageHealth: 'verified'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('rejects includeBlog:false promotion when a /blog route was actually attempted', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, {
+      url: 'https://m3.material.io/blog',
+      path: 'blog.md',
+      sourceUsed: 'direct-json',
+      finalMethod: 'json',
+      jsonAttempted: true,
+      jsonSucceeded: true,
+      browserFallbackAttempted: false,
+      browserFallbackSucceeded: false,
+      directJsonAttempted: true,
+      directJsonSucceeded: true,
+      unknownChunkTypes: [],
+      unknownResourceTypes: [],
+      tokenTables: 0,
+      tokenTablesRendered: 0,
+      missingRequestedTokenSets: []
+    });
+
+    const nextIndex = materialIndex(REQUIRED_SAMPLE_SLUGS.length + 1, {
+      pages: [...REQUIRED_SAMPLE_SLUGS, 'blog'].map((slug) => ({ ...page, id: slug, path: `${slug}.md`, url: `https://m3.material.io/${slug}` })),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        discoveredPublicUrlCount: 5,
+        sitemapUrlCount: 5,
+        renderedNavUrlCount: 0,
+        angularRouteHintCount: 0,
+        previousCacheRouteHintCount: 0,
+        acceptedPageCount: 5,
+        uncrawledDiscoveredUrlCount: 0,
+        uncrawledDiscoveredUrls: [],
+        skippedBecauseMaxPagesCount: 0,
+        skippedBecauseJsonCoveredCount: 0,
+        skippedByPolicyCount: 0,
+        skippedBlogCount: 0,
+        skippedByPolicyUrls: [],
+        includeBlog: false,
+        crawlPriorityPolicyVersion: '1',
+        coverageVerified: true,
+        coverageWarnings: [],
+        coverageHealth: 'verified'
+      } satisfies CoverageDiagnostics
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('includeBlog:false was set but a /blog route was attempted');
+    expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
+  });
+
   it('rejects duplicate crawled content unless forced', () => {
     const duplicatedIndex = materialIndex(2, {
       qualityReport: {
