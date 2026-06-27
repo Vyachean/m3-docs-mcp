@@ -372,17 +372,54 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     throw new Error(`Material 3 crawl produced suspicious page content for ${suspicious?.path ?? 'a page'}: ${suspicious?.reason ?? 'unknown reason'}. Keeping the existing cache. Use --force to replace it anyway.`);
   }
 
+  // First-cache coverage policy: even without a previous index, an unexpected
+  // coverage gap must not silently produce a cache that appears complete.
+  firstCacheCoveragePolicy(nextIndex);
+
   const maxFailedPageRatio = options.maxFailedPageRatio ?? DEFAULT_MAX_FAILED_PAGE_RATIO;
-  if (nextIndex.attemptedPageCount >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
+  if (extractionDiag) {
+    // Modern diagnostics separate source-route failures (a route counts as failed only if none of
+    // its virtual/tab pages were saved) from virtual-page failures, instead of dividing
+    // nextIndex.failedPageCount (virtual-page-level) by nextIndex.attemptedPageCount
+    // (source-route-level) — two different units that produce a meaningless ratio.
+    if (typeof extractionDiag.sourcePagesAttempted !== 'number' || typeof extractionDiag.sourcePagesFailed !== 'number') {
+      throw new Error(
+        'Material 3 crawl diagnostics are missing source-route failure counters (sourcePagesAttempted/sourcePagesFailed). ' +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+    if (extractionDiag.sourcePagesAttempted >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
+      const sourceRouteFailureRatio = extractionDiag.sourcePagesFailed / extractionDiag.sourcePagesAttempted;
+      if (sourceRouteFailureRatio > maxFailedPageRatio) {
+        throw new Error(
+          `Material 3 crawl failed ${extractionDiag.sourcePagesFailed} of ${extractionDiag.sourcePagesAttempted} attempted source routes ` +
+          `(${formatPercent(sourceRouteFailureRatio)}; a source route counts as failed only when none of its pages were saved), ` +
+          `above the allowed ${formatPercent(maxFailedPageRatio)}. Keeping the existing cache. Use --force to replace it anyway.`
+        );
+      }
+    }
+
+    // Missing virtualPagesPlanned/Saved/Failed counters are already caught above by the
+    // accounting invariant check (planned !== saved + failed, which a missing/undefined field
+    // always fails) before this point is reached.
+    if (extractionDiag.virtualPagesPlanned >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
+      const virtualPageFailureRatio = extractionDiag.virtualPagesFailed / extractionDiag.virtualPagesPlanned;
+      if (virtualPageFailureRatio > maxFailedPageRatio) {
+        throw new Error(
+          `Material 3 crawl failed ${extractionDiag.virtualPagesFailed} of ${extractionDiag.virtualPagesPlanned} planned virtual pages ` +
+          `(${formatPercent(virtualPageFailureRatio)}), above the allowed ${formatPercent(maxFailedPageRatio)}. ` +
+          'Keeping the existing cache. Use --force to replace it anyway.'
+        );
+      }
+    }
+  } else if (nextIndex.attemptedPageCount >= MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK) {
+    // Legacy fallback for old indexes that predate extraction diagnostics — only the coarse,
+    // unit-mixed attemptedPageCount/failedPageCount counters are available.
     const failedPageRatio = nextIndex.failedPageCount / nextIndex.attemptedPageCount;
     if (failedPageRatio > maxFailedPageRatio) {
       throw new Error(`Material 3 crawl failed ${nextIndex.failedPageCount} of ${nextIndex.attemptedPageCount} attempted pages (${formatPercent(failedPageRatio)}), above the allowed ${formatPercent(maxFailedPageRatio)}. Keeping the existing cache. Use --force to replace it anyway.`);
     }
   }
-
-  // First-cache coverage policy: even without a previous index, an unexpected
-  // coverage gap must not silently produce a cache that appears complete.
-  firstCacheCoveragePolicy(nextIndex);
 
   if (previousIndex && previousIndex.pageCount > 0) {
     const previousDiscoveredCount = previousIndex.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex.pageCount;
