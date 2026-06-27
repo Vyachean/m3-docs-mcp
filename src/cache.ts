@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
+import { isBlogPath } from './crawl-priority.js';
 import type {
   CacheDiagnostics,
   CacheStatus,
@@ -335,7 +336,8 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
   const includeBlog = nextIndex.coverageDiagnostics?.includeBlog ?? false;
   if (!includeBlog) {
     const attemptedBlogRoute = routeDiagnostics.find((d) => {
-      if (!(/^blog\//.test(d.path) || d.path === 'blog.md')) return false;
+      const routePath = d.path.replace(/\.md$/, '').replace(/^\/+/, '');
+      if (!isBlogPath(routePath)) return false;
       const policySkipped = d.sourceUsed === 'skipped'
         && d.skippedReason === 'blog'
         && !d.directJsonAttempted
