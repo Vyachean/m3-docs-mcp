@@ -1065,6 +1065,111 @@ describe('crawlMaterialDocs', () => {
     // Unresolved routes are classified and counted separately from genuine extraction failures.
     expect(index.coverageDiagnostics?.unresolvedSourceRouteCount).toBe(1);
     expect(index.coverageDiagnostics?.skippedMissingPageReferenceCount).toBe(1);
+    expect(orphanDiagnostic).toMatchObject({
+      siteMetaRoute: '/components/orphan',
+      normalizedRoute: '/components/orphan'
+    });
+  }, 10_000);
+
+  it('resolves /components/switches to the canonical switch page and records alias diagnostics', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '{"slug":"components/switch","documentId":"doc-switch","collectionId":"ComponentsM3","exportedCarbonFileId":"switch.json","tabs":[{"label":"Overview"},{"label":"Specs"}]}'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Switch', documentId: 'doc-switch', pageCanonId: 'page-canon-switch', slug: 'components/switch' } } };
+    const contentPage = {
+      title: 'Switch',
+      sections: [
+        { name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Switches toggle the state of a single item with enough text for validation.</p>' }] }] },
+        { name: 'Specs', contentBlocks: [{ title: 'Anatomy', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Switch anatomy content is present with enough text for validation.</p>' }] }] }
+      ]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/switches']) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-switch.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/switch.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    expect(index.pages.map((page) => page.path)).toEqual(['components/switch/overview.md', 'components/switch/specs.md']);
+    const overviewDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/switch/overview.md');
+    expect(overviewDiagnostic).toMatchObject({
+      siteMetaRoute: '/components/switches',
+      normalizedRoute: '/components/switches',
+      bundleMatchedRoute: '/components/switch',
+      reconciliationStatus: 'normalizedSlugMatch',
+      pageReferenceSource: 'bundle-table',
+      collectionId: 'ComponentsM3',
+      documentId: 'doc-switch'
+    });
+    expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
+      reconciliationStatusCounts: { normalizedSlugMatch: 1 }
+    });
+    const diagnosticsJson = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
+    expect(diagnosticsJson).toMatchObject({
+      coverageDiagnostics: {
+        fullRoutePlanSummary: {
+          acceptedRoutes: expect.arrayContaining([
+            expect.objectContaining({
+              route: '/components/switches',
+              canonicalRoute: '/components/switch',
+              reconciliationStatus: 'normalizedSlugMatch'
+            })
+          ])
+        }
+      }
+    });
+  }, 10_000);
+
+  it('keeps exact route matches ahead of aliases and does not duplicate switch routes', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '{"slug":"components/switch","documentId":"doc-switch","collectionId":"ComponentsM3","exportedCarbonFileId":"switch.json","tabs":[{"label":"Overview"}]}'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Switch', documentId: 'doc-switch', pageCanonId: 'page-canon-switch', slug: 'components/switch' } } };
+    const contentPage = {
+      title: 'Switch',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Switch overview content is present with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/switch', 'components/switches']) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-switch.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/switch.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    expect(index.pages.map((page) => page.path)).toEqual(['components/switch/overview.md']);
+    const savedDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/switch/overview.md');
+    const aliasOnlyDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/switches.md');
+    expect(savedDiagnostic).toMatchObject({
+      siteMetaRoute: '/components/switch',
+      bundleMatchedRoute: '/components/switch'
+    });
+    expect(savedDiagnostic?.aliasMatchedBy).toBeUndefined();
+    expect(aliasOnlyDiagnostic).toMatchObject({
+      siteMetaRoute: '/components/switches',
+      skippedReason: 'alias-only',
+      bundleMatchedRoute: '/components/switch'
+    });
+    expect(aliasOnlyDiagnostic?.reconciliationStatus).toBe('normalizedSlugMatch');
+    expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
+      acceptedRouteCount: 2,
+      reconciliationStatusCounts: expect.objectContaining({ exact: 1, normalizedSlugMatch: 1 })
+    });
   }, 10_000);
 
   it('classifies a bare top-level index route with no real content as skipped:non-content-index, not failed', async () => {
