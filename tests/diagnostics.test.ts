@@ -54,6 +54,26 @@ describe('computeSourceAndVirtualPageCounters', () => {
     expect(counters.virtualPagesPlanned).toBe(1);
   });
 
+  it('excludes policy-skipped blog routes from virtualPagesFailed/failedPageCount', () => {
+    const diagnostics: ExtractionRouteDiagnostic[] = [
+      routeDiagnostic({ path: 'components/buttons/specs.md', sourceUsed: 'direct-json' }),
+      routeDiagnostic({
+        path: 'blog.md',
+        sourceUsed: 'skipped',
+        skippedReason: 'blog',
+        directJsonAttempted: false,
+        networkJsonAttempted: false,
+        domFallbackAttempted: false
+      }),
+    ];
+
+    const counters = computeSourceAndVirtualPageCounters(diagnostics);
+    expect(counters.sourcePagesAttempted).toBe(1);
+    expect(counters.virtualPagesPlanned).toBe(1);
+    expect(counters.virtualPagesFailed).toBe(0);
+    expect(counters.virtualPagesSaved).toBe(1);
+  });
+
   it('counts a source route as failed only when none of its virtual pages saved', () => {
     const diagnostics: ExtractionRouteDiagnostic[] = [
       routeDiagnostic({ path: 'components/x/tab-a.md', sourceRoute: 'components/x.md', sourceUsed: 'failed' }),

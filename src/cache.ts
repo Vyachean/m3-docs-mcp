@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
+import { isBlogPath } from './crawl-priority.js';
 import type {
   CacheDiagnostics,
   CacheStatus,
@@ -328,10 +329,22 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  // Fail if includeBlog:false was requested but a /blog route was nonetheless attempted.
+  // Fail if includeBlog:false was requested but a /blog route was nonetheless attempted. A
+  // policy-skipped /blog or /blog/* route (sourceUsed:"skipped", skippedReason:"blog", and never
+  // actually fetched via direct-json/network-json/DOM fallback) is the *expected* outcome of
+  // includeBlog:false, not a violation of it — only a route that was actually attempted counts.
   const includeBlog = nextIndex.coverageDiagnostics?.includeBlog ?? false;
   if (!includeBlog) {
-    const attemptedBlogRoute = routeDiagnostics.find((d) => /^blog\//.test(d.path) || d.path === 'blog.md');
+    const attemptedBlogRoute = routeDiagnostics.find((d) => {
+      const routePath = d.path.replace(/\.md$/, '').replace(/^\/+/, '');
+      if (!isBlogPath(routePath)) return false;
+      const policySkipped = d.sourceUsed === 'skipped'
+        && d.skippedReason === 'blog'
+        && !d.directJsonAttempted
+        && !d.networkJsonAttempted
+        && !d.domFallbackAttempted;
+      return !policySkipped;
+    });
     if (attemptedBlogRoute) {
       throw new Error(
         `includeBlog:false was set but a /blog route was attempted (${attemptedBlogRoute.path}). ` +

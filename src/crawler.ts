@@ -1899,7 +1899,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           normalizedRoute: route.route,
           bundleMatchedRoute: route.canonicalRoute,
           skippedReason: route.reconciliationStatus === 'rejectedNonPublic'
-            ? (route.route.startsWith('/blog/') ? 'blog' : route.redirectExternalUrl ? 'redirect' : 'private')
+            ? (isBlogPath(route.route) ? 'blog' : route.redirectExternalUrl ? 'redirect' : 'private')
             : 'missing-page-reference',
           finalMethod: null,
           fallbackReasons: ['json-fetch-failed'],
@@ -1930,7 +1930,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         requiredPaths: REQUIRED_VALIDATION_PARENT_PATHS
       });
       for (const skip of filtered.skipped) {
-        if (skip.reason === 'blog') policySkippedDocPaths.add(skip.path);
+        if (skip.reason !== 'blog') continue;
+        policySkippedDocPaths.add(skip.path);
+        const slug = skip.path.replace(/^\/+|\/+$/g, '');
+        if (!slug) continue;
+        recordRouteDiagnostic(createRouteDiagnostic({
+          url: new URL(skip.path, baseUrl).toString(),
+          path: routePathFromSlug(slug),
+          sourceUsed: 'skipped',
+          siteMetaRoute: skip.path,
+          normalizedRoute: skip.path,
+          skippedReason: 'blog',
+          finalMethod: null
+        }));
       }
       coverageDiagnostics.skippedBlogCount += filtered.skippedBlogCount;
       truncatedByMaxPages = filtered.truncatedByMaxPages;
