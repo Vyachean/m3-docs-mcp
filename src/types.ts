@@ -372,6 +372,16 @@ export type RouteReconciliationStatus =
   | 'rejectedNonPublic'
   | 'extractionFailed';
 
+export type PublicDocsClassification =
+  | 'public-docs'
+  | 'redirect'
+  | 'go-link'
+  | 'asset'
+  | 'non-content-index'
+  | 'unsupported-platform-or-policy'
+  | 'outside-public-docs'
+  | 'missing-extraction-metadata';
+
 export type RoutePlanEntry = {
   route: string;
   canonicalRoute?: string;
@@ -387,8 +397,13 @@ export type RoutePlanEntry = {
   pageCanonId?: string | null;
   tabs?: string[];
   alternateSlugs?: string[];
+  navTitle?: string;
+  routeTitle?: string;
+  publicDocsClassification: PublicDocsClassification;
+  identityFieldsUsed?: string[];
   reconciliationStatus: RouteReconciliationStatus;
   skippedReason?: string;
+  failureReason?: string;
 };
 
 export type RoutePlanSummary = {

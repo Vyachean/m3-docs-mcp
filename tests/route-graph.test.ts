@@ -4,7 +4,7 @@ import type { SiteMeta } from '../src/json-extraction/fetch-site-meta.js';
 import type { NormalizedRoute } from '../src/json-extraction/normalize-routes.js';
 import type { BundleRouteEntry } from '../src/json-extraction/page-reference-resolver.js';
 
-function route(path: string, extras: Partial<NormalizedRoute> = {}): NormalizedRoute {
+function route(path: string, extras: Partial<NormalizedRoute> & Record<string, unknown> = {}): NormalizedRoute {
   return {
     path,
     routeKey: path,
@@ -24,7 +24,7 @@ function route(path: string, extras: Partial<NormalizedRoute> = {}): NormalizedR
 describe('buildRoutePlan', () => {
   const siteMeta: SiteMeta = {
     routes: {},
-    nav_drawers: [{ href: '/components/nav-only' }]
+    nav_drawers: [{ href: '/components/nav-only', label: 'Nav only label' }]
   } as SiteMeta;
 
   it('reconciles plural site_meta routes to singular bundle routes without component dictionaries', () => {
@@ -40,31 +40,32 @@ describe('buildRoutePlan', () => {
     expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({
       route: '/components/switches',
       canonicalRoute: '/components/switch',
-      reconciliationStatus: 'normalizedSlugMatch'
+      reconciliationStatus: 'normalizedSlugMatch',
+      identityFieldsUsed: ['normalizedComponentSlug']
     }));
   });
 
-  it('uses stable content identity before normalized slug matching', () => {
+  it('uses parsed pageCanonId identity before normalized slug matching', () => {
     const plan = buildRoutePlan({
       baseUrl: 'https://m3.material.io',
       includeBlog: false,
       siteMeta: null,
-      normalizedSiteMetaRoutes: [route('/components/selection-controls', { collectionId: 'ComponentsM3', documentId: 'doc-radio' })],
-      bundleRoutes: [{ slug: 'components/radio-button', documentId: 'doc-radio', collectionId: 'ComponentsM3' }],
+      normalizedSiteMetaRoutes: [route('/components/selection-controls', { pageCanonId: 'page-canon-radio' })],
+      bundleRoutes: [{ slug: 'components/radio-button', documentId: 'doc-radio', collectionId: 'ComponentsM3', exportedCarbonFileId: 'radio.json', pageCanonId: 'page-canon-radio' }],
       sitemapPaths: []
     });
 
     expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({
       route: '/components/selection-controls',
       canonicalRoute: '/components/radio-button',
-      reconciliationStatus: 'contentIdentityMatch'
+      reconciliationStatus: 'contentIdentityMatch',
+      identityFieldsUsed: ['pageCanonId']
     }));
   });
 
-  it('includes nav drawer and bundle-only docs candidates without unbounded crawling', () => {
+  it('includes nav drawer labels in diagnostics', () => {
     const bundleRoutes: BundleRouteEntry[] = [
-      { slug: 'components/nav-only', documentId: 'doc-nav', collectionId: 'ComponentsM3' },
-      { slug: 'styles/color/roles', documentId: 'doc-roles', collectionId: 'GuidelinesM3' }
+      { slug: 'components/nav-only', documentId: 'doc-nav', collectionId: 'ComponentsM3' }
     ];
 
     const plan = buildRoutePlan({
@@ -73,12 +74,11 @@ describe('buildRoutePlan', () => {
       siteMeta,
       normalizedSiteMetaRoutes: [],
       bundleRoutes,
-      sitemapPaths: ['/styles/color/roles']
+      sitemapPaths: []
     });
 
     expect(plan.acceptedRoutes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ route: '/components/nav-only', canonicalRoute: '/components/nav-only' }),
-      expect.objectContaining({ route: '/styles/color/roles', canonicalRoute: '/styles/color/roles' })
+      expect.objectContaining({ route: '/components/nav-only', canonicalRoute: '/components/nav-only', navTitle: 'Nav only label' })
     ]));
   });
 
@@ -117,6 +117,109 @@ describe('buildRoutePlan', () => {
     expect(plan.ambiguousRoutes).toContainEqual(expect.objectContaining({
       route: '/components/cards',
       reconciliationStatus: 'rejectedAmbiguous'
+    }));
+  });
+
+  it('rejects bundle-only routes without extraction metadata', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes: [{ slug: 'components/missing-meta' }],
+      sitemapPaths: []
+    });
+
+    expect(plan.nonPublicRoutes).toContainEqual(expect.objectContaining({
+      route: '/components/missing-meta',
+      publicDocsClassification: 'missing-extraction-metadata',
+      failureReason: 'bundle discovery candidate lacks collectionId/documentId'
+    }));
+    expect(plan.acceptedRoutes).toEqual([]);
+  });
+
+  it('does not singularize styles routes', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [route('/styles/color/roles')],
+      bundleRoutes: [{ slug: 'styles/color/role', documentId: 'doc-role', collectionId: 'GuidelinesM3' }],
+      sitemapPaths: []
+    });
+
+    expect(plan.acceptedRoutes).not.toContainEqual(expect.objectContaining({
+      route: '/styles/color/roles'
+    }));
+    expect(plan.staleRoutes).toContainEqual(expect.objectContaining({
+      route: '/styles/color/roles',
+      reconciliationStatus: 'rejectedStale'
+    }));
+  });
+
+  it('does not singularize foundations routes', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [route('/foundations/design-tokens')],
+      bundleRoutes: [{ slug: 'foundations/design-token', documentId: 'doc-token', collectionId: 'GuidelinesM3' }],
+      sitemapPaths: []
+    });
+
+    expect(plan.acceptedRoutes).not.toContainEqual(expect.objectContaining({
+      route: '/foundations/design-tokens'
+    }));
+    expect(plan.staleRoutes).toContainEqual(expect.objectContaining({
+      route: '/foundations/design-tokens',
+      reconciliationStatus: 'rejectedStale'
+    }));
+  });
+
+  it('classifies develop routes only by explicit policy', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [route('/develop/overview')],
+      bundleRoutes: [
+        { slug: 'develop/overview', documentId: 'doc-dev', collectionId: 'DevelopM3' },
+        { slug: 'develop/android/compose', documentId: 'doc-compose', collectionId: 'DevelopM3' }
+      ],
+      sitemapPaths: ['/develop/android/compose']
+    });
+
+    expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({
+      route: '/develop/overview',
+      publicDocsClassification: 'public-docs'
+    }));
+    expect(plan.nonPublicRoutes).toContainEqual(expect.objectContaining({
+      route: '/develop/android/compose',
+      publicDocsClassification: 'unsupported-platform-or-policy'
+    }));
+  });
+
+  it('does not blindly trust conflicting site_meta collection/document identity when the exact bundle route is known', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [
+        route('/components/switch', { collectionId: 'WrongCollection', documentId: 'wrong-doc' })
+      ],
+      bundleRoutes: [
+        { slug: 'components/switch', documentId: 'doc-switch', collectionId: 'ComponentsM3', pageCanonId: 'page-canon-switch', exportedCarbonFileId: 'switch.json' }
+      ],
+      sitemapPaths: []
+    });
+
+    expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({
+      route: '/components/switch',
+      canonicalRoute: '/components/switch',
+      reconciliationStatus: 'exact',
+      identityFieldsUsed: ['slug'],
+      collectionId: 'ComponentsM3',
+      documentId: 'doc-switch'
     }));
   });
 });

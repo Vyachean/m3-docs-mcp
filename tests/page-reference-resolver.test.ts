@@ -46,6 +46,17 @@ describe('extractBundleRouteTable (real fixture)', () => {
     expect(buttons?.tabs?.map((t) => t.label)).toEqual(['Overview', 'Specs', 'Guidelines', 'Accessibility']);
   });
 
+  it('parses pageCanonId when it is present in bundle fragments', () => {
+    const routesWithCanon = extractBundleRouteTable(
+      '{"slug":"components/switch","documentId":"doc-switch","collectionId":"ComponentsM3","pageCanonId":"page-canon-switch","exportedCarbonFileId":"switch.json"}'
+    );
+    expect(routesWithCanon[0]).toMatchObject({
+      slug: 'components/switch',
+      pageCanonId: 'page-canon-switch',
+      exportedCarbonFileId: 'switch.json'
+    });
+  });
+
   it('parses top-level alternateSlugs for styles/color/roles (no tabs)', () => {
     const roles = routes.find((r) => r.slug === 'styles/color/roles');
     expect(roles?.alternateSlugs).toEqual([

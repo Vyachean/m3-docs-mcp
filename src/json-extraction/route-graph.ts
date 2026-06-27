@@ -1,5 +1,5 @@
 import { normalizeMaterialPublicDocPath } from '../crawler-utils.js';
-import type { RouteCandidateSource, RoutePlanEntry, RoutePlanSummary } from '../types.js';
+import type { PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary } from '../types.js';
 import type { SiteMeta } from './fetch-site-meta.js';
 import type { NormalizedRoute } from './normalize-routes.js';
 import type { BundleRouteEntry } from './page-reference-resolver.js';
@@ -7,7 +7,8 @@ import type { BundleRouteEntry } from './page-reference-resolver.js';
 type RouteCandidate = {
   route: string;
   sources: Set<RouteCandidateSource>;
-  title?: string;
+  navTitle?: string;
+  routeTitle?: string;
   public?: boolean;
   redirectExternalUrl?: string | null;
   collectionId?: string | null;
@@ -28,20 +29,6 @@ function normalizeRoute(path: string): string {
   return `/${path.replace(/^\/+|\/+$/g, '')}`;
 }
 
-function normalizeFinalToken(token: string): string {
-  if (token.endsWith('ies') && token.length > 3) return `${token.slice(0, -3)}y`;
-  if (token.endsWith('es') && token.length > 3) return token.slice(0, -2);
-  if (token.endsWith('s') && token.length > 2) return token.slice(0, -1);
-  return token;
-}
-
-function normalizeComparableRoute(path: string): string {
-  const tokens = normalizeRoute(path).replace(/^\/+/, '').split('/').filter(Boolean);
-  if (tokens[tokens.length - 1] === 'overview') tokens.pop();
-  if (tokens.length > 0) tokens[tokens.length - 1] = normalizeFinalToken(tokens[tokens.length - 1]!);
-  return tokens.join('/');
-}
-
 function isDocsPath(path: string, includeBlog: boolean): boolean {
   const normalized = normalizeRoute(path);
   if (normalized.startsWith('/go/')) return false;
@@ -58,7 +45,8 @@ function addCandidate(map: Map<string, RouteCandidate>, route: string, source: R
   const normalized = normalizeRoute(route);
   const current = map.get(normalized) ?? { route: normalized, sources: new Set<RouteCandidateSource>() };
   current.sources.add(source);
-  if (patch.title && !current.title) current.title = patch.title;
+  if (patch.navTitle && !current.navTitle) current.navTitle = patch.navTitle;
+  if (patch.routeTitle && !current.routeTitle) current.routeTitle = patch.routeTitle;
   if (patch.public !== undefined) current.public = patch.public;
   if (patch.redirectExternalUrl !== undefined) current.redirectExternalUrl = patch.redirectExternalUrl;
   if (patch.collectionId && !current.collectionId) current.collectionId = patch.collectionId;
@@ -77,36 +65,135 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function extractNavDrawerRoutes(siteMeta: SiteMeta, baseUrl: string): string[] {
-  const navDrawers = isRecord(siteMeta) && 'nav_drawers' in siteMeta ? (siteMeta as Record<string, unknown>).nav_drawers : undefined;
-  const found = new Set<string>();
+function firstString(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const inner = value[key];
+    if (typeof inner === 'string' && inner.trim().length > 0) return inner.trim();
+  }
+  return undefined;
+}
+
+function extractNavDrawerRoutes(siteMeta: SiteMeta, baseUrl: string): Array<{ route: string; navTitle?: string }> {
+  const navDrawers = isRecord(siteMeta) ? siteMeta.nav_drawers : undefined;
+  const found = new Map<string, string | undefined>();
   const visit = (value: unknown): void => {
     if (Array.isArray(value)) {
       for (const item of value) visit(item);
       return;
     }
     if (!isRecord(value)) return;
-    for (const [key, inner] of Object.entries(value)) {
-      if (key === 'href' && typeof inner === 'string') {
-        const path = normalizeMaterialPublicDocPath(inner, baseUrl);
-        if (path) found.add(path);
-      } else {
-        visit(inner);
-      }
+    const href = typeof value.href === 'string' ? value.href : undefined;
+    if (href) {
+      const path = normalizeMaterialPublicDocPath(href, baseUrl);
+      if (path && !found.has(path)) found.set(path, firstString(value, ['label', 'title', 'name']));
     }
+    for (const inner of Object.values(value)) visit(inner);
   };
   visit(navDrawers);
-  return Array.from(found).sort();
+  return Array.from(found.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([route, navTitle]) => ({ route, navTitle }));
+}
+
+function classifyPublicDocsRoute(
+  route: string,
+  includeBlog: boolean,
+  candidate: RouteCandidate,
+  bundleEntry?: BundleRouteEntry
+): PublicDocsClassification {
+  const normalized = normalizeRoute(route);
+  const isBundleOnlyCandidate = candidate.sources.has('bundle') && !candidate.sources.has('site_meta') && !candidate.sources.has('nav_drawer');
+  if (candidate.redirectExternalUrl) return 'redirect';
+  if (normalized.startsWith('/go/')) return 'go-link';
+  if (/\.(png|jpg|jpeg|gif|svg|webp|css|js|xml|txt|json)$/i.test(normalized)) return 'asset';
+  if (isBundleOnlyCandidate && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
+    return 'non-content-index';
+  }
+  if (normalized.startsWith('/develop/android')
+    || normalized.startsWith('/develop/web')
+    || normalized.startsWith('/develop/ios')
+    || normalized.startsWith('/develop/flutter')
+    || normalized.startsWith('/develop/compose')
+    || normalized.startsWith('/develop/views')
+    || normalized.startsWith('/develop/figma')
+    || normalized.startsWith('/policies/')
+    || normalized.startsWith('/platform/')) {
+    return 'unsupported-platform-or-policy';
+  }
+  if (!isDocsPath(normalized, includeBlog)) return 'outside-public-docs';
+  const metadataSource = bundleEntry ?? candidate;
+  if (isBundleOnlyCandidate && (!metadataSource.collectionId || !metadataSource.documentId)) return 'missing-extraction-metadata';
+  return 'public-docs';
+}
+
+function normalizeComponentToken(token: string): string[] {
+  const normalized = token.toLowerCase();
+  const variants = new Set<string>([normalized]);
+  if (normalized.endsWith('ies') && normalized.length > 3) variants.add(`${normalized.slice(0, -3)}y`);
+  if (normalized.endsWith('es') && normalized.length > 3) variants.add(normalized.slice(0, -2));
+  if (normalized.endsWith('s') && normalized.length > 2) variants.add(normalized.slice(0, -1));
+  return Array.from(variants);
+}
+
+function getSafeComponentComparableRoutes(path: string): string[] {
+  const normalized = normalizeRoute(path).replace(/^\/+/, '');
+  const tokens = normalized.split('/').filter(Boolean);
+  if (tokens[0] !== 'components') return [];
+  if (tokens.length !== 2 && !(tokens.length === 3 && tokens[2] === 'overview')) return [];
+  const target = tokens[1];
+  if (!target) return [];
+  const suffixes = tokens.length === 3 ? ['/overview'] : ['', '/overview'];
+  return Array.from(new Set(
+    normalizeComponentToken(target).flatMap((variant) => suffixes.map((suffix) => `components/${variant}${suffix}`))
+  ));
+}
+
+function normalizeIdentityToken(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
+function collectVerifiedIdentityMatches(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[]): { matches: BundleRouteEntry[]; identityFieldsUsed: string[] } {
+  const matches = new Set<BundleRouteEntry>();
+  const identityFieldsUsed: string[] = [];
+  const exportedId = normalizeIdentityToken(candidate.exportedCarbonFileId);
+  if (exportedId) {
+    const byExported = bundleRoutes.filter((entry) => normalizeIdentityToken(entry.exportedCarbonFileId) === exportedId);
+    if (byExported.length > 0) {
+      identityFieldsUsed.push('exportedCarbonFileId');
+      for (const entry of byExported) matches.add(entry);
+    }
+  }
+  const pageCanonId = normalizeIdentityToken(candidate.pageCanonId);
+  if (pageCanonId) {
+    const byCanon = bundleRoutes.filter((entry) => normalizeIdentityToken(entry.pageCanonId) === pageCanonId);
+    if (byCanon.length > 0) {
+      identityFieldsUsed.push('pageCanonId');
+      for (const entry of byCanon) matches.add(entry);
+    }
+  }
+  if (candidate.collectionId && candidate.documentId) {
+    const byVerifiedPair = bundleRoutes.filter(
+      (entry) => entry.collectionId === candidate.collectionId && entry.documentId === candidate.documentId
+    );
+    if (byVerifiedPair.length > 0) {
+      identityFieldsUsed.push('collectionId+documentId');
+      for (const entry of byVerifiedPair) matches.add(entry);
+    }
+  }
+  return { matches: Array.from(matches), identityFieldsUsed };
 }
 
 function toPlanEntry(
   candidate: RouteCandidate,
-  overrides: Partial<RoutePlanEntry> & Pick<RoutePlanEntry, 'reconciliationStatus'>
+  overrides: Partial<RoutePlanEntry> & Pick<RoutePlanEntry, 'reconciliationStatus' | 'publicDocsClassification'>
 ): RoutePlanEntry {
   return {
     route: candidate.route,
     sources: Array.from(candidate.sources).sort(),
-    ...(candidate.title ? { title: candidate.title } : {}),
+    ...(candidate.navTitle ? { navTitle: candidate.navTitle } : {}),
+    ...(candidate.routeTitle ? { routeTitle: candidate.routeTitle } : {}),
     ...(candidate.public !== undefined ? { public: candidate.public } : {}),
     ...(candidate.redirectExternalUrl !== undefined ? { redirectExternalUrl: candidate.redirectExternalUrl } : {}),
     ...(candidate.collectionId ? { collectionId: candidate.collectionId } : {}),
@@ -120,41 +207,116 @@ function toPlanEntry(
   };
 }
 
-function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[]): ReconciledRoute {
+function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[], includeBlog: boolean): ReconciledRoute {
   const exact = bundleRoutes.find((entry) => normalizeRoute(entry.slug) === candidate.route);
   if (exact) {
-    return { ...toPlanEntry(candidate, { canonicalRoute: normalizeRoute(exact.slug), outputPath: `${exact.slug}.md`, reconciliationStatus: 'exact' }), bundleEntry: exact };
+    return {
+      ...toPlanEntry(candidate, {
+        canonicalRoute: normalizeRoute(exact.slug),
+        outputPath: `${exact.slug}.md`,
+        routeTitle: candidate.routeTitle ?? exact.title,
+        collectionId: exact.collectionId ?? candidate.collectionId,
+        documentId: exact.documentId ?? candidate.documentId,
+        exportedCarbonFileId: exact.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
+        carbonPath: exact.carbonPath ?? candidate.carbonPath,
+        pageCanonId: exact.pageCanonId ?? candidate.pageCanonId,
+        publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, exact),
+        identityFieldsUsed: ['slug'],
+        reconciliationStatus: 'exact'
+      }),
+      bundleEntry: exact
+    };
   }
 
   const viaAlternate = bundleRoutes.find((entry) => entry.alternateSlugs?.some((slug) => normalizeRoute(slug) === candidate.route));
   if (viaAlternate) {
-    return { ...toPlanEntry(candidate, { canonicalRoute: normalizeRoute(viaAlternate.slug), outputPath: `${viaAlternate.slug}.md`, reconciliationStatus: 'alternateSlug' }), bundleEntry: viaAlternate };
+    return {
+      ...toPlanEntry(candidate, {
+        canonicalRoute: normalizeRoute(viaAlternate.slug),
+        outputPath: `${viaAlternate.slug}.md`,
+        routeTitle: candidate.routeTitle ?? viaAlternate.title,
+        collectionId: viaAlternate.collectionId ?? candidate.collectionId,
+        documentId: viaAlternate.documentId ?? candidate.documentId,
+        exportedCarbonFileId: viaAlternate.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
+        carbonPath: viaAlternate.carbonPath ?? candidate.carbonPath,
+        pageCanonId: viaAlternate.pageCanonId ?? candidate.pageCanonId,
+        publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, viaAlternate),
+        identityFieldsUsed: ['alternateSlug'],
+        reconciliationStatus: 'alternateSlug'
+      }),
+      bundleEntry: viaAlternate
+    };
   }
 
-  const identityMatches = bundleRoutes.filter((entry) => {
-    if (candidate.collectionId && candidate.documentId) return entry.collectionId === candidate.collectionId && entry.documentId === candidate.documentId;
-    if (candidate.exportedCarbonFileId) return entry.exportedCarbonFileId === candidate.exportedCarbonFileId;
-    return false;
-  });
+  const { matches: identityMatches, identityFieldsUsed } = collectVerifiedIdentityMatches(candidate, bundleRoutes);
   if (identityMatches.length === 1) {
     const matched = identityMatches[0]!;
-    return { ...toPlanEntry(candidate, { canonicalRoute: normalizeRoute(matched.slug), outputPath: `${matched.slug}.md`, reconciliationStatus: 'contentIdentityMatch' }), bundleEntry: matched };
+    return {
+      ...toPlanEntry(candidate, {
+        canonicalRoute: normalizeRoute(matched.slug),
+        outputPath: `${matched.slug}.md`,
+        routeTitle: candidate.routeTitle ?? matched.title,
+        collectionId: matched.collectionId ?? candidate.collectionId,
+        documentId: matched.documentId ?? candidate.documentId,
+        exportedCarbonFileId: matched.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
+        carbonPath: matched.carbonPath ?? candidate.carbonPath,
+        pageCanonId: matched.pageCanonId ?? candidate.pageCanonId,
+        publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, matched),
+        identityFieldsUsed,
+        reconciliationStatus: 'contentIdentityMatch'
+      }),
+      bundleEntry: matched
+    };
   }
   if (identityMatches.length > 1) {
-    return toPlanEntry(candidate, { reconciliationStatus: 'rejectedAmbiguous', skippedReason: 'multiple bundle entries share content identity' });
+    return toPlanEntry(candidate, {
+      publicDocsClassification: 'public-docs',
+      identityFieldsUsed,
+      reconciliationStatus: 'rejectedAmbiguous',
+      skippedReason: 'multiple bundle entries share content identity',
+      failureReason: 'multiple bundle entries share verified content identity'
+    });
   }
 
-  const normalizedCandidate = normalizeComparableRoute(candidate.route);
-  const normalizedMatches = bundleRoutes.filter((entry) => normalizeComparableRoute(entry.slug) === normalizedCandidate);
+  const comparableCandidates = getSafeComponentComparableRoutes(candidate.route);
+  const normalizedMatches = comparableCandidates.length === 0
+    ? []
+    : bundleRoutes.filter((entry) => comparableCandidates.includes(entry.slug));
   if (normalizedMatches.length === 1) {
     const matched = normalizedMatches[0]!;
-    return { ...toPlanEntry(candidate, { canonicalRoute: normalizeRoute(matched.slug), outputPath: `${matched.slug}.md`, reconciliationStatus: 'normalizedSlugMatch' }), bundleEntry: matched };
+    return {
+      ...toPlanEntry(candidate, {
+        canonicalRoute: normalizeRoute(matched.slug),
+        outputPath: `${matched.slug}.md`,
+        routeTitle: candidate.routeTitle ?? matched.title,
+        collectionId: matched.collectionId ?? candidate.collectionId,
+        documentId: matched.documentId ?? candidate.documentId,
+        exportedCarbonFileId: matched.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
+        carbonPath: matched.carbonPath ?? candidate.carbonPath,
+        pageCanonId: matched.pageCanonId ?? candidate.pageCanonId,
+        publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, matched),
+        identityFieldsUsed: ['normalizedComponentSlug'],
+        reconciliationStatus: 'normalizedSlugMatch'
+      }),
+      bundleEntry: matched
+    };
   }
   if (normalizedMatches.length > 1) {
-    return toPlanEntry(candidate, { reconciliationStatus: 'rejectedAmbiguous', skippedReason: 'normalized slug matched multiple bundle routes' });
+    return toPlanEntry(candidate, {
+      publicDocsClassification: 'public-docs',
+      identityFieldsUsed: ['normalizedComponentSlug'],
+      reconciliationStatus: 'rejectedAmbiguous',
+      skippedReason: 'normalized slug matched multiple bundle routes',
+      failureReason: 'normalized component slug matched multiple bundle routes'
+    });
   }
 
-  return toPlanEntry(candidate, { reconciliationStatus: 'rejectedStale', skippedReason: 'no bundle route or stable content identity match' });
+  return toPlanEntry(candidate, {
+    publicDocsClassification: 'public-docs',
+    reconciliationStatus: 'rejectedStale',
+    skippedReason: 'no bundle route or stable content identity match',
+    failureReason: 'no verified identity or unambiguous component route match'
+  });
 }
 
 export function buildRoutePlan(params: {
@@ -170,11 +332,21 @@ export function buildRoutePlan(params: {
   const candidates = new Map<string, RouteCandidate>();
 
   for (const route of normalizedSiteMetaRoutes) {
+    const routeRecord = route as NormalizedRoute & {
+      exportedCarbonFileId?: string | null;
+      pageCanonId?: string | null;
+      routeTitle?: string;
+      navTitle?: string;
+    };
     addCandidate(candidates, route.path, 'site_meta', {
       public: route.public,
       redirectExternalUrl: route.redirectExternalUrl,
       collectionId: route.collectionId,
       documentId: route.documentId,
+      exportedCarbonFileId: routeRecord.exportedCarbonFileId ?? null,
+      pageCanonId: routeRecord.pageCanonId ?? null,
+      routeTitle: routeRecord.routeTitle,
+      navTitle: routeRecord.navTitle,
     });
     for (const alias of route.aliases) {
       addCandidate(candidates, alias, 'site_meta', { public: route.public, redirectExternalUrl: route.redirectExternalUrl });
@@ -183,7 +355,7 @@ export function buildRoutePlan(params: {
 
   if (siteMeta) {
     for (const navRoute of extractNavDrawerRoutes(siteMeta, baseUrl)) {
-      addCandidate(candidates, navRoute, 'nav_drawer');
+      addCandidate(candidates, navRoute.route, 'nav_drawer', { navTitle: navRoute.navTitle });
     }
   }
 
@@ -193,6 +365,8 @@ export function buildRoutePlan(params: {
       documentId: entry.documentId ?? null,
       exportedCarbonFileId: entry.exportedCarbonFileId ?? null,
       carbonPath: entry.carbonPath ?? null,
+      pageCanonId: entry.pageCanonId ?? null,
+      routeTitle: entry.title,
       tabs: entry.tabs?.map((tab) => tab.label),
       alternateSlugs: entry.alternateSlugs,
     });
@@ -223,14 +397,23 @@ export function buildRoutePlan(params: {
     if (lengthDiff !== 0) return lengthDiff;
     return a.route.localeCompare(b.route);
   })) {
-    const docsPath = isDocsPath(candidate.route, includeBlog);
-    const isPublic = candidate.public !== false && !candidate.redirectExternalUrl && docsPath;
-    if (!isPublic) {
-      nonPublicRoutes.push(toPlanEntry(candidate, { reconciliationStatus: 'rejectedNonPublic', skippedReason: 'route is not a public documentation page' }));
+    const tentativeExact = bundleRoutes.find((entry) => normalizeRoute(entry.slug) === candidate.route);
+    const publicDocsClassification = classifyPublicDocsRoute(candidate.route, includeBlog, candidate, tentativeExact);
+    if (candidate.public === false || publicDocsClassification !== 'public-docs') {
+      nonPublicRoutes.push(toPlanEntry(candidate, {
+        publicDocsClassification,
+        reconciliationStatus: publicDocsClassification === 'missing-extraction-metadata' ? 'rejectedStale' : 'rejectedNonPublic',
+        skippedReason: publicDocsClassification === 'missing-extraction-metadata'
+          ? 'bundle route lacks extraction metadata'
+          : 'route is not a public documentation page',
+        failureReason: publicDocsClassification === 'missing-extraction-metadata'
+          ? 'bundle discovery candidate lacks collectionId/documentId'
+          : undefined
+      }));
       continue;
     }
 
-    const reconciled = reconcileCandidate(candidate, bundleRoutes);
+    const reconciled = reconcileCandidate(candidate, bundleRoutes, includeBlog);
     if (reconciled.reconciliationStatus === 'rejectedAmbiguous') {
       ambiguousRoutes.push(reconciled);
       continue;

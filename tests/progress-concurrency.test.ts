@@ -118,11 +118,11 @@ function makeDsdbFetchStub(): ReturnType<typeof vi.fn> {
   const baseHtml = '<html><script src="/static/angular/main.deadbeef.js"></script></html>';
   const routeParts = Array.from(
     { length: ROUTE_COUNT },
-    (_, i) => `{"slug":"route-${i}","documentId":"doc${i}","collectionId":"col${i}"}`
+    (_, i) => `{"slug":"components/mock-${i}","documentId":"doc${i}","collectionId":"ComponentsM3"}`
   ).join(',');
   const mainJs = `"carbonVersion":"1.0.0" var routes=[${routeParts}]`;
   const siteMetaRoutes: Record<string, { public: true }> = {};
-  for (let i = 0; i < ROUTE_COUNT; i += 1) siteMetaRoutes[`/route-${i}`] = { public: true };
+  for (let i = 0; i < ROUTE_COUNT; i += 1) siteMetaRoutes[`/components/mock-${i}`] = { public: true };
   const siteMetaJs = `window.site_meta = ${JSON.stringify({ routes: siteMetaRoutes })};`;
 
   return vi.fn(async (url: string | URL | Request) => {

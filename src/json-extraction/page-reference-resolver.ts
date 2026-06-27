@@ -8,9 +8,8 @@
 //   {"slug":"components/buttons","documentId":"5047690081337344","collectionId":"ComponentsM3",
 //    "exportedCarbonFileId":"e31df68a-....json","tabs":[{"label":"Overview"},{"label":"Specs"},...]}
 //
-// This module is deliberately NOT used to discover the route *list* — it only (a) resolves a
-// Carbon page reference for a route path already known from site_meta, and (b) supplements whole
-// subtrees that site_meta has zero coverage for (see findSubtreesWithoutCoverage).
+// This module only parses and resolves bundle route entries. Route discovery policy, bundle-only
+// acceptance, and public-doc classification live in route-graph.ts.
 
 export type BundleTabEntry = {
   label: string;
@@ -23,7 +22,9 @@ export type BundleRouteEntry = {
   documentId?: string;
   collectionId?: string;
   exportedCarbonFileId?: string;
+  pageCanonId?: string;
   carbonPath?: string;
+  title?: string;
   alternateSlugs?: string[];
   tabs?: BundleTabEntry[];
 };
@@ -219,7 +220,9 @@ function parseBundleRouteFragment(fragment: string): BundleRouteEntry | null {
     documentId: readStringField(fragment, 'documentId'),
     collectionId: readStringField(fragment, 'collectionId'),
     exportedCarbonFileId: readStringField(fragment, 'exportedCarbonFileId'),
+    pageCanonId: readStringField(fragment, 'pageCanonId') ?? readStringField(fragment, 'pageCanonicalId'),
     carbonPath: readStringField(fragment, 'carbonPath'),
+    title: readStringField(fragment, 'title'),
     alternateSlugs: readStringArrayField(fragment, 'alternateSlugs'),
     tabs: readTabsField(fragment),
   };

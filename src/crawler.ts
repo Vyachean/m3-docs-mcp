@@ -22,6 +22,7 @@ import {
   extractBundleRouteTable,
   extractCarbonVersion as extractCarbonVersionFromBundleText,
   fetchAngularBundleText,
+  findSubtreesWithoutCoverage,
   matchTabToSection,
   resolvePageReference,
   type BundleRouteEntry,
@@ -1869,14 +1870,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         sitemapPaths: Array.from(sitemapPublicDocPaths),
         renderedNavPaths: Array.from(renderedNavPublicDocPaths)
       });
-      coverageDiagnostics.bundleSupplementRouteCount = routePlanSummary.acceptedRoutes.filter((route) => route.sources.includes('bundle') && !route.sources.includes('site_meta')).length;
-      coverageDiagnostics.supplementedPrefixes = [];
-      const staleAndNonPublicRoutes = [...routePlanSummary.staleRoutes, ...routePlanSummary.ambiguousRoutes, ...routePlanSummary.nonPublicRoutes];
-      for (const route of routePlanSummary.acceptedRoutes) candidatePathsSet.add(route.route);
-      for (const route of routePlanSummary.staleRoutes) candidatePathsSet.add(route.route);
-      for (const route of routePlanSummary.ambiguousRoutes) candidatePathsSet.add(route.route);
-      for (const route of routePlanSummary.nonPublicRoutes) candidatePathsSet.add(route.route);
-      for (const route of routePlanSummary.nonPublicRoutes) {
+      const builtRoutePlan = routePlanSummary;
+      coverageDiagnostics.bundleSupplementRouteCount = builtRoutePlan.acceptedRoutes.filter((route) => route.sources.includes('bundle') && !route.sources.includes('site_meta')).length;
+      coverageDiagnostics.supplementedPrefixes = findSubtreesWithoutCoverage(
+        normalizedSiteMetaRoutes.map((route) => route.path),
+        ['components', 'styles', 'foundations']
+      ).filter((prefix) => builtRoutePlan.acceptedRoutes.some((route) => route.sources.includes('bundle') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))));
+      const staleAndNonPublicRoutes = [...builtRoutePlan.staleRoutes, ...builtRoutePlan.ambiguousRoutes, ...builtRoutePlan.nonPublicRoutes];
+      for (const route of builtRoutePlan.acceptedRoutes) candidatePathsSet.add(route.route);
+      for (const route of builtRoutePlan.staleRoutes) candidatePathsSet.add(route.route);
+      for (const route of builtRoutePlan.ambiguousRoutes) candidatePathsSet.add(route.route);
+      for (const route of builtRoutePlan.nonPublicRoutes) candidatePathsSet.add(route.route);
+      for (const route of builtRoutePlan.nonPublicRoutes) {
         if (route.route.startsWith('/blog/')) {
           coverageDiagnostics.skippedBlogCount += 1;
           policySkippedDocPaths.add(route.route);

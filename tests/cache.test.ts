@@ -905,6 +905,7 @@ describe('cache helpers', () => {
               canonicalRoute: '/components/switch',
               outputPath: 'components/switch.md',
               sources: ['site_meta', 'bundle'],
+              publicDocsClassification: 'public-docs',
               reconciliationStatus: 'normalizedSlugMatch'
             }
           ]
