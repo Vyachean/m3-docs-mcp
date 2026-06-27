@@ -148,7 +148,8 @@ export type ExtractionRouteDiagnostic = {
   /** Where collectionId/documentId were resolved from for the page-data fetch. */
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
   /** How the resolved bundle route was matched when it did not win by exact route equality. */
-  aliasMatchedBy?: 'bundle-alternate-slug' | `component-alias:${string}`;
+  aliasMatchedBy?: 'bundle-alternate-slug';
+  reconciliationStatus?: RouteReconciliationStatus;
   /** Set when this route/virtual page was never attempted — distinct from sourceUsed:"failed",
    *  which is reserved for routes that were actually attempted and errored. Excluded from
    *  failedPages/virtualPagesFailed/failedPageCount. */
@@ -321,6 +322,7 @@ export type CoverageDiagnostics = {
   skippedPlatformSpecificUnmappedCount?: number;
   routeResolutionSummary?: RouteResolutionSummary;
   requiredRouteCoverage?: RequiredRouteCoverageEntry[];
+  routePlanSummary?: RoutePlanSummary;
 };
 
 export type RouteResolutionSummaryEntry = {
@@ -331,7 +333,8 @@ export type RouteResolutionSummaryEntry = {
   normalizedRoute?: string;
   bundleMatchedRoute?: string;
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
-  aliasMatchedBy?: 'bundle-alternate-slug' | `component-alias:${string}`;
+  aliasMatchedBy?: 'bundle-alternate-slug';
+  reconciliationStatus?: RouteReconciliationStatus;
   skippedReason?: ExtractionRouteDiagnostic['skippedReason'];
   sourceRoute?: string;
   virtualRoute?: string;
@@ -355,6 +358,46 @@ export type RouteResolutionSummary = {
   aliasResolvedRoutes: RouteResolutionSummaryEntry[];
   failedVirtualPages: RouteResolutionSummaryEntry[];
   requiredRouteCoverage: RequiredRouteCoverageEntry[];
+};
+
+export type RouteCandidateSource = 'site_meta' | 'nav_drawer' | 'bundle' | 'sitemap' | 'rendered_nav';
+
+export type RouteReconciliationStatus =
+  | 'exact'
+  | 'alternateSlug'
+  | 'contentIdentityMatch'
+  | 'normalizedSlugMatch'
+  | 'rejectedAmbiguous'
+  | 'rejectedStale'
+  | 'rejectedNonPublic'
+  | 'extractionFailed';
+
+export type RoutePlanEntry = {
+  route: string;
+  canonicalRoute?: string;
+  outputPath?: string;
+  sources: RouteCandidateSource[];
+  title?: string;
+  public?: boolean;
+  redirectExternalUrl?: string | null;
+  collectionId?: string | null;
+  documentId?: string | null;
+  exportedCarbonFileId?: string | null;
+  carbonPath?: string | null;
+  pageCanonId?: string | null;
+  tabs?: string[];
+  alternateSlugs?: string[];
+  reconciliationStatus: RouteReconciliationStatus;
+  skippedReason?: string;
+};
+
+export type RoutePlanSummary = {
+  acceptedRoutes: RoutePlanEntry[];
+  staleRoutes: RoutePlanEntry[];
+  removedRoutes: RoutePlanEntry[];
+  ambiguousRoutes: RoutePlanEntry[];
+  nonPublicRoutes: RoutePlanEntry[];
+  extractionCandidates: RoutePlanEntry[];
 };
 
 export type SuspiciousCrawlPage = {

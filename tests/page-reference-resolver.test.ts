@@ -95,43 +95,7 @@ describe('resolvePageReference', () => {
     expect(result.pageReferenceSource).toBe('missing');
   });
 
-  it('resolves explicit component aliases after exact and alternate slug matching', () => {
-    const result = resolvePageReference('/components/switches', [
-      {
-        slug: 'components/switch',
-        documentId: 'doc-switch',
-        collectionId: 'ComponentsM3',
-        tabs: [{ label: 'Overview' }]
-      }
-    ]);
-    expect(result.pageReferenceSource).toBe('bundle-table');
-    if (result.pageReferenceSource === 'bundle-table') {
-      expect(result.entry.slug).toBe('components/switch');
-      expect(result.aliasMatchedBy).toBe('component-alias:switches-to-switch');
-    }
-  });
-
-  it('prefers an exact route over an explicit component alias', () => {
-    const result = resolvePageReference('/components/switch/overview', [
-      {
-        slug: 'components/switch/overview',
-        documentId: 'doc-switch-overview',
-        collectionId: 'ComponentsM3'
-      },
-      {
-        slug: 'components/switch',
-        documentId: 'doc-switch',
-        collectionId: 'ComponentsM3'
-      }
-    ]);
-    expect(result.pageReferenceSource).toBe('bundle-table');
-    if (result.pageReferenceSource === 'bundle-table') {
-      expect(result.entry.slug).toBe('components/switch/overview');
-      expect(result.aliasMatchedBy).toBeUndefined();
-    }
-  });
-
-  it('does not add unrelated component aliases when the target route is absent', () => {
+  it('does not invent component aliases when the target route is absent', () => {
     const result = resolvePageReference('/components/switches', [
       {
         slug: 'components/checkbox',

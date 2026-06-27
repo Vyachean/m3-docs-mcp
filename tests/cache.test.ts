@@ -874,7 +874,7 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required sample routes are missing or failed JSON extraction');
   });
 
-  it('fails full refresh promotion when a required component route is present in sources but missing from output', () => {
+  it('fails full refresh promotion when an accepted public route is missing from output', () => {
     const diag = createEmptyExtractionDiagnostics();
     pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/buttons/specs'));
     pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/lists/specs'));
@@ -891,24 +891,28 @@ describe('cache helpers', () => {
     const nextIndex = materialIndex(pages.length, {
       pages,
       extractionDiagnostics: diag,
-      coverageDiagnostics: minimalCoverageDiagnostics({
-        isLimitedRun: false,
-        requiredRouteCoverage: [
-          {
-            key: 'switch',
-            label: 'Switch',
-            sourcePresent: true,
-            saved: false,
-            siteMetaRoutes: ['/components/switches'],
-            bundleRoutes: ['/components/switch'],
-            pagePaths: [],
-            missingReason: 'missing-cache-output'
-          }
-        ]
-      })
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [
+            {
+              route: '/components/switches',
+              canonicalRoute: '/components/switch',
+              outputPath: 'components/switch.md',
+              sources: ['site_meta', 'bundle'],
+              reconciliationStatus: 'normalizedSlugMatch'
+            }
+          ]
+        }
+      }
     });
 
-    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Required component routes are missing from cache output: switch');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switch');
   });
 
   it('fails a --max-pages 20 smoke promotion when a required sample is absent from both pages and routeDiagnostics', () => {

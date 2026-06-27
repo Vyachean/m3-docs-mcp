@@ -1104,23 +1104,20 @@ describe('crawlMaterialDocs', () => {
       siteMetaRoute: '/components/switches',
       normalizedRoute: '/components/switches',
       bundleMatchedRoute: '/components/switch',
-      aliasMatchedBy: 'component-alias:switches-to-switch',
+      reconciliationStatus: 'normalizedSlugMatch',
       pageReferenceSource: 'bundle-table',
       collectionId: 'ComponentsM3',
       documentId: 'doc-switch'
     });
-    expect(index.coverageDiagnostics?.routeResolutionSummary).toMatchObject({
-      aliasResolvedRoutes: expect.arrayContaining([
+    expect(index.coverageDiagnostics?.routePlanSummary?.acceptedRoutes).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
-          path: 'components/switch/overview.md',
-          siteMetaRoute: '/components/switches',
-          bundleMatchedRoute: '/components/switch'
+          route: '/components/switches',
+          canonicalRoute: '/components/switch',
+          reconciliationStatus: 'normalizedSlugMatch'
         })
-      ]),
-      requiredRouteCoverage: expect.arrayContaining([
-        expect.objectContaining({ key: 'switch', sourcePresent: true, saved: true })
       ])
-    });
+    );
   }, 10_000);
 
   it('keeps exact route matches ahead of aliases and does not duplicate switch routes', async () => {
@@ -1158,11 +1155,11 @@ describe('crawlMaterialDocs', () => {
     expect(aliasOnlyDiagnostic).toMatchObject({
       siteMetaRoute: '/components/switches',
       skippedReason: 'alias-only',
-      aliasMatchedBy: 'component-alias:switches-to-switch',
       bundleMatchedRoute: '/components/switch'
     });
-    expect(index.coverageDiagnostics?.routeResolutionSummary?.aliasResolvedRoutes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ path: 'components/switches.md', skippedReason: 'alias-only' })])
+    expect(aliasOnlyDiagnostic?.reconciliationStatus).toBe('normalizedSlugMatch');
+    expect(index.coverageDiagnostics?.routePlanSummary?.acceptedRoutes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ route: '/components/switches', canonicalRoute: '/components/switch' })])
     );
   }, 10_000);
 

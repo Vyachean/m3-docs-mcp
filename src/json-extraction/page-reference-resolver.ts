@@ -28,7 +28,7 @@ export type BundleRouteEntry = {
   tabs?: BundleTabEntry[];
 };
 
-export type RouteAliasMatchedBy = 'bundle-alternate-slug' | `component-alias:${string}`;
+export type RouteAliasMatchedBy = 'bundle-alternate-slug';
 
 export type PageReferenceResolution =
   | {
@@ -231,17 +231,6 @@ function normalizeSlugForMatch(path: string): string {
   return path.replace(/^\/+|\/+$/g, '');
 }
 
-const EXPLICIT_COMPONENT_ROUTE_ALIASES: Readonly<Record<string, { target: string; aliasMatchedBy: RouteAliasMatchedBy }>> = {
-  'components/switches': {
-    target: 'components/switch',
-    aliasMatchedBy: 'component-alias:switches-to-switch'
-  },
-  'components/switch/overview': {
-    target: 'components/switch',
-    aliasMatchedBy: 'component-alias:switch-overview-to-parent'
-  }
-};
-
 /**
  * Resolves a route path to its bundle route entry by exact slug match, falling back to
  * alternateSlugs. Does not invent new routes — returns "missing" when no entry matches.
@@ -267,20 +256,6 @@ export function resolvePageReference(path: string, bundleRoutes: BundleRouteEntr
       bundleMatchedRoute: viaAlias.slug,
       aliasMatchedBy: 'bundle-alternate-slug'
     };
-  }
-
-  const explicitAlias = EXPLICIT_COMPONENT_ROUTE_ALIASES[target];
-  if (explicitAlias) {
-    const aliasedEntry = bundleRoutes.find((entry) => entry.slug === explicitAlias.target);
-    if (aliasedEntry) {
-      return {
-        pageReferenceSource: 'bundle-table',
-        entry: aliasedEntry,
-        normalizedRoute: target,
-        bundleMatchedRoute: aliasedEntry.slug,
-        aliasMatchedBy: explicitAlias.aliasMatchedBy
-      };
-    }
   }
 
   return { pageReferenceSource: 'missing', normalizedRoute: target };

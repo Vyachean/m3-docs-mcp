@@ -410,13 +410,27 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     );
   }
 
-  const missingRequiredComponents = (nextIndex.coverageDiagnostics?.requiredRouteCoverage ?? [])
-    .filter((entry) => entry.sourcePresent && !entry.saved);
-  if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && missingRequiredComponents.length > 0) {
-    throw new Error(
-      `Required component routes are missing from cache output: ${missingRequiredComponents.map((entry) => entry.key).join(', ')}. ` +
-      'Keeping the existing cache. Use --force to promote anyway.'
-    );
+  const routePlanSummary = nextIndex.coverageDiagnostics?.routePlanSummary;
+  if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && routePlanSummary) {
+    if (routePlanSummary.ambiguousRoutes.length > 0) {
+      throw new Error(
+        `Public documentation routes were ambiguous during reconciliation: ${routePlanSummary.ambiguousRoutes.map((entry) => entry.route).join(', ')}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+    const unresolvedAcceptedRoutes = Array.from(new Map(
+      routePlanSummary.extractionCandidates.map((entry) => [entry.canonicalRoute ?? entry.route, entry] as const)
+    ).values()).filter((entry) => {
+      const canonical = (entry.canonicalRoute ?? entry.route).replace(/^\/+/, '');
+      const canonicalPrefix = `${canonical}/`;
+      return !nextIndex.pages.some((page) => page.path === `${canonical}.md` || page.path.startsWith(canonicalPrefix));
+    });
+    if (unresolvedAcceptedRoutes.length > 0) {
+      throw new Error(
+        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map((entry) => entry.canonicalRoute ?? entry.route).join(', ')}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
   }
 }
 
