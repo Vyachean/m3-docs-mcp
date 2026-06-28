@@ -1069,7 +1069,12 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
       && (crawledIndex.coverageDiagnostics?.isLimitedRun ?? false)
       && options.promotePartial !== true
     );
-    if (shouldKeepExistingVerifiedCache) {
+    const shouldSkipInitialPartialPromotion = Boolean(
+      !previousIndex
+      && (crawledIndex.coverageDiagnostics?.isLimitedRun ?? false)
+      && options.promotePartial !== true
+    );
+    if (shouldKeepExistingVerifiedCache || shouldSkipInitialPartialPromotion) {
       promotionDecision = 'skipped';
       await rm(stagingCacheDir, { recursive: true, force: true });
       const diag = crawledIndex.extractionDiagnostics;
@@ -1077,7 +1082,9 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
       emitFinalProgressSnapshot();
       logger.log('info', 'update:complete', {
         phase: 'promoting',
-        message: 'Limited refresh completed without promotion; existing verified cache preserved',
+        message: shouldKeepExistingVerifiedCache
+          ? 'Limited refresh completed without promotion; existing verified cache preserved'
+          : 'Limited refresh completed without promotion; no complete production cache existed to replace',
         savedPages: crawledIndex.pageCount,
         failedPages: crawledIndex.failedPageCount,
         attemptedPages: crawledIndex.attemptedPageCount,
@@ -2580,6 +2587,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
+  if (routeCoverageSummary.failedRoutes > 0 || routeCoverageSummary.unresolvedRoutes > 0 || routeCoverageSummary.partialRoutes > 0) {
+    coverageDiagnostics.coverageVerified = false;
+  }
   // If a significant number of direct JSON attempts all failed, the extraction pipeline is broken.
   // Use a minimum threshold to avoid false positives in small crawls where browser DOM compensates.
   const MIN_DIRECT_JSON_ATTEMPTS_FOR_FAILURE_CHECK = 5;
@@ -2631,11 +2641,6 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       networkRecoveryFailureReason
     }
   };
-
-  function tabUrlSlug(tab: BundleTabEntry): string {
-    if (tab.slug) return tab.slug.replace(/^\/+|\/+$/g, '');
-    return tab.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  }
 
   /**
    * Deterministic fetch-page-data path for a route resolved via the page-reference-resolver
@@ -2821,10 +2826,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const effectiveParentTitle = parentTitle ?? decodedContentPage?.title ?? null;
       for (let tabIndex = 0; tabIndex < route.tabs.length; tabIndex += 1) {
         const tab = route.tabs[tabIndex]!;
-        const slug = tabUrlSlug(tab);
+        const slug = normalizeTabSlug(tab);
         const tabUrl = `${routeUrl}/${slug}`;
+        const failedTabOutputPath = normalizeCoverageOutputPath(routePathFromSlug(`${route.slug}/${slug}`));
         const matchResult = matchTabToSection(tab, tabIndex, sectionRefs, route.tabs.length);
         if (!matchResult.matched) {
+          updateRouteCoverageEntry(sourceCoverageRoute, (entry) => {
+            appendUnique(entry.failedOutputPaths, failedTabOutputPath);
+            addRouteCoverageFailureReason(entry, 'json-no-sections');
+          });
           recordRouteDiagnostic(createRouteDiagnostic({
             url: tabUrl,
             path: routePathFromSlug(`${route.slug}/${slug}`),

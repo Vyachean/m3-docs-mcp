@@ -33,7 +33,12 @@ describe('buildRoutePlan', () => {
       includeBlog: false,
       siteMeta,
       normalizedSiteMetaRoutes: [route('/components/switches')],
-      bundleRoutes: [{ slug: 'components/switch', documentId: 'doc-switch', collectionId: 'ComponentsM3' }],
+      bundleRoutes: [{
+        slug: 'components/switch',
+        documentId: 'doc-switch',
+        collectionId: 'ComponentsM3',
+        tabs: [{ label: 'Overview' }, { label: 'Specs', slug: '/specs/' }]
+      }],
       sitemapPaths: []
     });
 
@@ -41,7 +46,9 @@ describe('buildRoutePlan', () => {
       route: '/components/switches',
       canonicalRoute: '/components/switch',
       reconciliationStatus: 'normalizedSlugMatch',
-      identityFieldsUsed: ['normalizedComponentSlug']
+      identityFieldsUsed: ['normalizedComponentSlug'],
+      tabs: ['Overview', 'Specs'],
+      tabSlugs: ['overview', 'specs']
     }));
   });
 

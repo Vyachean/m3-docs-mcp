@@ -68,14 +68,18 @@ const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
 
 export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {
   const warnings = diag.coverageWarnings;
+  const routeCoverageSummary = diag.routeCoverageSummary;
   const hasRegression = warnings.some((w) => w.startsWith('coverage-regression:'));
   const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
   const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
   const hasDirectJsonFailure = warnings.some((w) => w.startsWith('direct-json-failure:'));
+  const hasRouteFailures = (routeCoverageSummary?.failedRoutes ?? 0) > 0 || (routeCoverageSummary?.unresolvedRoutes ?? 0) > 0;
+  const hasUnexpectedPartialRoutes = (routeCoverageSummary?.partialRoutes ?? 0) > 0;
   // Regression always means failed regardless of partial flag
   if (hasRegression) return 'failed';
   // Every direct JSON attempt failing means the extraction pipeline is broken
   if (hasDirectJsonFailure) return 'broken';
+  if (hasRouteFailures || hasUnexpectedPartialRoutes) return 'failed';
   // An unexpected coverage gap (no max-pages explanation) is a failure
   if (hasGap && !hasPartial) return 'failed';
   if (diag.coverageVerified) return 'verified';

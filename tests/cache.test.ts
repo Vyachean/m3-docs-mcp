@@ -2106,6 +2106,28 @@ describe('computeCoverageHealth', () => {
     expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-regression:previous=100:current=70'], coverageHealth: 'failed' })).toBe('failed');
   });
 
+  it('returns failed when accepted route coverage includes failed or unresolved routes', () => {
+    expect(computeCoverageHealth({
+      ...baseDiag,
+      coverageVerified: true,
+      coverageWarnings: [],
+      coverageHealth: 'verified',
+      routeCoverageSummary: {
+        totalAcceptedRoutes: 2,
+        coveredRoutes: 0,
+        partialRoutes: 0,
+        failedRoutes: 1,
+        unresolvedRoutes: 1,
+        policySkippedRoutes: 0,
+        nonContentRoutes: 0,
+        expectedOutputCount: 2,
+        savedOutputCount: 0,
+        failedOutputCount: 1,
+        problematicExamples: []
+      }
+    })).toBe('failed');
+  });
+
   it('returns failed for regression even alongside a max-pages partial warning', () => {
     expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-partial:max-pages-limited:10', 'coverage-regression:previous=100:current=70'], coverageHealth: 'failed' })).toBe('failed');
   });

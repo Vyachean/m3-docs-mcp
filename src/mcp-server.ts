@@ -321,6 +321,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
       maxPages,
       maxPagesExplicit: true,
       concurrency,
+      promotePartial: false,
       onProgress: (progress) => {
         state.progress = progress;
         state.startedAt = progress.startedAt;
