@@ -105,9 +105,16 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using the deterministic JSON-based pipeline. Browser fallback is disabled by default. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
     maxPages: z.number().int().min(1).max(1000).optional(),
     concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
+    promotePartial: z.boolean().default(false),
     force: z.boolean().default(false)
-  }, async ({ maxPages, concurrency, force }) => {
-    return jsonText(await store.refresh({ maxPages, maxPagesExplicit: maxPages !== undefined, concurrency, force: force ?? false }));
+  }, async ({ maxPages, concurrency, promotePartial, force }) => {
+    return jsonText(await store.refresh({
+      maxPages,
+      maxPagesExplicit: maxPages !== undefined,
+      concurrency,
+      promotePartial: promotePartial ?? false,
+      force: force ?? false
+    }));
   });
 
   const transport = new StdioServerTransport();
@@ -299,7 +306,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
 
   async function refreshIfNeeded(maxAgeHours: number): Promise<void> {
     const status = await store.getStatus(maxAgeHours);
-    if (status.hasCache && status.isFresh) return;
+    if (status.hasCache) return;
     start();
   }
 
@@ -314,6 +321,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
       maxPages,
       maxPagesExplicit: true,
       concurrency,
+      promotePartial: false,
       onProgress: (progress) => {
         state.progress = progress;
         state.startedAt = progress.startedAt;

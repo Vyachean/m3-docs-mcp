@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { isBlogPath } from './crawl-priority.js';
+import { summarizeRouteCoverageFailure } from './route-coverage.js';
 import type {
   CacheDiagnostics,
   CacheStatus,
@@ -18,8 +19,6 @@ import type {
   RoutePlanEntry,
   QualitySummary
 } from './types.js';
-
-const ROUTE_PLAN_PROBLEM_EXAMPLE_LIMIT = 5;
 
 const DiagnosticsDsdbFieldsSchema = z.object({
   directJsonEnabled: z.boolean().nullish(),
@@ -154,14 +153,18 @@ function isAcceptedRouteCovered(
 
 export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {
   const warnings = diag.coverageWarnings;
+  const routeCoverageSummary = diag.routeCoverageSummary;
   const hasRegression = warnings.some((w) => w.startsWith('coverage-regression:'));
   const hasGap = warnings.some((w) => w.startsWith('coverage-gap:'));
   const hasPartial = warnings.some((w) => w.startsWith('coverage-partial:max-pages-limited:'));
   const hasDirectJsonFailure = warnings.some((w) => w.startsWith('direct-json-failure:'));
+  const hasRouteFailures = (routeCoverageSummary?.failedRoutes ?? 0) > 0 || (routeCoverageSummary?.unresolvedRoutes ?? 0) > 0;
+  const hasUnexpectedPartialRoutes = (routeCoverageSummary?.partialRoutes ?? 0) > 0;
   // Regression always means failed regardless of partial flag
   if (hasRegression) return 'failed';
   // Every direct JSON attempt failing means the extraction pipeline is broken
   if (hasDirectJsonFailure) return 'broken';
+  if (hasRouteFailures || hasUnexpectedPartialRoutes) return 'failed';
   // An unexpected coverage gap (no max-pages explanation) is a failure
   if (hasGap && !hasPartial) return 'failed';
   if (diag.coverageVerified) return 'verified';
@@ -282,6 +285,7 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     ttlMs: maxAgeHours * 60 * 60 * 1000,
     isFresh: isCacheFresh(ageMs, maxAgeHours),
     ...(coverageHealth !== undefined ? { coverageHealth } : {}),
+    ...(index?.coverageDiagnostics?.routeCoverageSummary ? { routeCoverageSummary: index.coverageDiagnostics.routeCoverageSummary } : {}),
     ...(index?.qualitySummary ? { qualitySummary: index.qualitySummary } : {})
   };
 }
@@ -371,6 +375,7 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
   const coverageDiag = nextIndex.coverageDiagnostics;
   const extractionDiag = nextIndex.extractionDiagnostics;
+  const routeCoverage = coverageDiag?.routeCoverage ?? [];
 
   // Accounting invariant: every attempted source route's virtual pages must be accounted for as
   // either saved or failed — never silently dropped. This should always hold by construction; a
@@ -553,6 +558,22 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
 
   const routePlanSummary = nextIndex.coverageDiagnostics?.fullRoutePlanSummary;
   const compactRoutePlanSummary = nextIndex.coverageDiagnostics?.routePlanSummary;
+  const fullRunRouteCoverage = !(nextIndex.coverageDiagnostics?.isLimitedRun ?? false)
+    ? routeCoverage
+    : [];
+  if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && fullRunRouteCoverage.length > 0) {
+    const unresolvedAcceptedRoutes = fullRunRouteCoverage.filter((entry) => (
+      entry.status === 'unresolved'
+      || entry.status === 'failed'
+      || entry.status === 'partial'
+    ));
+    if (unresolvedAcceptedRoutes.length > 0) {
+      throw new Error(
+        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map(summarizeRouteCoverageFailure).join('; ')}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+  }
   if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && routePlanSummary) {
     if (routePlanSummary.ambiguousRoutes.length > 0) {
       throw new Error(
@@ -672,6 +693,7 @@ function toPublicIndex(index: MaterialIndex): MaterialPublicIndex {
       coverageDiagnostics: {
         ...(index.coverageDiagnostics.coverageHealth ? { coverageHealth: index.coverageDiagnostics.coverageHealth } : {}),
         ...(index.coverageDiagnostics.routePlanSummary ? { routePlanSummary: index.coverageDiagnostics.routePlanSummary } : {}),
+        ...(index.coverageDiagnostics.routeCoverageSummary ? { routeCoverageSummary: index.coverageDiagnostics.routeCoverageSummary } : {}),
       }
     } : {}),
     pages: index.pages.map((page) => ({

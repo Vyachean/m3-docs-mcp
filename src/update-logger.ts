@@ -46,7 +46,7 @@ export type UpdateRunDiagnostics = {
   resourceChunksDecoded: number;
   resourceChunksRendered: number;
   resourceChunksPlaceholder: number;
-  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
+  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' | 'skipped';
   hasPreviousCache: boolean;
   preservedFailedStagingPath: string | null;
   coverageHealth: string | null;

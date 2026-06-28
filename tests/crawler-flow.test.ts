@@ -1112,6 +1112,15 @@ describe('crawlMaterialDocs', () => {
     expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
       reconciliationStatusCounts: { normalizedSlugMatch: 1 }
     });
+    expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceRoute: '/components/switches',
+        canonicalRoute: '/components/switch',
+        expectedVirtualRoutes: ['/components/switch/overview', '/components/switch/specs'],
+        expectedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
+        status: 'covered'
+      })
+    ]));
     const diagnosticsJson = JSON.parse(await readFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), 'utf8')) as Record<string, unknown>;
     expect(diagnosticsJson).toMatchObject({
       coverageDiagnostics: {
@@ -1126,6 +1135,56 @@ describe('crawlMaterialDocs', () => {
         }
       }
     });
+  }, 10_000);
+
+  it('marks failed tab outputs when a matched tab cannot be reconciled to a content section', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      '{"slug":"components/switch","documentId":"doc-switch","collectionId":"ComponentsM3","exportedCarbonFileId":"switch.json","tabs":[{"label":"Overview"},{"label":"Specs"}]}'
+    ].join(',');
+    const pageData = { result: { pageContext: { title: 'Switch', documentId: 'doc-switch', pageCanonId: 'page-canon-switch', slug: 'components/switch' } } };
+    const contentPage = {
+      title: 'Switch',
+      sections: [
+        { name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Switch overview content is present with enough text for validation.</p>' }] }] }
+      ]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/switches']) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === 'https://m3.material.io/page-data/ComponentsM3/doc-switch.json') return { ok: true, json: async () => pageData } as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/switch.json') return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceRoute: '/components/switches',
+        canonicalRoute: '/components/switch',
+        failedOutputPaths: ['components/switch/specs.md'],
+        failureReasons: expect.arrayContaining(['json-no-sections']),
+        status: 'partial'
+      })
+    ]));
+    expect(index.coverageDiagnostics?.routeCoverageSummary).toMatchObject({
+      partialRoutes: 1,
+      failedRoutes: 0
+    });
+    expect(index.coverageDiagnostics?.coverageVerified).toBe(false);
+    expect(index.coverageDiagnostics?.coverageHealth).toBe('failed');
+  }, 10_000);
+
+  it('does not promote a startup-sized partial crawl when no production cache exists yet', async () => {
+    const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 1, minPageCount: 1, force: true });
+
+    expect(index.pageCount).toBe(1);
+    await expect(readFile(indexPath(cacheDir), 'utf8')).rejects.toThrow();
   }, 10_000);
 
   it('keeps exact route matches ahead of aliases and does not duplicate switch routes', async () => {

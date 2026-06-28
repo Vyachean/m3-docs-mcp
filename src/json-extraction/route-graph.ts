@@ -1,4 +1,6 @@
 import { normalizeMaterialPublicDocPath } from '../crawler-utils.js';
+import { isBlogPath } from '../crawl-priority.js';
+import { normalizeTabSlug } from '../route-coverage.js';
 import type { CompactRoutePlanSummary, PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary, RouteReconciliationStatus } from '../types.js';
 import type { SiteMeta } from './fetch-site-meta.js';
 import type { NormalizedRoute } from './normalize-routes.js';
@@ -18,6 +20,7 @@ type RouteCandidate = {
   pageCanonId?: string | null;
   verifiedIdentity?: boolean;
   tabs?: string[];
+  tabSlugs?: string[];
   alternateSlugs?: string[];
 };
 
@@ -40,8 +43,15 @@ function isDocsPath(path: string, includeBlog: boolean): boolean {
   if (normalized.startsWith('/styles/')) return true;
   if (normalized.startsWith('/foundations/')) return true;
   if (normalized.startsWith('/develop/')) return true;
-  if (normalized.startsWith('/blog/')) return includeBlog;
+  if (isBlogPath(normalized)) return includeBlog;
   return false;
+}
+
+function matchedBundleRouteFields(entry: BundleRouteEntry): Pick<RoutePlanEntry, 'tabs' | 'tabSlugs'> {
+  return {
+    ...(entry.tabs ? { tabs: entry.tabs.map((tab) => tab.label) } : {}),
+    ...(entry.tabs ? { tabSlugs: entry.tabs.map((tab) => normalizeTabSlug(tab)) } : {}),
+  };
 }
 
 function addCandidate(map: Map<string, RouteCandidate>, route: string, source: RouteCandidateSource, patch: Partial<RouteCandidate> = {}): void {
@@ -59,6 +69,7 @@ function addCandidate(map: Map<string, RouteCandidate>, route: string, source: R
   if (patch.pageCanonId && !current.pageCanonId) current.pageCanonId = patch.pageCanonId;
   if (patch.verifiedIdentity !== undefined) current.verifiedIdentity = patch.verifiedIdentity;
   if (patch.tabs && !current.tabs) current.tabs = patch.tabs;
+  if (patch.tabSlugs && !current.tabSlugs) current.tabSlugs = patch.tabSlugs;
   if (patch.alternateSlugs) {
     current.alternateSlugs = Array.from(new Set([...(current.alternateSlugs ?? []), ...patch.alternateSlugs]));
   }
@@ -208,6 +219,7 @@ function toPlanEntry(
     ...(candidate.carbonPath ? { carbonPath: candidate.carbonPath } : {}),
     ...(candidate.pageCanonId ? { pageCanonId: candidate.pageCanonId } : {}),
     ...(candidate.tabs ? { tabs: candidate.tabs } : {}),
+    ...(candidate.tabSlugs ? { tabSlugs: candidate.tabSlugs } : {}),
     ...(candidate.alternateSlugs ? { alternateSlugs: candidate.alternateSlugs } : {}),
     ...overrides,
   };
@@ -226,6 +238,7 @@ function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRoute
         exportedCarbonFileId: exact.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
         carbonPath: exact.carbonPath ?? candidate.carbonPath,
         pageCanonId: exact.pageCanonId ?? candidate.pageCanonId,
+        ...matchedBundleRouteFields(exact),
         publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, exact),
         identityFieldsUsed: ['slug'],
         reconciliationStatus: 'exact'
@@ -246,6 +259,7 @@ function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRoute
         exportedCarbonFileId: viaAlternate.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
         carbonPath: viaAlternate.carbonPath ?? candidate.carbonPath,
         pageCanonId: viaAlternate.pageCanonId ?? candidate.pageCanonId,
+        ...matchedBundleRouteFields(viaAlternate),
         publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, viaAlternate),
         identityFieldsUsed: ['alternateSlug'],
         reconciliationStatus: 'alternateSlug'
@@ -267,6 +281,7 @@ function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRoute
         exportedCarbonFileId: matched.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
         carbonPath: matched.carbonPath ?? candidate.carbonPath,
         pageCanonId: matched.pageCanonId ?? candidate.pageCanonId,
+        ...matchedBundleRouteFields(matched),
         publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, matched),
         identityFieldsUsed,
         reconciliationStatus: 'contentIdentityMatch'
@@ -300,6 +315,7 @@ function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRoute
         exportedCarbonFileId: matched.exportedCarbonFileId ?? candidate.exportedCarbonFileId,
         carbonPath: matched.carbonPath ?? candidate.carbonPath,
         pageCanonId: matched.pageCanonId ?? candidate.pageCanonId,
+        ...matchedBundleRouteFields(matched),
         publicDocsClassification: classifyPublicDocsRoute(candidate.route, includeBlog, candidate, matched),
         identityFieldsUsed: ['normalizedComponentSlug'],
         reconciliationStatus: 'normalizedSlugMatch'
@@ -376,6 +392,7 @@ export function buildRoutePlan(params: {
       verifiedIdentity: true,
       routeTitle: entry.title,
       tabs: entry.tabs?.map((tab) => tab.label),
+      tabSlugs: entry.tabs?.map((tab) => normalizeTabSlug(tab)),
       alternateSlugs: entry.alternateSlugs,
     });
   }

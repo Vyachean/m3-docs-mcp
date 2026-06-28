@@ -324,6 +324,8 @@ export type CoverageDiagnostics = {
   requiredRouteCoverage?: RequiredRouteCoverageEntry[];
   routePlanSummary?: CompactRoutePlanSummary;
   fullRoutePlanSummary?: RoutePlanSummary;
+  routeCoverage?: RouteCoverageEntry[];
+  routeCoverageSummary?: RouteCoverageSummary;
 };
 
 export type RouteResolutionSummaryEntry = {
@@ -397,6 +399,7 @@ export type RoutePlanEntry = {
   carbonPath?: string | null;
   pageCanonId?: string | null;
   tabs?: string[];
+  tabSlugs?: string[];
   alternateSlugs?: string[];
   navTitle?: string;
   routeTitle?: string;
@@ -435,6 +438,54 @@ export type CompactRoutePlanSummary = {
     nonPublicRoutes: CompactRoutePlanBucketExample[];
     unresolvedAcceptedRoutes: CompactRoutePlanBucketExample[];
   };
+};
+
+export type RouteCoverageStatus = 'covered' | 'partial' | 'failed' | 'skipped' | 'unresolved' | 'nonContent' | 'policySkipped';
+
+export type RouteCoverageEntry = {
+  sourceRoute: string;
+  canonicalRoute: string;
+  routeKey?: string;
+  sources?: RouteCandidateSource[];
+  reconciliationStatus?: RouteReconciliationStatus;
+  publicDocsClassification?: PublicDocsClassification;
+  navigationSource?: 'site-meta' | 'bundle-supplement';
+  pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  expectedVirtualRoutes: string[];
+  expectedOutputPaths: string[];
+  savedOutputPaths: string[];
+  failedOutputPaths: string[];
+  skippedOutputPaths: string[];
+  status: RouteCoverageStatus;
+  failureReasons: string[];
+};
+
+export type CompactRouteCoverageExample = Pick<
+  RouteCoverageEntry,
+  'sourceRoute' | 'canonicalRoute' | 'status' | 'failureReasons'
+> & {
+  expectedOutputPathCount: number;
+  savedOutputPathCount: number;
+  failedOutputPathCount: number;
+  skippedOutputPathCount: number;
+  expectedOutputPathExamples: string[];
+  savedOutputPathExamples: string[];
+  failedOutputPathExamples: string[];
+  skippedOutputPathExamples: string[];
+};
+
+export type RouteCoverageSummary = {
+  totalAcceptedRoutes: number;
+  coveredRoutes: number;
+  partialRoutes: number;
+  failedRoutes: number;
+  unresolvedRoutes: number;
+  policySkippedRoutes: number;
+  nonContentRoutes: number;
+  expectedOutputCount: number;
+  savedOutputCount: number;
+  failedOutputCount: number;
+  problematicExamples: CompactRouteCoverageExample[];
 };
 
 export type SuspiciousCrawlPage = {
@@ -521,7 +572,7 @@ export type MaterialPublicIndex = {
   failedPageCount: number;
   failedUrls: string[];
   qualitySummary?: QualitySummary;
-  coverageDiagnostics?: Pick<CoverageDiagnostics, 'coverageHealth' | 'routePlanSummary'>;
+  coverageDiagnostics?: Pick<CoverageDiagnostics, 'coverageHealth' | 'routePlanSummary' | 'routeCoverageSummary'>;
   pages: MaterialPublicPageManifestEntry[];
 };
 export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;
@@ -539,6 +590,7 @@ export type CacheStatus = {
   ttlMs: number;
   isFresh: boolean;
   coverageHealth?: CoverageHealth;
+  routeCoverageSummary?: RouteCoverageSummary;
   qualitySummary?: QualitySummary;
 };
 
@@ -622,6 +674,9 @@ export type CrawlOptions = {
    *  update path is deterministic direct-JSON extraction only. Set true to opt into the legacy
    *  Playwright-based fallback/recovery behavior. */
   allowBrowserFallback?: boolean;
+  /** Allow a limited/partial refresh to replace an existing cache. Disabled by default for
+   * explicit maxPages refreshes so diagnostic runs do not silently replace a verified full cache. */
+  promotePartial?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
   /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
@@ -636,6 +691,7 @@ export type CrawlOptions = {
 export type RefreshOptions = {
   maxPages?: number | null;
   maxPagesExplicit?: boolean;
+  promotePartial?: boolean;
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;

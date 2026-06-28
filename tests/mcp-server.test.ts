@@ -207,6 +207,7 @@ describe('serveMcp', () => {
     expect(refreshSchema.concurrency.safeParse(1).success).toBe(true);
     expect(refreshSchema.concurrency.safeParse(8).success).toBe(true);
     expect(refreshSchema.concurrency.safeParse(9).success).toBe(false);
+    expect(refreshSchema.promotePartial.safeParse(undefined).data).toBe(false);
     expect(refreshSchema.force.safeParse(true).success).toBe(true);
   });
 
@@ -217,7 +218,12 @@ describe('serveMcp', () => {
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 125 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({ maxPages: 125, concurrency: 1 })));
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({
+      maxPages: 125,
+      concurrency: 1,
+      maxPagesExplicit: true,
+      promotePartial: false
+    })));
     expect(store.refresh.mock.calls[0]?.[0]?.onProgress).toEqual(expect.any(Function));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 5 });
@@ -234,7 +240,7 @@ describe('serveMcp', () => {
     await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledTimes(1));
   });
 
-  it('serves stale cache while startup refresh runs in the background', async () => {
+  it('serves stale cache without starting an implicit startup refresh', async () => {
     const searchResult: SearchResult = {
       title: 'Dialogs',
       url: 'https://m3.material.io/components/dialogs/overview',
@@ -245,13 +251,10 @@ describe('serveMcp', () => {
       excerpt: 'Dialogs provide guidance.'
     };
     const store = mocks.makeStore(mocks.makeStatus({ isFresh: false, ageMs: 48 * 60 * 60 * 1000 }));
-    store.refresh.mockImplementation(() => new Promise<MaterialIndex>(() => undefined));
     store.searchDocs.mockResolvedValue([searchResult]);
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 250 });
-    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({ maxPages: 250, concurrency: 1 })));
-    expect(store.refresh.mock.calls[0]?.[0]?.onProgress).toEqual(expect.any(Function));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
 
@@ -265,11 +268,12 @@ describe('serveMcp', () => {
         excerpt: searchResult.excerpt,
         score: searchResult.score
       }],
-      refresh: { running: true, completedAt: null, error: null }
+      refresh: { running: false, completedAt: null, error: null }
     });
     expect(result).not.toHaveProperty('status');
     expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
+    expect(store.refresh).not.toHaveBeenCalled();
   });
 
   it('uses the same store refresh path for explicit long-running refresh requests', async () => {
@@ -281,7 +285,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const result = await callTool('refresh_material_docs', { maxPages: 77 });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, force: false });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, promotePartial: false, force: false });
     expect(result).toMatchObject({ pageCount: 1, source: 'https://m3.material.io' });
   });
 
@@ -294,7 +298,7 @@ describe('serveMcp', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     await callTool('refresh_material_docs', { maxPages: 77, force: true });
 
-    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, force: true });
+    expect(store.refresh).toHaveBeenCalledWith({ maxPages: 77, maxPagesExplicit: true, concurrency: 1, promotePartial: false, force: true });
   });
 
   it('describes refresh_material_docs as deterministic JSON-first refresh with browser fallback disabled by default', async () => {

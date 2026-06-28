@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { assertSafeCachePromotion, assertValidIndex, cacheAgeMs, cacheStatus, computeCoverageHealth, createStagingCacheDir, ensureCacheDirs, getCacheDiagnostics, getDefaultCacheDir, indexPath, isCacheFresh, pagesDir, promoteStagingCache, readIndex, readPage, writeIndex, writePage } from '../src/cache.js';
 import { createEmptyExtractionDiagnostics, pushRouteDiagnostic } from '../src/json-extraction/diagnostics.js';
-import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage, RoutePlanSummary } from '../src/types.js';
+import type { CoverageDiagnostics, ExtractionRouteDiagnostic, MaterialIndex, MaterialPage, RouteCoverageEntry, RoutePlanSummary } from '../src/types.js';
 
 const REQUIRED_SAMPLE_SLUGS = ['components/buttons/specs', 'components/lists/specs', 'styles/color/roles', 'foundations/design-tokens/overview'];
 
@@ -25,6 +25,19 @@ function requiredSampleDiagnostic(slug: string, overrides: Partial<ExtractionRou
     tokenTables: 0,
     tokenTablesRendered: 0,
     missingRequestedTokenSets: [],
+    ...overrides
+  };
+}
+
+function routeCoverageEntry(overrides: Partial<RouteCoverageEntry> & Pick<RouteCoverageEntry, 'sourceRoute' | 'canonicalRoute' | 'expectedVirtualRoutes' | 'expectedOutputPaths' | 'status'>): RouteCoverageEntry {
+  return {
+    reconciliationStatus: 'exact',
+    navigationSource: 'site-meta',
+    pageReferenceSource: 'bundle-table',
+    savedOutputPaths: [],
+    failedOutputPaths: [],
+    skippedOutputPaths: [],
+    failureReasons: [],
     ...overrides
   };
 }
@@ -1176,6 +1189,50 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(partialIndex, null)).not.toThrow();
   });
 
+  it('fails a full refresh when route coverage is only partial for an accepted public route', () => {
+    const partialIndex = materialIndex(1, {
+      pages: requiredSamplePages(),
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/switches',
+            canonicalRoute: '/components/switch',
+            expectedVirtualRoutes: [
+              '/components/switch/overview',
+              '/components/switch/specs'
+            ],
+            expectedOutputPaths: [
+              'components/switch/overview.md',
+              'components/switch/specs.md'
+            ],
+            savedOutputPaths: ['components/switch/overview.md'],
+            failedOutputPaths: ['components/switch/specs.md'],
+            status: 'partial',
+            failureReasons: ['json-no-sections']
+          })
+        ],
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/switches',
+            canonicalRoute: '/components/switch',
+            outputPath: 'components/switch.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'normalizedSlugMatch'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(partialIndex, null)).toThrow('/components/switches[status=partial]');
+  });
+
   it('allows a limited run (isLimitedRun:true) with a real discovered/accepted gap to promote', () => {
     const limitedIndex = materialIndex(11, {
       coverageDiagnostics: {
@@ -1519,6 +1576,17 @@ describe('cache helpers', () => {
       extractionDiagnostics: diag,
       coverageDiagnostics: {
         ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/switches',
+            canonicalRoute: '/components/switch',
+            reconciliationStatus: 'normalizedSlugMatch',
+            expectedVirtualRoutes: ['/components/switch'],
+            expectedOutputPaths: ['components/switch.md'],
+            status: 'unresolved',
+            failureReasons: ['missing-cache-output']
+          })
+        ],
         routePlanSummary: {
           acceptedRouteCount: 1,
           staleRouteCount: 0,
@@ -1545,7 +1613,7 @@ describe('cache helpers', () => {
       }
     });
 
-    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switch[diag=n,virtual=n]');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switches[status=unresolved]');
   });
 
   it('treats accepted /components/toolbars as covered when overview and specs virtual pages were saved', () => {
@@ -1579,6 +1647,16 @@ describe('cache helpers', () => {
       extractionDiagnostics: diag,
       coverageDiagnostics: {
         ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/toolbars',
+            canonicalRoute: '/components/toolbars',
+            expectedVirtualRoutes: ['/components/toolbars/overview', '/components/toolbars/specs'],
+            expectedOutputPaths: ['components/toolbars/overview.md', 'components/toolbars/specs.md'],
+            savedOutputPaths: ['components/toolbars/overview.md', 'components/toolbars/specs.md'],
+            status: 'covered'
+          })
+        ],
         fullRoutePlanSummary: {
           acceptedRoutes: [],
           staleRoutes: [],
@@ -1646,6 +1724,31 @@ describe('cache helpers', () => {
       extractionDiagnostics: diag,
       coverageDiagnostics: {
         ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/segmented-buttons',
+            canonicalRoute: '/components/segmented-buttons',
+            expectedVirtualRoutes: [
+              '/components/segmented-buttons/overview',
+              '/components/segmented-buttons/specs',
+              '/components/segmented-buttons/guidelines',
+              '/components/segmented-buttons/accessibility'
+            ],
+            expectedOutputPaths: [
+              'components/segmented-buttons/overview.md',
+              'components/segmented-buttons/specs.md',
+              'components/segmented-buttons/guidelines.md',
+              'components/segmented-buttons/accessibility.md'
+            ],
+            savedOutputPaths: [
+              'components/segmented-buttons/overview.md',
+              'components/segmented-buttons/specs.md',
+              'components/segmented-buttons/guidelines.md',
+              'components/segmented-buttons/accessibility.md'
+            ],
+            status: 'covered'
+          })
+        ],
         fullRoutePlanSummary: {
           acceptedRoutes: [],
           staleRoutes: [],
@@ -1686,6 +1789,58 @@ describe('cache helpers', () => {
       extractionDiagnostics: diag,
       coverageDiagnostics: {
         ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/missing-component',
+            canonicalRoute: '/components/missing-component',
+            expectedVirtualRoutes: ['/components/missing-component/specs'],
+            expectedOutputPaths: ['components/missing-component/specs.md'],
+            failedOutputPaths: ['components/missing-component/specs.md'],
+            status: 'failed',
+            failureReasons: ['json-no-sections']
+          })
+        ],
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/missing-component',
+            canonicalRoute: '/components/missing-component',
+            outputPath: 'components/missing-component.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'exact'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/reasons=json-no-sections/);
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/reasons=json-no-sections/);
+  });
+
+  it('still fails when an accepted public route is unresolved in summary-only coverage data', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/missing-component/specs', {
+      path: 'components/missing-component/specs.md',
+      sourceRoute: 'components/missing-component',
+      sourceUsed: 'failed',
+      finalMethod: null,
+      jsonSucceeded: false,
+      directJsonSucceeded: false,
+      fallbackReasons: ['json-no-sections'],
+      virtualRoute: 'https://m3.material.io/components/missing-component/specs'
+    }));
+
+    const nextIndex = materialIndex(0, {
+      pages: requiredSamplePages(),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
         fullRoutePlanSummary: {
           acceptedRoutes: [],
           staleRoutes: [],
@@ -1707,6 +1862,31 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(
       'Accepted public documentation routes are missing from cache output: /components/missing-component[diag=y,virtual=y]'
     );
+  });
+
+  it('fails when an accepted route has no expected output paths and remains unresolved', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+
+    const nextIndex = materialIndex(0, {
+      pages: requiredSamplePages(),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/orphaned-route',
+            canonicalRoute: '/components/orphaned-route',
+            expectedVirtualRoutes: [],
+            expectedOutputPaths: [],
+            status: 'unresolved',
+            failureReasons: ['no-expected-output-paths']
+          })
+        ]
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/no-expected-output-paths/);
   });
 
   it('does not let compact unresolved examples fail promotion when saved virtual pages cover the accepted route', () => {
@@ -1763,6 +1943,34 @@ describe('cache helpers', () => {
     const nextIndex = materialIndex(1, {
       coverageDiagnostics: minimalCoverageDiagnostics({
         coverageHealth: 'partial',
+        routeCoverageSummary: {
+          totalAcceptedRoutes: 2,
+          coveredRoutes: 1,
+          partialRoutes: 0,
+          failedRoutes: 1,
+          unresolvedRoutes: 0,
+          policySkippedRoutes: 0,
+          nonContentRoutes: 0,
+          expectedOutputCount: 2,
+          savedOutputCount: 1,
+          failedOutputCount: 1,
+          problematicExamples: [
+            {
+              sourceRoute: '/components/switches',
+              canonicalRoute: '/components/switch',
+              status: 'failed',
+              failureReasons: ['json-no-sections'],
+              expectedOutputPathCount: 1,
+              savedOutputPathCount: 0,
+              failedOutputPathCount: 1,
+              skippedOutputPathCount: 0,
+              expectedOutputPathExamples: ['components/switch.md'],
+              savedOutputPathExamples: [],
+              failedOutputPathExamples: ['components/switch.md'],
+              skippedOutputPathExamples: []
+            }
+          ]
+        },
         routePlanSummary: {
           acceptedRouteCount: 3,
           staleRouteCount: 1,
@@ -1812,6 +2020,10 @@ describe('cache helpers', () => {
     const rawIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as Record<string, unknown>;
     expect(rawIndex.coverageDiagnostics).toMatchObject({
       coverageHealth: 'partial',
+      routeCoverageSummary: {
+        totalAcceptedRoutes: 2,
+        failedRoutes: 1
+      },
       routePlanSummary: {
         acceptedRouteCount: 3,
         ambiguousRouteCount: 2,
@@ -1827,6 +2039,7 @@ describe('cache helpers', () => {
     });
     expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('acceptedRoutes');
     expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('fullRoutePlanSummary');
+    expect(JSON.stringify(rawIndex.coverageDiagnostics)).not.toContain('routeCoverage"');
   });
 
   it('fails a --max-pages 20 smoke promotion when a required sample is absent from both pages and routeDiagnostics', () => {
@@ -1978,6 +2191,28 @@ describe('computeCoverageHealth', () => {
 
   it('returns failed when a coverage regression is detected', () => {
     expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-regression:previous=100:current=70'], coverageHealth: 'failed' })).toBe('failed');
+  });
+
+  it('returns failed when accepted route coverage includes failed or unresolved routes', () => {
+    expect(computeCoverageHealth({
+      ...baseDiag,
+      coverageVerified: true,
+      coverageWarnings: [],
+      coverageHealth: 'verified',
+      routeCoverageSummary: {
+        totalAcceptedRoutes: 2,
+        coveredRoutes: 0,
+        partialRoutes: 0,
+        failedRoutes: 1,
+        unresolvedRoutes: 1,
+        policySkippedRoutes: 0,
+        nonContentRoutes: 0,
+        expectedOutputCount: 2,
+        savedOutputCount: 0,
+        failedOutputCount: 1,
+        problematicExamples: []
+      }
+    })).toBe('failed');
   });
 
   it('returns failed for regression even alongside a max-pages partial warning', () => {
