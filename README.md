@@ -112,6 +112,31 @@ For a quick crawler smoke test, use a temporary cache directory and lower `--min
 M3_DOCS_CACHE_DIR="$(mktemp -d)" npx -y github:Vyachean/m3-docs-mcp update --max-pages 3 --min-pages 1
 ```
 
+For local development in this repository, the equivalent smoke helper is:
+
+```bash
+npm run verify:cache:smoke
+```
+
+This is a debugging aid only. It intentionally uses `--max-pages` and must not be treated as the final cache-quality gate.
+
+For crawler, extraction, route-coverage, token-table, or cache-tooling work, use the full production-style verification gate:
+
+```bash
+npm run verify:cache:full
+```
+
+`verify:cache:full` builds the project, runs the built CLI against the live Material 3 site with an isolated temporary cache directory, uses production refresh settings (`--concurrency 6 --min-pages 150`, with no `--force`, no `--max-pages`, and no `--include-blog`), then checks that the resulting cache reports verified coverage, zero failed/unresolved/partial route coverage, required component pages, and no unresolved token-table placeholders in generated specs pages.
+
+On failure, it preserves the temp cache directory and prints:
+
+- the CLI exit code
+- the temp cache directory path
+- the last 100 lines of `logs/latest.jsonl`, if present
+- `diagnostics/latest-update.json`, if present
+- `coverageDiagnostics.routeCoverageSummary`, if `index.json` exists
+- problematic route coverage examples, if available
+
 The default minimum is 10 pages, so interrupting the command or crawling fewer than 10 accepted pages intentionally leaves the existing cache unchanged.
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. The default is 168 hours, or 7 days. It does not make read/search tool calls block on a refresh.

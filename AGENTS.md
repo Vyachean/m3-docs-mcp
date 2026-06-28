@@ -91,6 +91,27 @@ npm test
 npm run verify:docs-values
 ```
 
+When changing any of these areas, run this expanded gate before finishing:
+
+- `src/crawler.ts`
+- `src/cache.ts`
+- `src/store.ts`
+- `src/route-coverage.ts`
+- `src/json-extraction/**`
+- route planning / page reference resolution
+- token table rendering
+- MCP cache tools
+
+Required commands:
+
+```bash
+npm test
+npm run build
+npm run verify:cache:full
+```
+
+If `verify:cache:full` fails because of live site or network instability, preserve and summarize the diagnostics it prints. Do not claim the PR is ready in that state.
+
 Run targeted mutation tests when changing JSON extraction, decoders, or value coverage logic:
 
 ```bash
