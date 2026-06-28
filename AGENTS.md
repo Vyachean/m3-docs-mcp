@@ -105,12 +105,15 @@ When changing any of these areas, run this expanded gate before finishing:
 Required commands:
 
 ```bash
+npm run check
 npm test
 npm run build
 npm run verify:cache:full
 ```
 
-If `verify:cache:full` fails because of live site or network instability, preserve and summarize the diagnostics it prints. Do not claim the PR is ready in that state.
+For any change touching crawler, cache promotion, route coverage, JSON extraction, page reference resolution, token table rendering, or MCP cache tools, do not finish the task until all four commands above pass.
+
+If `verify:cache:full` fails because of a real live-site extraction issue, continue debugging and fixing it; do not stop after adding diagnostics. You may stop only when the failure is clearly external and transient, such as a network outage or `m3.material.io` being unavailable, and in that case you must preserve diagnostics, summarize them, and state clearly that the PR is not ready.
 
 Run targeted mutation tests when changing JSON extraction, decoders, or value coverage logic:
 

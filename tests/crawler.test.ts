@@ -290,6 +290,17 @@ describe('validateCrawledPage', () => {
       reason: 'component route content does not mention expected component slug buttons'
     });
   });
+
+  it('accepts acronymized component names when the route content matches', () => {
+    const page = extractMaterialPageFromHtml(`
+      <main>
+        <h1>FABs Specs</h1>
+        <p>Use the FAB for the most important action on a screen.</p>
+      </main>
+    `, 'https://m3.material.io/components/floating-action-button/specs', '2026-06-28T00:00:00.000Z');
+
+    expect(validateCrawledPage(page)).toBeNull();
+  });
 });
 
 describe('createCrawlQualityReport', () => {

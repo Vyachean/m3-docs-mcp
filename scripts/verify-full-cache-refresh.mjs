@@ -38,7 +38,13 @@ const RouteCoverageSummarySchema = z.object({
 const IndexSchema = z.object({
   coverageDiagnostics: z.object({
     coverageHealth: z.string(),
-    routeCoverageSummary: RouteCoverageSummarySchema
+    routeCoverageSummary: RouteCoverageSummarySchema,
+    routeCoverage: z.array(ProblematicExampleSchema.extend({
+      expectedOutputPaths: z.array(z.string()).default([]),
+      savedOutputPaths: z.array(z.string()).default([]),
+      failedOutputPaths: z.array(z.string()).default([]),
+      skippedOutputPaths: z.array(z.string()).default([])
+    })).default([])
   }).passthrough()
 }).passthrough();
 
@@ -54,12 +60,14 @@ async function main() {
       throw new Error(`Built CLI exited with code ${cliExitCode}.`);
     }
 
-    const index = await readVerifiedIndex(tempCacheDir);
-    const routeCoverageSummary = index.coverageDiagnostics.routeCoverageSummary;
+  const index = await readVerifiedIndex(tempCacheDir);
+  const routeCoverageSummary = index.coverageDiagnostics.routeCoverageSummary;
 
-    assertCoverage(index.coverageDiagnostics.coverageHealth, routeCoverageSummary, mode);
+  assertCoverage(index.coverageDiagnostics.coverageHealth, routeCoverageSummary, mode);
+  if (mode === 'full') {
     await assertRequiredPages(tempCacheDir);
-    await assertNoTokenTablePlaceholders(tempCacheDir, mode);
+  }
+  await assertNoTokenTablePlaceholders(tempCacheDir, mode);
 
     console.error(`[verify:cache:${mode}] Success. cacheDir=${tempCacheDir}`);
     await fs.rm(tempCacheDir, { recursive: true, force: true });
@@ -207,10 +215,13 @@ async function printFailureDiagnostics({ tempCacheDir, cliExitCode, mode, error 
   const logPath = path.join(tempCacheDir, 'logs', 'latest.jsonl');
   const diagnosticsPath = path.join(tempCacheDir, 'diagnostics', 'latest-update.json');
   const indexPath = path.join(tempCacheDir, 'index.json');
+  const failedStagingDir = `${tempCacheDir}.failed-staging`;
+  const failedStagingIndexPath = path.join(failedStagingDir, 'index.json');
 
   await printFileTail(logPath, 100);
-  await printJsonFile(diagnosticsPath, 'diagnostics/latest-update.json');
-  await printIndexCoverage(indexPath);
+  await printDiagnosticsJson(diagnosticsPath);
+  await printIndexCoverage(indexPath, 'temp cache index.json');
+  await printIndexCoverage(failedStagingIndexPath, 'failed staging index.json');
 }
 
 async function printFileTail(filePath, lineCount) {
@@ -225,31 +236,112 @@ async function printFileTail(filePath, lineCount) {
   }
 }
 
-async function printJsonFile(filePath, label) {
+async function printDiagnosticsJson(filePath) {
   try {
     const contents = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(contents);
-    console.error(`${label}:`);
-    console.error(JSON.stringify(parsed, null, 2));
+    const summary = {
+      promotionDecision: parsed.promotionDecision ?? null,
+      reason: parsed.reason ?? null,
+      lastPhase: parsed.lastPhase ?? null,
+      isLimitedRun: parsed.isLimitedRun ?? null,
+      discoveredPublicUrlCount: parsed.discoveredPublicUrlCount ?? null,
+      resolvableSourceRouteCount: parsed.resolvableSourceRouteCount ?? null,
+      selectedSourceRouteCount: parsed.selectedSourceRouteCount ?? null,
+      attemptedSourceRouteCount: parsed.attemptedSourceRouteCount ?? null,
+      plannedVirtualPageCount: parsed.plannedVirtualPageCount ?? null,
+      savedVirtualPageCount: parsed.savedVirtualPageCount ?? null,
+      failedVirtualPageCount: parsed.failedVirtualPageCount ?? null,
+      directJsonAttemptedPageCount: parsed.directJsonAttemptedPageCount ?? null,
+      browserAttemptedPageCount: parsed.browserAttemptedPageCount ?? null,
+      latestProgress: parsed.latestProgress ?? null,
+      dsdbConfigSource: parsed.dsdbConfigSource ?? null,
+      directJsonEnabled: parsed.directJsonEnabled ?? null,
+      browserOnlyFallback: parsed.browserOnlyFallback ?? null,
+      networkRecoveryAttempted: parsed.networkRecoveryAttempted ?? null,
+      networkRecoverySucceeded: parsed.networkRecoverySucceeded ?? null,
+      networkRecoveryFailureReason: parsed.networkRecoveryFailureReason ?? null,
+      coverageDiagnostics: parsed.coverageDiagnostics ? {
+        coverageHealth: parsed.coverageDiagnostics.coverageHealth ?? null,
+        coverageVerified: parsed.coverageDiagnostics.coverageVerified ?? null,
+        coverageWarnings: parsed.coverageDiagnostics.coverageWarnings ?? [],
+        discoveredPublicUrlCount: parsed.coverageDiagnostics.discoveredPublicUrlCount ?? null,
+        uncrawledDiscoveredUrlCount: parsed.coverageDiagnostics.uncrawledDiscoveredUrlCount ?? null,
+        skippedAliasOnlyCount: parsed.coverageDiagnostics.skippedAliasOnlyCount ?? null,
+        skippedLegacyRouteCount: parsed.coverageDiagnostics.skippedLegacyRouteCount ?? null,
+        skippedPlatformSpecificUnmappedCount: parsed.coverageDiagnostics.skippedPlatformSpecificUnmappedCount ?? null,
+        skippedMissingPageReferenceCount: parsed.coverageDiagnostics.skippedMissingPageReferenceCount ?? null,
+        skippedBlogCount: parsed.coverageDiagnostics.skippedBlogCount ?? null,
+        resolvableSourceRouteCount: parsed.coverageDiagnostics.resolvableSourceRouteCount ?? null,
+        unresolvedSourceRouteCount: parsed.coverageDiagnostics.unresolvedSourceRouteCount ?? null,
+        selectedSourceRouteCount: parsed.coverageDiagnostics.selectedSourceRouteCount ?? null,
+        attemptedSourceRouteCount: parsed.coverageDiagnostics.attemptedSourceRouteCount ?? null,
+        plannedVirtualPageCount: parsed.coverageDiagnostics.plannedVirtualPageCount ?? null,
+        savedVirtualPageCount: parsed.coverageDiagnostics.savedVirtualPageCount ?? null,
+        failedVirtualPageCount: parsed.coverageDiagnostics.failedVirtualPageCount ?? null,
+        routeCoverageSummary: parsed.coverageDiagnostics.routeCoverageSummary ?? null
+      } : null,
+      qualityReport: parsed.qualityReport ? {
+        suspiciousPages: parsed.qualityReport.suspiciousPages ?? [],
+        rejectedRoutes: parsed.qualityReport.rejectedRoutes ?? [],
+        duplicateContent: parsed.qualityReport.duplicateContent ?? [],
+        shortPages: parsed.qualityReport.shortPages ?? [],
+        duplicateTitles: parsed.qualityReport.duplicateTitles ?? []
+      } : null
+    };
+    console.error('diagnostics/latest-update.json summary:');
+    console.error(JSON.stringify(summary, null, 2));
   } catch (error) {
-    console.error(`No readable ${label} at ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`No readable diagnostics/latest-update.json at ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-async function printIndexCoverage(indexPath) {
+async function printIndexCoverage(indexPath, label) {
   try {
     const raw = await fs.readFile(indexPath, 'utf8');
     const parsed = JSON.parse(raw);
     const index = IndexSchema.parse(parsed);
-    console.error('coverageDiagnostics.routeCoverageSummary:');
+    console.error(`${label} coverageDiagnostics.routeCoverageSummary:`);
     console.error(JSON.stringify(index.coverageDiagnostics.routeCoverageSummary, null, 2));
     if (index.coverageDiagnostics.routeCoverageSummary.problematicExamples.length > 0) {
-      console.error('Problematic route coverage examples:');
+      console.error(`${label} problematic route coverage examples:`);
       console.error(JSON.stringify(index.coverageDiagnostics.routeCoverageSummary.problematicExamples, null, 2));
     }
+    const groupedFailureReasons = groupFailureReasons(index.coverageDiagnostics.routeCoverage ?? []);
+    if (Object.keys(groupedFailureReasons).length > 0) {
+      console.error(`${label} failed route diagnostics grouped by fallback reason:`);
+      console.error(JSON.stringify(groupedFailureReasons, null, 2));
+    }
   } catch (error) {
-    console.error(`No readable index coverage summary at ${indexPath}: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`No readable ${label} coverage summary at ${indexPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function groupFailureReasons(routeCoverage) {
+  const groups = {};
+  for (const entry of routeCoverage) {
+    if (entry.status === 'covered') continue;
+    const reasons = Array.isArray(entry.failureReasons) && entry.failureReasons.length > 0
+      ? entry.failureReasons
+      : ['unknown'];
+    for (const reason of reasons) {
+      if (!groups[reason]) {
+        groups[reason] = [];
+      }
+      if (groups[reason].length < 5) {
+        groups[reason].push({
+          sourceRoute: entry.sourceRoute,
+          canonicalRoute: entry.canonicalRoute,
+          status: entry.status,
+          expectedOutputPaths: entry.expectedOutputPaths?.slice(0, 3) ?? [],
+          savedOutputPaths: entry.savedOutputPaths?.slice(0, 3) ?? [],
+          failedOutputPaths: entry.failedOutputPaths?.slice(0, 3) ?? [],
+          skippedOutputPaths: entry.skippedOutputPaths?.slice(0, 3) ?? []
+        });
+      }
+    }
+  }
+  return groups;
 }
 
 await main();

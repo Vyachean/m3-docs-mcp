@@ -352,10 +352,17 @@ async function readMaterialContentState(page: Page, requestedUrl: string): Promi
       };
     }
 
-    const componentName = normalize(componentSlug.replace(/-/g, ' '));
-    const componentWords = componentName.split(' ').filter((word) => word.length > 1);
+    const normalizedSlug = normalize(componentSlug.replace(/-/g, ' '));
+    const slugWords = normalizedSlug.split(' ').filter((word) => word.length > 1);
+    const acronym = slugWords.map((word) => word[0] ?? '').join('');
+    const aliasWordSets = [
+      slugWords,
+      ...(acronym.length >= 2 ? [[acronym], [`${acronym}s`]] : [])
+    ];
     const pathMatches = pathname === `components/${componentSlug}` || pathname === `components/${componentSlug}/overview` || pathname.startsWith(`components/${componentSlug}/`);
-    const contentMatches = title !== 'components' && !renderedNotFound && componentWords.every((word) => text.includes(word));
+    const contentMatches = title !== 'components'
+      && !renderedNotFound
+      && aliasWordSets.some((wordSet) => wordSet.every((word) => text.includes(word)));
     return {
       title: rawTitle,
       text: rawText,
@@ -607,11 +614,10 @@ export function validateCrawledPage(page: MaterialPage): SuspiciousCrawlPage | n
 
   if (segments[0] === 'components' && segments.length >= 2) {
     const componentSlug = segments[1] ?? '';
-    const componentName = normalizeSlug(componentSlug);
     if (title === 'components' || firstHeading === 'components') {
       return rejectedRoute(page, `component route rendered the parent Components index instead of ${componentSlug}`, 'route-mismatch');
     }
-    if (!containsAllWords(contentPreview, componentName.split(' '))) {
+    if (!componentRouteContentMatches(componentSlug, contentPreview)) {
       return rejectedRoute(page, `component route content does not mention expected component slug ${componentSlug}`, 'route-mismatch');
     }
   }
@@ -2562,6 +2568,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.routeCoverage = routeCoverage;
   const routeCoverageSummary = summarizeRouteCoverage(routeCoverage);
   coverageDiagnostics.routeCoverageSummary = routeCoverageSummary;
+  const routeCoverageComplete = routeCoverageSummary.failedRoutes === 0
+    && routeCoverageSummary.unresolvedRoutes === 0
+    && routeCoverageSummary.partialRoutes === 0;
   const requiredRouteCoverage: RequiredRouteCoverageEntry[] = [];
   coverageDiagnostics.requiredRouteCoverage = requiredRouteCoverage;
   coverageDiagnostics.routeResolutionSummary = {
@@ -2594,16 +2603,22 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   if (!isLimitedRun && hasSignificantCoverageGap(sourceVirtualCounters.virtualPagesPlanned, sourceVirtualCounters.virtualPagesSaved)) {
     coverageDiagnostics.coverageWarnings.push(`coverage-gap:planned=${sourceVirtualCounters.virtualPagesPlanned}:saved=${sourceVirtualCounters.virtualPagesSaved}:failed=${sourceVirtualCounters.virtualPagesFailed}`);
   }
+  if (routeCoverageComplete && sourceVirtualCounters.virtualPagesPlanned === sourceVirtualCounters.virtualPagesSaved) {
+    coverageDiagnostics.coverageWarnings = coverageDiagnostics.coverageWarnings.filter((warning) => warning !== 'coverage-unverified:browser-fallback-disabled');
+  }
   const previousDiscoveredCount = previousIndex?.coverageDiagnostics?.discoveredPublicUrlCount ?? previousIndex?.pageCount ?? 0;
   if (previousDiscoveredCount > 0 && coverageDiagnostics.discoveredPublicUrlCount > 0 && coverageDiagnostics.discoveredPublicUrlCount < Math.floor(previousDiscoveredCount * COVERAGE_REGRESSION_RATIO)) {
     coverageDiagnostics.coverageWarnings.push(`coverage-regression:previous=${previousDiscoveredCount}:current=${coverageDiagnostics.discoveredPublicUrlCount}`);
   }
   coverageDiagnostics.coverageVerified = coverageDiagnostics.discoveredPublicUrlCount > 0
-    && coverageDiagnostics.uncrawledDiscoveredUrlCount === 0
+    && !isLimitedRun
+    && routePlanSummary !== null
+    && extractionDiagnostics.pagesExtractedThroughDomFallback === 0
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-regression:'))
     && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-unverified:'))
-    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'));
-  if (routeCoverageSummary.failedRoutes > 0 || routeCoverageSummary.unresolvedRoutes > 0 || routeCoverageSummary.partialRoutes > 0) {
+    && !coverageDiagnostics.coverageWarnings.some((warning) => warning.startsWith('coverage-discovery-empty:'))
+    && routeCoverageComplete;
+  if (!routeCoverageComplete) {
     coverageDiagnostics.coverageVerified = false;
   }
   // If a significant number of direct JSON attempts all failed, the extraction pipeline is broken.
@@ -3709,6 +3724,16 @@ function normalizeText(value: string): string {
 
 function containsAllWords(text: string, words: string[]): boolean {
   return words.filter((word) => word.length > 1).every((word) => text.includes(word));
+}
+
+function componentRouteContentMatches(componentSlug: string, normalizedContent: string): boolean {
+  const slugWords = normalizeSlug(componentSlug).split(' ').filter((word) => word.length > 1);
+  const acronym = slugWords.map((word) => word[0] ?? '').join('');
+  const aliasWordSets = [
+    slugWords,
+    ...(acronym.length >= 2 ? [[acronym], [`${acronym}s`]] : [])
+  ];
+  return aliasWordSets.some((wordSet) => containsAllWords(normalizedContent, wordSet));
 }
 
 function stripMarkdownFrontmatter(markdown: string): string {

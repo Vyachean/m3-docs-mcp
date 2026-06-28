@@ -210,7 +210,12 @@ export function summarizeRouteCoverage(entries: RouteCoverageEntry[]): {
     else if (entry.status === 'policySkipped') summary.policySkippedRoutes += 1;
     else if (entry.status === 'nonContent') summary.nonContentRoutes += 1;
     else summary.unresolvedRoutes += 1;
-    if (entry.status === 'covered' || summary.problematicExamples.length >= ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT) continue;
+    if (
+      entry.status === 'covered'
+      || entry.status === 'policySkipped'
+      || entry.status === 'nonContent'
+      || summary.problematicExamples.length >= ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT
+    ) continue;
     summary.problematicExamples.push({
       sourceRoute: entry.sourceRoute,
       canonicalRoute: entry.canonicalRoute,
