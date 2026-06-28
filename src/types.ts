@@ -440,12 +440,15 @@ export type CompactRoutePlanSummary = {
   };
 };
 
-export type RouteCoverageStatus = 'covered' | 'partial' | 'failed' | 'skipped' | 'unresolved';
+export type RouteCoverageStatus = 'covered' | 'partial' | 'failed' | 'skipped' | 'unresolved' | 'nonContent' | 'policySkipped';
 
 export type RouteCoverageEntry = {
   sourceRoute: string;
   canonicalRoute: string;
+  routeKey?: string;
+  sources?: RouteCandidateSource[];
   reconciliationStatus?: RouteReconciliationStatus;
+  publicDocsClassification?: PublicDocsClassification;
   navigationSource?: 'site-meta' | 'bundle-supplement';
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
   expectedVirtualRoutes: string[];
@@ -472,8 +475,16 @@ export type CompactRouteCoverageExample = Pick<
 };
 
 export type RouteCoverageSummary = {
-  routeCount: number;
-  statusCounts: Record<RouteCoverageStatus, number>;
+  totalAcceptedRoutes: number;
+  coveredRoutes: number;
+  partialRoutes: number;
+  failedRoutes: number;
+  unresolvedRoutes: number;
+  policySkippedRoutes: number;
+  nonContentRoutes: number;
+  expectedOutputCount: number;
+  savedOutputCount: number;
+  failedOutputCount: number;
   problematicExamples: CompactRouteCoverageExample[];
 };
 
@@ -579,6 +590,7 @@ export type CacheStatus = {
   ttlMs: number;
   isFresh: boolean;
   coverageHealth?: CoverageHealth;
+  routeCoverageSummary?: RouteCoverageSummary;
   qualitySummary?: QualitySummary;
 };
 
@@ -662,6 +674,9 @@ export type CrawlOptions = {
    *  update path is deterministic direct-JSON extraction only. Set true to opt into the legacy
    *  Playwright-based fallback/recovery behavior. */
   allowBrowserFallback?: boolean;
+  /** Allow a limited/partial refresh to replace an existing cache. Disabled by default for
+   * explicit maxPages refreshes so diagnostic runs do not silently replace a verified full cache. */
+  promotePartial?: boolean;
   signal?: AbortSignal;
   onProgress?: CrawlProgressHandler;
   /** Called immediately before any diagnostic/error line is written to stderr during an active crawl.
@@ -676,6 +691,7 @@ export type CrawlOptions = {
 export type RefreshOptions = {
   maxPages?: number | null;
   maxPagesExplicit?: boolean;
+  promotePartial?: boolean;
   force?: boolean;
   concurrency?: number;
   includeBlog?: boolean;

@@ -30,8 +30,18 @@ import {
 } from './json-extraction/page-reference-resolver.js';
 import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
+import {
+  addRouteCoverageFailureReason,
+  createRouteCoverageEntry,
+  normalizeCoverageOutputPath,
+  normalizeCoverageRoute,
+  normalizeTabSlug,
+  reconcileRouteCoverageStatus,
+  summarizeRouteCoverage,
+  uniqueSorted
+} from './route-coverage.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CompactRouteCoverageExample, CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RouteCoverageStatus, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -40,73 +50,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-const ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT = 5;
-
-function normalizeCoverageRoute(path: string): string {
-  if (path === '/' || path === '') return '/';
-  return `/${path.replace(/^\/+|\/+$/g, '')}`;
-}
-
-function normalizeCoverageOutputPath(path: string): string {
-  return path.replace(/^\/+/, '');
-}
-
-function uniqueSorted(values: string[]): string[] {
-  return Array.from(new Set(values)).sort();
-}
-
 function appendUnique(list: string[], value: string): void {
   if (!list.includes(value)) list.push(value);
-}
-
-function addFailureReason(entry: RouteCoverageEntry, reason: string): void {
-  if (reason && !entry.failureReasons.includes(reason)) entry.failureReasons.push(reason);
-}
-
-function expectedCoveragePaths(baseUrl: string, canonicalRoute: string, tabSlugs?: string[]): Pick<RouteCoverageEntry, 'expectedVirtualRoutes' | 'expectedOutputPaths'> {
-  const canonical = normalizeCoverageRoute(canonicalRoute);
-  const buildOutput = (route: string): string => materialPagePath(new URL(route, baseUrl).toString());
-  if (tabSlugs && tabSlugs.length > 0) {
-    const expectedVirtualRoutes = uniqueSorted(tabSlugs.map((slug) => normalizeCoverageRoute(`${canonical}/${slug}`)));
-    return {
-      expectedVirtualRoutes,
-      expectedOutputPaths: expectedVirtualRoutes.map(buildOutput)
-    };
-  }
-  return {
-    expectedVirtualRoutes: [canonical],
-    expectedOutputPaths: [buildOutput(canonical)]
-  };
-}
-
-function summarizeRouteCoverage(entries: RouteCoverageEntry[]): { statusCounts: Record<RouteCoverageStatus, number>; problematicExamples: CompactRouteCoverageExample[] } {
-  const statusCounts: Record<RouteCoverageStatus, number> = {
-    covered: 0,
-    partial: 0,
-    failed: 0,
-    skipped: 0,
-    unresolved: 0
-  };
-  const problematicExamples: CompactRouteCoverageExample[] = [];
-  for (const entry of entries) {
-    statusCounts[entry.status] += 1;
-    if ((entry.status === 'covered') || problematicExamples.length >= ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT) continue;
-    problematicExamples.push({
-      sourceRoute: entry.sourceRoute,
-      canonicalRoute: entry.canonicalRoute,
-      status: entry.status,
-      failureReasons: [...entry.failureReasons],
-      expectedOutputPathCount: entry.expectedOutputPaths.length,
-      savedOutputPathCount: entry.savedOutputPaths.length,
-      failedOutputPathCount: entry.failedOutputPaths.length,
-      skippedOutputPathCount: entry.skippedOutputPaths.length,
-      expectedOutputPathExamples: entry.expectedOutputPaths.slice(0, 3),
-      savedOutputPathExamples: entry.savedOutputPaths.slice(0, 3),
-      failedOutputPathExamples: entry.failedOutputPaths.slice(0, 3),
-      skippedOutputPathExamples: entry.skippedOutputPaths.slice(0, 3),
-    });
-  }
-  return { statusCounts, problematicExamples };
 }
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
@@ -1054,7 +999,7 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
   const stagingCacheDir = await createStagingCacheDir(targetCacheDir);
   let crawledIndex: MaterialIndex | null = null;
   let crawledDsdbState: DsdbDiscoveryState | null = null;
-  let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' = 'pending';
+  let promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' | 'skipped' = 'pending';
   let lastProgress: CrawlProgress | null = null;
   const originalOnProgress = options.onProgress;
 
@@ -1117,6 +1062,41 @@ export async function crawlMaterialDocs(options: CrawlOptions = {}): Promise<Mat
     crawledDsdbState = crawlResult.dsdbState;
     assertValidIndex(crawledIndex, options.minPageCount ?? DEFAULT_MIN_PAGE_COUNT);
     assertSafeCachePromotion(crawledIndex, previousIndex, { force: options.force });
+    const shouldKeepExistingVerifiedCache = Boolean(
+      previousIndex
+      && previousIndex.coverageDiagnostics?.coverageHealth === 'verified'
+      && !(previousIndex.coverageDiagnostics?.isLimitedRun ?? false)
+      && (crawledIndex.coverageDiagnostics?.isLimitedRun ?? false)
+      && options.promotePartial !== true
+    );
+    if (shouldKeepExistingVerifiedCache) {
+      promotionDecision = 'skipped';
+      await rm(stagingCacheDir, { recursive: true, force: true });
+      const diag = crawledIndex.extractionDiagnostics;
+      emitRouteEvents(logger, crawledIndex);
+      emitFinalProgressSnapshot();
+      logger.log('info', 'update:complete', {
+        phase: 'promoting',
+        message: 'Limited refresh completed without promotion; existing verified cache preserved',
+        savedPages: crawledIndex.pageCount,
+        failedPages: crawledIndex.failedPageCount,
+        attemptedPages: crawledIndex.attemptedPageCount,
+        coverageHealth: crawledIndex.coverageDiagnostics?.coverageHealth ?? null,
+        logFile: logger.logFile,
+        diagnosticsFile: logger.diagnosticsFile,
+        tokenTablesRequested: diag?.tokenTablesRequested ?? 0,
+        tokenTablesResolved: diag?.tokenTablesResolved ?? 0,
+        tokenTablesDecoded: diag?.tokenTablesDecoded ?? 0,
+        tokenTablesRendered: diag?.tokenTablesSuccessfullyRendered ?? 0,
+        tokenTablesRenderedAsPlaceholder: diag?.tokenTablesRenderedAsPlaceholder ?? 0
+      });
+      await logger.writeFinalDiagnostics(buildRunDiagnostics({
+        logger, startedAt, targetCacheDir, stagingDir: null,
+        crawledIndex, previousIndex, promotionDecision, promotionFailureReason: null, preservedFailedStagingPath: null,
+        lastProgress, concurrency: trackingOptions.concurrency ?? 1, dsdbState: crawledDsdbState, options: trackingOptions
+      }));
+      return crawledIndex;
+    }
     logger.log('info', 'update:promoting', {
       phase: 'promoting',
       message: 'Promoting staging cache to production',
@@ -1235,7 +1215,7 @@ function buildRunDiagnostics({
   stagingDir: string | null;
   crawledIndex: MaterialIndex | null;
   previousIndex: MaterialIndex | null;
-  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending';
+  promotionDecision: 'promoted' | 'rejected' | 'error' | 'pending' | 'skipped';
   promotionFailureReason: string | null;
   preservedFailedStagingPath: string | null;
   lastProgress: CrawlProgress | null;
@@ -1573,30 +1553,33 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const ensureRouteCoverageEntry = (params: {
     sourceRoute: string;
     canonicalRoute: string;
+    routeKey?: string;
+    sources?: RouteCoverageEntry['sources'];
     reconciliationStatus?: RouteCoverageEntry['reconciliationStatus'];
+    publicDocsClassification?: RouteCoverageEntry['publicDocsClassification'];
     navigationSource?: RouteCoverageEntry['navigationSource'];
     pageReferenceSource?: RouteCoverageEntry['pageReferenceSource'];
     tabSlugs?: string[];
+    status?: RouteCoverageEntry['status'];
+    failureReasons?: string[];
   }): RouteCoverageEntry => {
     const sourceRoute = normalizeCoverageRoute(params.sourceRoute);
-    const canonicalRoute = normalizeCoverageRoute(params.canonicalRoute);
     const existing = routeCoverageBySourceRoute.get(sourceRoute);
     if (existing) return existing;
-    const expectedPaths = expectedCoveragePaths(baseUrl, canonicalRoute, params.tabSlugs);
-    const entry: RouteCoverageEntry = {
+    const entry = createRouteCoverageEntry({
+      baseUrl,
       sourceRoute,
-      canonicalRoute,
+      canonicalRoute: params.canonicalRoute,
+      ...(params.routeKey ? { routeKey: params.routeKey } : {}),
+      ...(params.sources ? { sources: params.sources } : {}),
       ...(params.reconciliationStatus ? { reconciliationStatus: params.reconciliationStatus } : {}),
+      ...(params.publicDocsClassification ? { publicDocsClassification: params.publicDocsClassification } : {}),
       ...(params.navigationSource ? { navigationSource: params.navigationSource } : {}),
       ...(params.pageReferenceSource ? { pageReferenceSource: params.pageReferenceSource } : {}),
-      expectedVirtualRoutes: expectedPaths.expectedVirtualRoutes,
-      expectedOutputPaths: expectedPaths.expectedOutputPaths,
-      savedOutputPaths: [],
-      failedOutputPaths: [],
-      skippedOutputPaths: [],
-      status: expectedPaths.expectedOutputPaths.length > 0 ? 'unresolved' : 'unresolved',
-      failureReasons: expectedPaths.expectedOutputPaths.length > 0 ? [] : ['no-expected-output-paths'],
-    };
+      ...(params.tabSlugs ? { tabSlugs: params.tabSlugs } : {}),
+      ...(params.status ? { status: params.status } : {}),
+      ...(params.failureReasons ? { failureReasons: params.failureReasons } : {})
+    });
     routeCoverageBySourceRoute.set(sourceRoute, entry);
     return entry;
   };
@@ -1605,31 +1588,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const entry = routeCoverageBySourceRoute.get(key);
     if (!entry) return;
     mutate(entry);
-    entry.savedOutputPaths = uniqueSorted(entry.savedOutputPaths.map(normalizeCoverageOutputPath));
-    entry.failedOutputPaths = uniqueSorted(entry.failedOutputPaths.map(normalizeCoverageOutputPath));
-    entry.skippedOutputPaths = uniqueSorted(entry.skippedOutputPaths.map(normalizeCoverageOutputPath));
-    if (entry.expectedOutputPaths.length === 0) {
-      entry.status = 'unresolved';
-      addFailureReason(entry, 'no-expected-output-paths');
-      return;
-    }
-    if (entry.savedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.savedOutputPaths.includes(path))) {
-      entry.status = 'covered';
-      return;
-    }
-    if (entry.savedOutputPaths.length > 0) {
-      entry.status = 'partial';
-      return;
-    }
-    if (entry.failedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.failedOutputPaths.includes(path))) {
-      entry.status = 'failed';
-      return;
-    }
-    if (entry.skippedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.skippedOutputPaths.includes(path))) {
-      entry.status = 'skipped';
-      return;
-    }
-    entry.status = 'unresolved';
+    reconcileRouteCoverageStatus(entry);
   };
 
   if (previousIndex) {
@@ -2029,7 +1988,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         ensureRouteCoverageEntry({
           sourceRoute: route.route,
           canonicalRoute: route.canonicalRoute ?? route.route,
+          routeKey: route.route,
+          sources: route.sources,
           reconciliationStatus: route.reconciliationStatus,
+          publicDocsClassification: route.publicDocsClassification,
           navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
           tabSlugs: route.tabSlugs,
         });
@@ -2041,6 +2003,29 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         if (isBlogPath(route.route)) {
           coverageDiagnostics.skippedBlogCount += 1;
           policySkippedDocPaths.add(route.route);
+          ensureRouteCoverageEntry({
+            sourceRoute: route.route,
+            canonicalRoute: route.canonicalRoute ?? route.route,
+            routeKey: route.route,
+            sources: route.sources,
+            reconciliationStatus: route.reconciliationStatus,
+            publicDocsClassification: route.publicDocsClassification,
+            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+            status: 'policySkipped',
+            failureReasons: ['policy-skipped-blog']
+          });
+        } else if (route.publicDocsClassification === 'non-content-index') {
+          ensureRouteCoverageEntry({
+            sourceRoute: route.route,
+            canonicalRoute: route.canonicalRoute ?? route.route,
+            routeKey: route.route,
+            sources: route.sources,
+            reconciliationStatus: route.reconciliationStatus,
+            publicDocsClassification: route.publicDocsClassification,
+            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+            status: 'nonContent',
+            failureReasons: ['non-content-index']
+          });
         }
       }
       for (const route of staleAndNonPublicRoutes) {
@@ -2100,7 +2085,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         }));
         updateRouteCoverageEntry(skip.path, (entry) => {
           for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
-          addFailureReason(entry, skip.reason === 'not-selected' ? 'source-route-not-selected' : 'policy-skipped-blog');
+          if (skip.reason === 'blog') entry.status = 'policySkipped';
+          addRouteCoverageFailureReason(entry, skip.reason === 'not-selected' ? 'source-route-not-selected' : 'policy-skipped-blog');
         });
       }
       coverageDiagnostics.skippedBlogCount += filtered.skippedBlogCount;
@@ -2137,7 +2123,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           updateRouteCoverageEntry(planned?.route ?? route.path, (entry) => {
             for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
             entry.pageReferenceSource = 'missing';
-            addFailureReason(entry, 'missing-page-reference');
+            addRouteCoverageFailureReason(entry, 'missing-page-reference');
           });
           continue;
         }
@@ -2165,7 +2151,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           updateRouteCoverageEntry(planned.route, (entry) => {
             for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
             entry.pageReferenceSource = 'bundle-table';
-            addFailureReason(entry, 'alias-only-source-route');
+            addRouteCoverageFailureReason(entry, 'alias-only-source-route');
           });
           continue;
         }
@@ -2552,11 +2538,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     .sort((a, b) => a.sourceRoute.localeCompare(b.sourceRoute));
   coverageDiagnostics.routeCoverage = routeCoverage;
   const routeCoverageSummary = summarizeRouteCoverage(routeCoverage);
-  coverageDiagnostics.routeCoverageSummary = {
-    routeCount: routeCoverage.length,
-    statusCounts: routeCoverageSummary.statusCounts,
-    problematicExamples: routeCoverageSummary.problematicExamples
-  };
+  coverageDiagnostics.routeCoverageSummary = routeCoverageSummary;
   const requiredRouteCoverage: RequiredRouteCoverageEntry[] = [];
   coverageDiagnostics.requiredRouteCoverage = requiredRouteCoverage;
   coverageDiagnostics.routeResolutionSummary = {
@@ -2574,7 +2556,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   if (routePlanSummary) {
     const unresolvedAcceptedRoutes = routePlanSummary.extractionCandidates.filter((entry) => {
       const coverageEntry = routeCoverage.find((routeCoverageEntry) => routeCoverageEntry.sourceRoute === normalizeCoverageRoute(entry.route));
-      return coverageEntry?.status === 'unresolved' || coverageEntry?.status === 'failed';
+      return coverageEntry?.status === 'unresolved' || coverageEntry?.status === 'failed' || coverageEntry?.status === 'partial';
     });
     coverageDiagnostics.routePlanSummary = buildCompactRoutePlanSummary({
       routePlanSummary,
@@ -2706,7 +2688,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
       updateRouteCoverageEntry(sourceCoverageRoute, (entry) => {
         for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.failedOutputPaths, outputPath);
-        addFailureReason(entry, 'json-fetch-failed');
+        addRouteCoverageFailureReason(entry, 'json-fetch-failed');
       });
       recordRouteDiagnostic(createRouteDiagnostic({
         url: routeUrl,
@@ -2733,10 +2715,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           const outputPath = normalizeCoverageOutputPath(extraction.page.path);
           if (nonContentIndex) {
             appendUnique(entry.skippedOutputPaths, outputPath);
-            addFailureReason(entry, `skipped:${fallbackReason}`);
+            addRouteCoverageFailureReason(entry, `skipped:${fallbackReason}`);
           } else {
             appendUnique(entry.failedOutputPaths, outputPath);
-            addFailureReason(entry, fallbackReason);
+            addRouteCoverageFailureReason(entry, fallbackReason);
           }
         });
         recordRouteDiagnostic(createRouteDiagnostic({

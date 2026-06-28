@@ -1,4 +1,5 @@
 import { normalizeMaterialPublicDocPath } from '../crawler-utils.js';
+import { normalizeTabSlug } from '../route-coverage.js';
 import type { CompactRoutePlanSummary, PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary, RouteReconciliationStatus } from '../types.js';
 import type { SiteMeta } from './fetch-site-meta.js';
 import type { NormalizedRoute } from './normalize-routes.js';
@@ -214,11 +215,6 @@ function toPlanEntry(
     ...(candidate.alternateSlugs ? { alternateSlugs: candidate.alternateSlugs } : {}),
     ...overrides,
   };
-}
-
-function normalizeTabSlug(tab: { label: string; slug?: string }): string {
-  if (tab.slug) return tab.slug.replace(/^\/+|\/+$/g, '');
-  return tab.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[], includeBlog: boolean): ReconciledRoute {

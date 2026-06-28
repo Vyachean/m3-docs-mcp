@@ -4,7 +4,7 @@ import { cacheStatus, getCacheDiagnostics, getDefaultCacheDir, indexPath, readIn
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { crawlMaterialDocs } from './crawler.js';
 import { materialPagePath, normalizeMaterialUrl } from './crawler-utils.js';
-import type { CacheDiagnostics, CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from './types.js';
+import type { CacheDiagnostics, CacheStatus, MaterialIndex, RefreshOptions, RoutePlanEntry, SearchResult } from './types.js';
 
 const MATERIAL_BASE_URL = 'https://m3.material.io';
 const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
@@ -33,8 +33,9 @@ export class MaterialDocsStore {
 
   async refresh(options: RefreshOptions = {}): Promise<MaterialIndex> {
     if (this.refreshPromise) return this.refreshPromise;
+    const promotePartial = options.promotePartial ?? (options.maxPagesExplicit ? false : true);
 
-    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options })
+    this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options, promotePartial })
       .then((index) => {
         this.index = index;
         this.indexFingerprint = null;
@@ -82,10 +83,14 @@ export class MaterialDocsStore {
     const normalizedName = componentName.trim();
     if (!normalizedName) return [];
 
-    const query = normalizedName.toLowerCase().replace(/\s+/g, '-');
-    const titleQuery = normalizeSearchText(normalizedName);
     const index = await this.getIndex();
-    const matched = index.pages.filter((p) => p.section.toLowerCase().includes(`components/${query}`) || p.path.toLowerCase().includes(`/components/${query}`) || normalizeSearchText(p.title).includes(titleQuery));
+    const componentRoutes = this.componentRouteAliases(index, normalizedName);
+    const titleQuery = normalizeSearchText(normalizedName);
+    const matched = index.pages.filter((p) => {
+      const pageKeys = new Set([...normalizeMaterialPageLookupKeys(p.path), ...normalizeMaterialPageLookupKeys(p.url)]);
+      return componentRoutes.some((route) => pageKeys.has(route) || pageKeys.has(`${route}/overview`))
+        || normalizeSearchText(p.title).includes(titleQuery);
+    });
     const limited = matched.slice(0, options.maxPages ?? 10);
     if (!options.includeMarkdown) {
       return limited.map((p) => ({ path: p.path, title: p.title, url: p.url, section: p.section, headings: p.headings }));
@@ -175,10 +180,64 @@ export class MaterialDocsStore {
     const start = Math.max(0, index - 180);
     return body.slice(start, start + 500).replace(/\s+/g, ' ').trim();
   }
+
+  private componentRouteAliases(index: MaterialIndex, componentName: string): string[] {
+    const normalized = normalizeComponentLookup(componentName);
+    if (!normalized) return [];
+    const plannedRoutes = index.coverageDiagnostics?.fullRoutePlanSummary?.acceptedRoutes ?? [];
+    const matchedPlannedRoutes = plannedRoutes
+      .filter((entry) => isComponentRouteEntry(entry))
+      .filter((entry) => componentTokensForRoute(entry).some((token) => token === normalized));
+    const aliases = new Set<string>();
+    for (const route of matchedPlannedRoutes) {
+      aliases.add(route.route.replace(/^\/+/, ''));
+      if (route.canonicalRoute) aliases.add(route.canonicalRoute.replace(/^\/+/, ''));
+      for (const alias of route.alternateSlugs ?? []) aliases.add(alias.replace(/^\/+/, ''));
+    }
+    if (aliases.size === 0) {
+      for (const fallback of fallbackComponentAliases(normalized)) aliases.add(fallback);
+    }
+    return Array.from(aliases);
+  }
 }
 
 function normalizeSearchText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function normalizeComponentLookup(value: string): string {
+  return value.trim().toLowerCase().replace(/overview/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function singularizeComponentToken(token: string): string[] {
+  const variants = new Set<string>([token]);
+  if (token.endsWith('ies') && token.length > 3) variants.add(`${token.slice(0, -3)}y`);
+  if (token.endsWith('es') && token.length > 3) variants.add(token.slice(0, -2));
+  if (token.endsWith('s') && token.length > 2) variants.add(token.slice(0, -1));
+  return Array.from(variants);
+}
+
+function fallbackComponentAliases(normalized: string): string[] {
+  const variants = new Set<string>();
+  for (const variant of singularizeComponentToken(normalized)) {
+    variants.add(`components/${variant}`);
+    variants.add(`components/${variant}s`);
+    variants.add(`components/${variant}es`);
+  }
+  return Array.from(variants);
+}
+
+function isComponentRouteEntry(entry: RoutePlanEntry): boolean {
+  const route = (entry.canonicalRoute ?? entry.route).replace(/^\/+/, '');
+  return route.startsWith('components/');
+}
+
+function componentTokensForRoute(entry: RoutePlanEntry): string[] {
+  const raw = (entry.canonicalRoute ?? entry.route).replace(/^\/+/, '');
+  const segments = raw.split('/');
+  const component = segments[1];
+  if (!component) return [];
+  return singularizeComponentToken(component);
 }
 
 function normalizeMaterialPageLookupKeys(pathOrUrl: string): string[] {

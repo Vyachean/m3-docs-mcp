@@ -1857,14 +1857,16 @@ describe('cache helpers', () => {
       coverageDiagnostics: minimalCoverageDiagnostics({
         coverageHealth: 'partial',
         routeCoverageSummary: {
-          routeCount: 2,
-          statusCounts: {
-            covered: 1,
-            partial: 0,
-            failed: 1,
-            skipped: 0,
-            unresolved: 0
-          },
+          totalAcceptedRoutes: 2,
+          coveredRoutes: 1,
+          partialRoutes: 0,
+          failedRoutes: 1,
+          unresolvedRoutes: 0,
+          policySkippedRoutes: 0,
+          nonContentRoutes: 0,
+          expectedOutputCount: 2,
+          savedOutputCount: 1,
+          failedOutputCount: 1,
           problematicExamples: [
             {
               sourceRoute: '/components/switches',
@@ -1932,10 +1934,8 @@ describe('cache helpers', () => {
     expect(rawIndex.coverageDiagnostics).toMatchObject({
       coverageHealth: 'partial',
       routeCoverageSummary: {
-        routeCount: 2,
-        statusCounts: {
-          failed: 1
-        }
+        totalAcceptedRoutes: 2,
+        failedRoutes: 1
       },
       routePlanSummary: {
         acceptedRouteCount: 3,

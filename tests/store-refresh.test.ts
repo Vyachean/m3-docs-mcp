@@ -54,14 +54,14 @@ describe('MaterialDocsStore refresh concurrency', () => {
     const second = store.refresh({ maxPages: 500 });
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(1);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 250, promotePartial: true });
 
     resolveFirstRefresh(index);
     await expect(Promise.all([first, second])).resolves.toEqual([index, index]);
 
     await expect(store.refresh({ maxPages: 10 })).resolves.toBe(index);
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 10, promotePartial: true });
   });
 
   it('passes forced refresh requests to the crawler', async () => {
@@ -70,7 +70,7 @@ describe('MaterialDocsStore refresh concurrency', () => {
 
     await expect(store.refresh({ maxPages: 25, force: true })).resolves.toBe(index);
 
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 25, force: true });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledWith({ cacheDir, maxPages: 25, force: true, promotePartial: true });
   });
 
   it('clears the refresh lock after a failed refresh', async () => {
@@ -83,6 +83,6 @@ describe('MaterialDocsStore refresh concurrency', () => {
     await expect(store.refresh({ maxPages: 25 })).resolves.toBe(index);
 
     expect(crawlerMock.crawlMaterialDocs).toHaveBeenCalledTimes(2);
-    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25 });
+    expect(crawlerMock.crawlMaterialDocs).toHaveBeenLastCalledWith({ cacheDir, maxPages: 25, promotePartial: true });
   });
 });

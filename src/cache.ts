@@ -4,6 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { DEFAULT_CACHE_MAX_AGE_HOURS } from './constants.js';
 import { isBlogPath } from './crawl-priority.js';
+import { summarizeRouteCoverageFailure } from './route-coverage.js';
 import type {
   CacheDiagnostics,
   CacheStatus,
@@ -19,8 +20,6 @@ import type {
   RoutePlanEntry,
   QualitySummary
 } from './types.js';
-
-const ROUTE_PLAN_PROBLEM_EXAMPLE_LIMIT = 5;
 
 const DiagnosticsDsdbFieldsSchema = z.object({
   directJsonEnabled: z.boolean().nullish(),
@@ -66,18 +65,6 @@ async function pathIfExists(filePath: string): Promise<string | null> {
 const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
 export const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
-
-function summarizeRouteCoverageFailure(entry: RouteCoverageEntry): string {
-  const summarize = (paths: string[]): string => paths.slice(0, 3).join(', ') || 'none';
-  return [
-    `${entry.sourceRoute}[status=${entry.status}]`,
-    `expected=${entry.expectedOutputPaths.length} (${summarize(entry.expectedOutputPaths)})`,
-    `saved=${entry.savedOutputPaths.length} (${summarize(entry.savedOutputPaths)})`,
-    `failed=${entry.failedOutputPaths.length} (${summarize(entry.failedOutputPaths)})`,
-    `skipped=${entry.skippedOutputPaths.length} (${summarize(entry.skippedOutputPaths)})`,
-    `reasons=${entry.failureReasons.join('|') || 'none'}`
-  ].join(', ');
-}
 
 export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {
   const warnings = diag.coverageWarnings;
@@ -209,6 +196,7 @@ export async function cacheStatus(cacheDir = getDefaultCacheDir(), maxAgeHours =
     ttlMs: maxAgeHours * 60 * 60 * 1000,
     isFresh: isCacheFresh(ageMs, maxAgeHours),
     ...(coverageHealth !== undefined ? { coverageHealth } : {}),
+    ...(index?.coverageDiagnostics?.routeCoverageSummary ? { routeCoverageSummary: index.coverageDiagnostics.routeCoverageSummary } : {}),
     ...(index?.qualitySummary ? { qualitySummary: index.qualitySummary } : {})
   };
 }
