@@ -95,6 +95,15 @@ function materialIndex(pageCount: number, overrides: Partial<MaterialIndex> = {}
   return overrides.extractionDiagnostics === undefined ? withRequiredSamples(built) : built;
 }
 
+function requiredSamplePages(): MaterialPage[] {
+  return REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
+    ...page,
+    id: `req-${i}`,
+    path: `${slug}.md`,
+    url: `https://m3.material.io/${slug}`
+  }));
+}
+
 describe('cache helpers', () => {
   beforeEach(async () => {
     cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-docs-cache-test-'));
@@ -511,12 +520,7 @@ describe('cache helpers', () => {
     diag.virtualPagesSaved = 222;
     diag.virtualPagesFailed = 22;
 
-    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
-      ...page,
-      id: `req-${i}`,
-      path: `${slug}.md`,
-      url: `https://m3.material.io/${slug}`
-    }));
+    const pages: MaterialPage[] = requiredSamplePages();
 
     const nextIndex = materialIndex(pages.length, {
       pages,
@@ -547,12 +551,7 @@ describe('cache helpers', () => {
     diag.virtualPagesSaved = 35;
     diag.virtualPagesFailed = 15;
 
-    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
-      ...page,
-      id: `req-${i}`,
-      path: `${slug}.md`,
-      url: `https://m3.material.io/${slug}`
-    }));
+    const pages: MaterialPage[] = requiredSamplePages();
 
     const nextIndex = materialIndex(pages.length, {
       pages,
@@ -637,7 +636,7 @@ describe('cache helpers', () => {
       coverageDiagnostics: minimalCoverageDiagnostics({ isLimitedRun: true })
     });
 
-    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('missing virtual-page failure counters');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('virtualPagesPlanned=0 but virtualPagesSaved=0 + virtualPagesFailed=undefined does not match');
     expect(() => assertSafeCachePromotion(nextIndex, null, { force: true })).not.toThrow();
   });
 
@@ -1250,12 +1249,7 @@ describe('cache helpers', () => {
     diag.virtualPagesFailed = 12;
     diag.sourcePagesAttempted = 63;
 
-    const pages: MaterialPage[] = REQUIRED_SAMPLE_SLUGS.map((slug, i) => ({
-      ...page,
-      id: `req-${i}`,
-      path: `${slug}.md`,
-      url: `https://m3.material.io/${slug}`
-    }));
+    const pages: MaterialPage[] = requiredSamplePages();
 
     const nextIndex = materialIndex(pages.length, {
       pages,
@@ -1551,7 +1545,218 @@ describe('cache helpers', () => {
       }
     });
 
-    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switch');
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow('Accepted public documentation routes are missing from cache output: /components/switch[diag=n,virtual=n]');
+  });
+
+  it('treats accepted /components/toolbars as covered when overview and specs virtual pages were saved', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/toolbars/overview', {
+      sourceRoute: 'components/toolbars',
+      virtualRoute: 'https://m3.material.io/components/toolbars/overview'
+    }));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/toolbars/specs', {
+      sourceRoute: 'components/toolbars',
+      virtualRoute: 'https://m3.material.io/components/toolbars/specs'
+    }));
+
+    const nextIndex = materialIndex(2, {
+      pages: [
+        ...requiredSamplePages(),
+        {
+          ...page,
+          id: 'toolbars-overview',
+          path: 'components/toolbars/overview.md',
+          url: 'https://m3.material.io/components/toolbars/overview'
+        },
+        {
+          ...page,
+          id: 'toolbars-specs',
+          path: 'components/toolbars/specs.md',
+          url: 'https://m3.material.io/components/toolbars/specs'
+        }
+      ],
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/toolbars',
+            canonicalRoute: '/components/toolbars',
+            outputPath: 'components/toolbars.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'exact'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('treats accepted /components/segmented-buttons as covered when generated virtual pages were saved', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    for (const slug of [
+      'components/segmented-buttons/overview',
+      'components/segmented-buttons/specs',
+      'components/segmented-buttons/guidelines',
+      'components/segmented-buttons/accessibility'
+    ]) {
+      pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug, {
+        sourceRoute: 'components/segmented-buttons',
+        virtualRoute: `https://m3.material.io/${slug}`
+      }));
+    }
+
+    const nextIndex = materialIndex(4, {
+      pages: [
+        ...requiredSamplePages(),
+        {
+          ...page,
+          id: 'segmented-overview',
+          path: 'components/segmented-buttons/overview.md',
+          url: 'https://m3.material.io/components/segmented-buttons/overview'
+        },
+        {
+          ...page,
+          id: 'segmented-specs',
+          path: 'components/segmented-buttons/specs.md',
+          url: 'https://m3.material.io/components/segmented-buttons/specs'
+        },
+        {
+          ...page,
+          id: 'segmented-guidelines',
+          path: 'components/segmented-buttons/guidelines.md',
+          url: 'https://m3.material.io/components/segmented-buttons/guidelines'
+        },
+        {
+          ...page,
+          id: 'segmented-accessibility',
+          path: 'components/segmented-buttons/accessibility.md',
+          url: 'https://m3.material.io/components/segmented-buttons/accessibility'
+        }
+      ],
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/segmented-buttons',
+            canonicalRoute: '/components/segmented-buttons',
+            outputPath: 'components/segmented-buttons.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'exact'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
+  });
+
+  it('still fails when an accepted public route has diagnostics but no exact or virtual output', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/missing-component/specs', {
+      path: 'components/missing-component/specs.md',
+      sourceRoute: 'components/missing-component',
+      sourceUsed: 'failed',
+      finalMethod: null,
+      jsonSucceeded: false,
+      directJsonSucceeded: false,
+      fallbackReasons: ['json-no-sections'],
+      virtualRoute: 'https://m3.material.io/components/missing-component/specs'
+    }));
+
+    const nextIndex = materialIndex(0, {
+      pages: requiredSamplePages(),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/missing-component',
+            canonicalRoute: '/components/missing-component',
+            outputPath: 'components/missing-component.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'exact'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(
+      'Accepted public documentation routes are missing from cache output: /components/missing-component[diag=y,virtual=y]'
+    );
+  });
+
+  it('does not let compact unresolved examples fail promotion when saved virtual pages cover the accepted route', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/toolbars/overview', {
+      sourceRoute: 'components/toolbars',
+      virtualRoute: 'https://m3.material.io/components/toolbars/overview'
+    }));
+
+    const nextIndex = materialIndex(1, {
+      pages: [
+        ...requiredSamplePages(),
+        {
+          ...page,
+          id: 'toolbars-overview',
+          path: 'components/toolbars/overview.md',
+          url: 'https://m3.material.io/components/toolbars/overview'
+        }
+      ],
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({
+          isLimitedRun: false,
+          routePlanSummary: {
+            acceptedRouteCount: 1,
+            staleRouteCount: 0,
+            ambiguousRouteCount: 0,
+            nonPublicRouteCount: 0,
+            extractionCandidateCount: 1,
+            reconciliationStatusCounts: { exact: 1 },
+            publicDocsClassificationCounts: { 'public-docs': 1 },
+            problematicExamples: {
+              staleRoutes: [],
+              ambiguousRoutes: [],
+              nonPublicRoutes: [],
+              unresolvedAcceptedRoutes: [{
+                route: '/components/toolbars',
+                canonicalRoute: '/components/toolbars',
+                outputPath: 'components/toolbars.md',
+                publicDocsClassification: 'public-docs',
+                reconciliationStatus: 'exact'
+              }]
+            }
+          }
+        })
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).not.toThrow();
   });
 
   it('serializes a compact route plan summary into index.json', async () => {
