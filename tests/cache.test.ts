@@ -1189,6 +1189,50 @@ describe('cache helpers', () => {
     expect(() => assertSafeCachePromotion(partialIndex, null)).not.toThrow();
   });
 
+  it('fails a full refresh when route coverage is only partial for an accepted public route', () => {
+    const partialIndex = materialIndex(1, {
+      pages: requiredSamplePages(),
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        routeCoverage: [
+          routeCoverageEntry({
+            sourceRoute: '/components/switches',
+            canonicalRoute: '/components/switch',
+            expectedVirtualRoutes: [
+              '/components/switch/overview',
+              '/components/switch/specs'
+            ],
+            expectedOutputPaths: [
+              'components/switch/overview.md',
+              'components/switch/specs.md'
+            ],
+            savedOutputPaths: ['components/switch/overview.md'],
+            failedOutputPaths: ['components/switch/specs.md'],
+            status: 'partial',
+            failureReasons: ['json-no-sections']
+          })
+        ],
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/switches',
+            canonicalRoute: '/components/switch',
+            outputPath: 'components/switch.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'normalizedSlugMatch'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(partialIndex, null)).toThrow('/components/switches[status=partial]');
+  });
+
   it('allows a limited run (isLimitedRun:true) with a real discovered/accepted gap to promote', () => {
     const limitedIndex = materialIndex(11, {
       coverageDiagnostics: {

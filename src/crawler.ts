@@ -2562,7 +2562,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
   if (routePlanSummary) {
     const unresolvedAcceptedRoutes = routePlanSummary.extractionCandidates.filter((entry) => {
-      const coverageEntry = routeCoverage.find((routeCoverageEntry) => routeCoverageEntry.sourceRoute === normalizeCoverageRoute(entry.route));
+      const coverageEntry = routeCoverageBySourceRoute.get(normalizeCoverageRoute(entry.route));
       return coverageEntry?.status === 'unresolved' || coverageEntry?.status === 'failed' || coverageEntry?.status === 'partial';
     });
     coverageDiagnostics.routePlanSummary = buildCompactRoutePlanSummary({

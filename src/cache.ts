@@ -477,7 +477,11 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     ? routeCoverage
     : [];
   if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && fullRunRouteCoverage.length > 0) {
-    const unresolvedAcceptedRoutes = fullRunRouteCoverage.filter((entry) => entry.status === 'unresolved' || entry.status === 'failed');
+    const unresolvedAcceptedRoutes = fullRunRouteCoverage.filter((entry) => (
+      entry.status === 'unresolved'
+      || entry.status === 'failed'
+      || entry.status === 'partial'
+    ));
     if (unresolvedAcceptedRoutes.length > 0) {
       throw new Error(
         `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map(summarizeRouteCoverageFailure).join('; ')}. ` +

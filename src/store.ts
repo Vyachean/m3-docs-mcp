@@ -33,7 +33,7 @@ export class MaterialDocsStore {
 
   async refresh(options: RefreshOptions = {}): Promise<MaterialIndex> {
     if (this.refreshPromise) return this.refreshPromise;
-    const promotePartial = options.promotePartial ?? (options.maxPagesExplicit ? false : true);
+    const promotePartial = options.promotePartial ?? (options.maxPages === undefined);
 
     this.refreshPromise = crawlMaterialDocs({ cacheDir: this.cacheDir, ...options, promotePartial })
       .then((index) => {
