@@ -513,6 +513,43 @@ describe('JSON-first extraction', () => {
     expect(result.pageDiagnostic.pageCanonId).toBe('toolbars-canon');
   });
 
+  it('accepts route validation when page canon ids differ only by case', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/toolbars/specs',
+      pageData: {
+        title: 'Toolbar',
+        result: {
+          pageContext: {
+            pageCanonId: 'Toolbars-Canon'
+          }
+        }
+      },
+      contentPage: {
+        title: 'Toolbars',
+        sections: [{
+          name: 'Specs',
+          contentBlocks: [{
+            contentChunks: [{
+              contentChunkType: 'TEXT',
+              htmlValue: '<p>Toolbar specs content with enough text for validation, including additional copy to satisfy the quality thresholds while proving canonical identity checks stay strict and only ignore case differences.</p>'
+            }]
+          }]
+        }]
+      },
+      fetchResource: async () => null,
+      routeValidation: {
+        sourceRoute: '/components/toolbars',
+        canonicalRoute: '/components/toolbars',
+        virtualRoute: '/components/toolbars/specs',
+        expectedPageCanonId: 'toolbars-canon'
+      }
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.pageDiagnostic.routeTitlePathMismatch).toBe(false);
+    expect(result.pageDiagnostic.pageCanonId).toBe('Toolbars-Canon');
+  });
+
   it('aggregates extraction diagnostics', () => {
     const diagnostics = createEmptyExtractionDiagnostics();
     pushPageDiagnostic(diagnostics, {

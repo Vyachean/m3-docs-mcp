@@ -144,8 +144,10 @@ export function applySharedRouteCoverage(entries: RouteCoverageEntry[]): RouteCo
     const sharedFailureReasons = uniqueSorted(
       groupEntries.flatMap((entry) => entry.failureReasons).filter((reason) => reason !== 'alias-only-source-route')
     );
+    const baseEntry = groupEntries.find((entry) => entry.status !== 'policySkipped' && entry.status !== 'nonContent')
+      ?? groupEntries[0]!;
     const sharedEntry = reconcileRouteCoverageStatus({
-      ...groupEntries[0]!,
+      ...baseEntry,
       expectedVirtualRoutes: sharedExpectedVirtualRoutes,
       expectedOutputPaths: sharedExpectedOutputPaths,
       savedOutputPaths: sharedSavedOutputPaths,

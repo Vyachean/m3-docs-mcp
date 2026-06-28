@@ -169,7 +169,11 @@ function validateRouteIdentity({
     normalizeOptionalRoutePath(routeValidation?.virtualRoute)
   ].filter((value): value is string => Boolean(value)));
   const routeMatches = !actualRoute || acceptableRoutes.has(actualRoute);
-  const pageCanonMatches = Boolean(actualPageCanonId) && Boolean(expectedPageCanonId) && actualPageCanonId === expectedPageCanonId;
+  const normalizedActualPageCanonId = actualPageCanonId?.toLowerCase() ?? null;
+  const normalizedExpectedPageCanonId = expectedPageCanonId?.toLowerCase() ?? null;
+  const pageCanonMatches = Boolean(actualPageCanonId)
+    && Boolean(expectedPageCanonId)
+    && normalizedActualPageCanonId === normalizedExpectedPageCanonId;
   return {
     routeTitlePathMismatch: routeMatches || pageCanonMatches ? false : hasRouteTitlePathMismatch(url, title),
     expectedRoute,
