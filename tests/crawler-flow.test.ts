@@ -1173,7 +1173,7 @@ describe('crawlMaterialDocs', () => {
       })
     ]));
     expect(index.coverageDiagnostics?.routeCoverageSummary).toMatchObject({
-      partialRoutes: 1,
+      partialRoutes: 2,
       failedRoutes: 0
     });
     expect(index.coverageDiagnostics?.coverageVerified).toBe(false);
@@ -1229,6 +1229,120 @@ describe('crawlMaterialDocs', () => {
       acceptedRouteCount: 2,
       reconciliationStatusCounts: expect.objectContaining({ exact: 1, normalizedSlugMatch: 1 })
     });
+    expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceRoute: '/components/switch',
+        canonicalRoute: '/components/switch',
+        status: 'covered',
+        coverageSharedWithSourceRoutes: ['/components/switch', '/components/switches']
+      }),
+      expect.objectContaining({
+        sourceRoute: '/components/switches',
+        canonicalRoute: '/components/switch',
+        status: 'covered',
+        coverageSharedWithSourceRoutes: ['/components/switch', '/components/switches']
+      })
+    ]));
+  }, 10_000);
+
+  it.each([
+    ['checkbox', 'checkboxes', 'Checkbox'],
+    ['snackbar', 'snackbars', 'Snackbar']
+  ])('shares canonical coverage between /components/%s and /components/%s', async (canonical, alias, title) => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      `{"slug":"components/${canonical}","documentId":"doc-${canonical}","collectionId":"ComponentsM3","exportedCarbonFileId":"${canonical}.json","tabs":[{"label":"Overview"}]}`
+    ].join(',');
+    const pageData = { result: { pageContext: { title, documentId: `doc-${canonical}`, pageCanonId: `page-canon-${canonical}`, slug: `components/${canonical}` } } };
+    const contentPage = {
+      title,
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: `<p>${title} overview content is present with enough text for validation.</p>` }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText([`components/${canonical}`, `components/${alias}`]) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === `https://m3.material.io/page-data/ComponentsM3/doc-${canonical}.json`) return { ok: true, json: async () => pageData } as Response;
+      if (url === `https://m3.material.io/_dsm/content/m3/cv-123/${canonical}.json`) return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceRoute: `/components/${canonical}`,
+        canonicalRoute: `/components/${canonical}`,
+        status: 'covered',
+        coverageSharedWithSourceRoutes: [`/components/${canonical}`, `/components/${alias}`]
+      }),
+      expect.objectContaining({
+        sourceRoute: `/components/${alias}`,
+        canonicalRoute: `/components/${canonical}`,
+        status: 'covered',
+        coverageSharedWithSourceRoutes: [`/components/${canonical}`, `/components/${alias}`]
+      })
+    ]));
+  }, 10_000);
+
+  it.each([
+    ['toolbars', 'Toolbar', 'Toolbars', '4dc1681d-978a-4927-9ffa-8e2bd3796f64.json'],
+    ['segmented-buttons', 'Segmented button', 'Segmented buttons', '409b50be-403a-4846-932c-706a9b2137dd.json']
+  ])('accepts %s tab pages when Carbon identity matches despite singular page-data titles', async (slug, pageDataTitle, contentTitle, exportedCarbonFileId) => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = [
+      '"carbonVersion":"cv-123"',
+      `{"slug":"components/${slug}","documentId":"doc-${slug}","collectionId":"ComponentsM3","exportedCarbonFileId":"${exportedCarbonFileId}","tabs":[{"label":"Overview"},{"label":"Specs"}]}`
+    ].join(',');
+    const pageData = { title: pageDataTitle, document_id: `doc-${slug}` };
+    const canonId = exportedCarbonFileId.replace(/\.json$/, '');
+    const contentPage = {
+      title: contentTitle,
+      pageCanonId: canonId,
+      sections: [
+        { name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: `<p>${contentTitle} overview content is present with enough text for validation.</p>` }] }] },
+        { name: 'Specs', contentBlocks: [{ title: 'Anatomy', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: `<p>${contentTitle} specs content is present with enough text for validation.</p>` }] }] }
+      ]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html } as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText([`components/${slug}`]) } as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs } as Response;
+      if (url === `https://m3.material.io/page-data/ComponentsM3/doc-${slug}.json`) return { ok: true, json: async () => pageData } as Response;
+      if (url === `https://m3.material.io/_dsm/content/m3/cv-123/${exportedCarbonFileId}`) return { ok: true, json: async () => contentPage } as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}) } as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+
+    expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceRoute: `/components/${slug}`,
+        canonicalRoute: `/components/${slug}`,
+        status: 'covered'
+      })
+    ]));
+    expect(index.extractionDiagnostics?.routeDiagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: `components/${slug}/overview.md`,
+        sourceUsed: 'direct-json',
+        expectedRoute: `/components/${slug}/overview`,
+        pageCanonId: canonId,
+        exportedCarbonFileId
+      }),
+      expect.objectContaining({
+        path: `components/${slug}/specs.md`,
+        sourceUsed: 'direct-json',
+        expectedRoute: `/components/${slug}/specs`,
+        pageCanonId: canonId,
+        exportedCarbonFileId
+      })
+    ]));
   }, 10_000);
 
   it('classifies a bare top-level index route with no real content as skipped:non-content-index, not failed', async () => {

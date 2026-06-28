@@ -233,10 +233,11 @@ describe('renderTokenTableWithDiagnostics – malformed normalized systems', () 
     expect(() => renderTokenTableWithDiagnostics(system, ['Divider - Common'])).not.toThrow();
   });
 
-  it('returns empty markdown when displayTokenSets list is empty', () => {
+  it('renders all available token sets when displayTokenSets list is empty', () => {
     const system = normalizeTokenTableSystem(VALID_TOKEN_SYSTEM)!;
     const { markdown } = renderTokenTableWithDiagnostics(system, []);
-    expect(markdown).toBe('');
+    expect(markdown).toContain('## Design Tokens');
+    expect(markdown).toContain('### Divider - Common');
   });
 
   it('returns empty markdown when no token names match the token set prefix', () => {

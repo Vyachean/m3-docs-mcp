@@ -67,6 +67,7 @@ export type ExtractionPageDiagnostic = {
   tokenTablesDecoded?: number;
   tokenTablesRenderedAsPlaceholder?: number;
   tokenTablesUnsupportedSchema?: number;
+  tokenTablePlaceholderReasons?: string[];
   tokenTablesRenderedFromInline?: number;
   tokenContextDiagnostics: TokenContextDiagnostic[];
   statusTablesRequested?: number;
@@ -92,6 +93,13 @@ export type ExtractionPageDiagnostic = {
   hasTitle?: boolean;
   qualityScore?: number;
   routeTitlePathMismatch?: boolean;
+  expectedRoute?: string;
+  actualRoute?: string | null;
+  sourceRoute?: string;
+  canonicalRoute?: string;
+  virtualRoute?: string;
+  pageCanonId?: string | null;
+  exportedCarbonFileId?: string | null;
 };
 
 export type ExtractionRouteDiagnostic = {
@@ -124,6 +132,7 @@ export type ExtractionRouteDiagnostic = {
   tokenTablesDecoded?: number;
   tokenTablesRenderedAsPlaceholder?: number;
   tokenTablesUnsupportedSchema?: number;
+  tokenTablePlaceholderReasons?: string[];
   tokenContextDiagnostics?: TokenContextDiagnostic[];
   statusTablesRequested?: number;
   statusTablesResolved?: number;
@@ -166,6 +175,7 @@ export type ExtractionRouteDiagnostic = {
   sourceRoute?: string;
   /** This page's own URL path when it's a virtual tab page (same as `path`, kept for clarity in logs). */
   virtualRoute?: string;
+  canonicalRoute?: string;
   tabName?: string;
   tabSlug?: string;
   pageDataFetchedOnce?: boolean;
@@ -175,6 +185,10 @@ export type ExtractionRouteDiagnostic = {
   carbonStatus?: number | string;
   collectionId?: string;
   documentId?: string;
+  expectedRoute?: string;
+  actualRoute?: string | null;
+  pageCanonId?: string | null;
+  exportedCarbonFileId?: string | null;
   selectedBecause?: 'budget' | 'required-validation';
 };
 
@@ -445,6 +459,8 @@ export type RouteCoverageStatus = 'covered' | 'partial' | 'failed' | 'skipped' |
 export type RouteCoverageEntry = {
   sourceRoute: string;
   canonicalRoute: string;
+  coverageGroupKey?: string;
+  coverageSharedWithSourceRoutes?: string[];
   routeKey?: string;
   sources?: RouteCandidateSource[];
   reconciliationStatus?: RouteReconciliationStatus;

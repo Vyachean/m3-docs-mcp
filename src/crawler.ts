@@ -32,6 +32,7 @@ import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
 import {
   addRouteCoverageFailureReason,
+  applySharedRouteCoverage,
   createRouteCoverageEntry,
   normalizeCoverageOutputPath,
   normalizeCoverageRoute,
@@ -1636,6 +1637,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTablesRenderedFromInline = 0,
     tokenTablesRenderedAsPlaceholder = 0,
     tokenTablesUnsupportedSchema = 0,
+    tokenTablePlaceholderReasons = [],
     statusTablesDecoded = 0,
     resourceChunksRequested = 0,
     resourceChunksResolved = 0,
@@ -1663,6 +1665,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     carbonStatus,
     collectionId,
     documentId,
+    expectedRoute,
+    actualRoute,
+    pageCanonId,
+    exportedCarbonFileId,
     aliasMatchedBy,
     reconciliationStatus,
     selectedBecause,
@@ -1694,6 +1700,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTablesRenderedFromInline?: number;
     tokenTablesRenderedAsPlaceholder?: number;
     tokenTablesUnsupportedSchema?: number;
+    tokenTablePlaceholderReasons?: string[];
     tokenContextDiagnostics?: ExtractionRouteDiagnostic['tokenContextDiagnostics'];
     statusTablesRequested?: number;
     statusTablesResolved?: number;
@@ -1727,6 +1734,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     carbonStatus?: number | string;
     collectionId?: string;
     documentId?: string;
+    expectedRoute?: string;
+    actualRoute?: string | null;
+    pageCanonId?: string | null;
+    exportedCarbonFileId?: string | null;
     aliasMatchedBy?: ExtractionRouteDiagnostic['aliasMatchedBy'];
     reconciliationStatus?: ExtractionRouteDiagnostic['reconciliationStatus'];
     selectedBecause?: ExtractionRouteDiagnostic['selectedBecause'];
@@ -1762,6 +1773,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     tokenTablesRenderedFromInline,
     tokenTablesRenderedAsPlaceholder,
     tokenTablesUnsupportedSchema,
+    ...(tokenTablePlaceholderReasons.length > 0 ? { tokenTablePlaceholderReasons } : {}),
     tokenContextDiagnostics,
     statusTablesRequested,
     statusTablesResolved,
@@ -1795,6 +1807,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     ...(carbonStatus !== undefined ? { carbonStatus } : {}),
     ...(collectionId ? { collectionId } : {}),
     ...(documentId ? { documentId } : {}),
+    ...(expectedRoute ? { expectedRoute } : {}),
+    ...(actualRoute !== undefined ? { actualRoute } : {}),
+    ...(pageCanonId !== undefined ? { pageCanonId } : {}),
+    ...(exportedCarbonFileId !== undefined ? { exportedCarbonFileId } : {}),
     ...(aliasMatchedBy ? { aliasMatchedBy } : {}),
     ...(reconciliationStatus ? { reconciliationStatus } : {}),
     ...(selectedBecause ? { selectedBecause } : {})
@@ -2174,7 +2190,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           documentId: resolution.entry.documentId,
           collectionId: resolution.entry.collectionId,
           exportedCarbonFileId: resolution.entry.exportedCarbonFileId,
-          pageCanonId: undefined,
+          pageCanonId: resolution.entry.pageCanonId,
           collectionName: undefined,
           tabs: resolution.entry.tabs,
           navigationSource: route.navigationSource,
@@ -2532,7 +2548,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.skippedLegacyRouteCount = skippedLegacyRouteCount;
   coverageDiagnostics.skippedPlatformSpecificUnmappedCount = skippedPlatformSpecificUnmappedCount;
   coverageDiagnostics.skippedNonContentIndexCount = extractionDiagnostics.routeDiagnostics.filter((d) => d.skippedReason === 'non-content-index').length;
-  const routeCoverage = Array.from(routeCoverageBySourceRoute.values())
+  const routeCoverage = applySharedRouteCoverage(Array.from(routeCoverageBySourceRoute.values()))
     .map((entry) => ({
       ...entry,
       expectedVirtualRoutes: uniqueSorted(entry.expectedVirtualRoutes),
@@ -2673,6 +2689,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       siteMetaRoute: route.siteMetaRoute,
       normalizedRoute: route.normalizedRoute,
       bundleMatchedRoute: route.bundleMatchedRoute ?? `/${route.slug}`,
+      canonicalRoute: route.bundleMatchedRoute ?? `/${route.slug}`,
       navigationSource: route.navigationSource,
       pageReferenceSource: 'bundle-table' as const,
       aliasMatchedBy: route.aliasMatchedBy,
@@ -2686,6 +2703,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       carbonStatus,
       collectionId,
       documentId,
+      exportedCarbonFileId: route.exportedCarbonFileId,
       selectedBecause: route.selectedBecause
     };
 
@@ -2720,6 +2738,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           const outputPath = normalizeCoverageOutputPath(extraction.page.path);
           if (nonContentIndex) {
             appendUnique(entry.skippedOutputPaths, outputPath);
+            entry.status = 'nonContent';
             addRouteCoverageFailureReason(entry, `skipped:${fallbackReason}`);
           } else {
             appendUnique(entry.failedOutputPaths, outputPath);
@@ -2744,6 +2763,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
           tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
           tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+          tokenTablePlaceholderReasons: extraction.pageDiagnostic.tokenTablePlaceholderReasons ?? [],
           tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
           statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
           statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
@@ -2757,6 +2777,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
           resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
           missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+          expectedRoute: extraction.pageDiagnostic.expectedRoute,
+          actualRoute: extraction.pageDiagnostic.actualRoute,
+          pageCanonId: extraction.pageDiagnostic.pageCanonId,
           routeMetadataWarnings: route.metadataWarnings ?? [],
           ...sharedDiagnosticFields,
           ...extra
@@ -2791,6 +2814,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
         tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
         tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+        tokenTablePlaceholderReasons: extraction.pageDiagnostic.tokenTablePlaceholderReasons ?? [],
         tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
         statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
         statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
@@ -2804,6 +2828,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
         resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
         missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+        expectedRoute: extraction.pageDiagnostic.expectedRoute,
+        actualRoute: extraction.pageDiagnostic.actualRoute,
+        pageCanonId: extraction.pageDiagnostic.pageCanonId,
         routeMetadataWarnings: route.metadataWarnings ?? [],
         ...sharedDiagnosticFields,
         ...extra
@@ -2823,7 +2850,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       // name (segments[1] of the URL) — combine the parent page title with the tab label so a
       // tab page like /components/buttons/specs titled "Specs" doesn't trip that heuristic.
       const parentTitle = pageDataJson ? extractPageDataMetadata(pageDataJson).title : null;
-      const effectiveParentTitle = parentTitle ?? decodedContentPage?.title ?? null;
+      const effectiveParentTitle = decodedContentPage?.title ?? parentTitle ?? null;
       for (let tabIndex = 0; tabIndex < route.tabs.length; tabIndex += 1) {
         const tab = route.tabs[tabIndex]!;
         const slug = normalizeTabSlug(tab);
@@ -2857,7 +2884,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           capturedAt,
           fetchResource,
           sectionIndices: [matchResult.sectionIndex],
-          titleOverride: effectiveParentTitle ? `${effectiveParentTitle} ${tab.label}` : tab.label
+          titleOverride: effectiveParentTitle ? `${effectiveParentTitle} ${tab.label}` : tab.label,
+          routeValidation: {
+            sourceRoute: sourceCoverageRoute,
+            canonicalRoute: route.bundleMatchedRoute ?? `/${route.slug}`,
+            virtualRoute: new URL(tabUrl).pathname,
+            expectedPageCanonId: route.pageCanonId ?? null,
+            exportedCarbonFileId: route.exportedCarbonFileId ?? null
+          }
         });
         await savePage(tabUrl, extraction, { virtualSource: 'tab', virtualRoute: tabUrl, tabName: tab.label, tabSlug: slug });
       }
@@ -2869,7 +2903,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       pageData: pageDataJson,
       contentPage: contentJson,
       capturedAt,
-      fetchResource
+      fetchResource,
+      routeValidation: {
+        sourceRoute: sourceCoverageRoute,
+        canonicalRoute: route.bundleMatchedRoute ?? `/${route.slug}`,
+        expectedPageCanonId: route.pageCanonId ?? null,
+        exportedCarbonFileId: route.exportedCarbonFileId ?? null
+      }
     });
     await savePage(routeUrl, extraction, { virtualSource: null });
   }
@@ -2951,8 +2991,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             fetchResource: bundle.fetchResource
           });
           if (extraction.fallbackReason) {
-            jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
-            const nonContentIndex = isNonContentIndexRoute(extraction.page.path, extraction.fallbackReason);
+            const fallbackReason = extraction.fallbackReason;
+            jsonFallbackRoutes.set(route.slug, fallbackReason);
+            const nonContentIndex = isNonContentIndexRoute(extraction.page.path, fallbackReason);
+            updateRouteCoverageEntry(`/${route.slug}`, (entry) => {
+              const outputPath = normalizeCoverageOutputPath(extraction.page.path);
+              if (nonContentIndex) {
+                appendUnique(entry.skippedOutputPaths, outputPath);
+                entry.status = 'nonContent';
+                addRouteCoverageFailureReason(entry, `skipped:${fallbackReason}`);
+              } else {
+                appendUnique(entry.failedOutputPaths, outputPath);
+                addRouteCoverageFailureReason(entry, fallbackReason);
+              }
+            });
             recordRouteDiagnostic(createRouteDiagnostic({
               url: extraction.page.url,
               path: extraction.page.path,
@@ -2960,7 +3012,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               ...(nonContentIndex ? { skippedReason: 'non-content-index' as const } : {}),
               finalMethod: null,
               directJsonAttempted: true,
-              fallbackReasons: [extraction.fallbackReason],
+              fallbackReasons: [fallbackReason],
               unknownChunkTypes: extraction.pageDiagnostic.unknownChunkTypes,
               unknownResourceTypes: extraction.pageDiagnostic.unknownResourceTypes,
               tokenTables: extraction.pageDiagnostic.tokenTables,
@@ -2971,6 +3023,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
               tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
               tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+              tokenTablePlaceholderReasons: extraction.pageDiagnostic.tokenTablePlaceholderReasons ?? [],
               tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
               statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
               statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
@@ -2984,6 +3037,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
               resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
               missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+              expectedRoute: extraction.pageDiagnostic.expectedRoute,
+              actualRoute: extraction.pageDiagnostic.actualRoute,
+              pageCanonId: extraction.pageDiagnostic.pageCanonId,
               routeMetadataWarnings: route.metadataWarnings ?? []
             }));
             return;
@@ -3011,6 +3067,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               tokenTablesRenderedFromInline: extraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
               tokenTablesRenderedAsPlaceholder: extraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
               tokenTablesUnsupportedSchema: extraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+              tokenTablePlaceholderReasons: extraction.pageDiagnostic.tokenTablePlaceholderReasons ?? [],
               tokenContextDiagnostics: extraction.pageDiagnostic.tokenContextDiagnostics,
               statusTablesRequested: extraction.pageDiagnostic.statusTablesRequested ?? 0,
               statusTablesResolved: extraction.pageDiagnostic.statusTablesResolved ?? 0,
@@ -3024,6 +3081,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               resourceChunksRendered: extraction.pageDiagnostic.resourceChunksRendered ?? 0,
               resourceChunksPlaceholder: extraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
               missingRequestedTokenSets: extraction.pageDiagnostic.missingRequestedTokenSets,
+              expectedRoute: extraction.pageDiagnostic.expectedRoute,
+              actualRoute: extraction.pageDiagnostic.actualRoute,
+              pageCanonId: extraction.pageDiagnostic.pageCanonId,
               rawJsonDebugFilesWritten,
               routeMetadataWarnings: route.metadataWarnings ?? [],
               candidateSelectionReasons: bundle.selectionReasons
@@ -3255,6 +3315,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           tokenTablesRenderedFromInline: networkExtraction.pageDiagnostic.tokenTablesRenderedFromInline ?? 0,
           tokenTablesRenderedAsPlaceholder: networkExtraction.pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0,
           tokenTablesUnsupportedSchema: networkExtraction.pageDiagnostic.tokenTablesUnsupportedSchema ?? 0,
+          tokenTablePlaceholderReasons: networkExtraction.pageDiagnostic.tokenTablePlaceholderReasons ?? [],
           tokenContextDiagnostics: networkExtraction.pageDiagnostic.tokenContextDiagnostics,
           statusTablesRequested: networkExtraction.pageDiagnostic.statusTablesRequested ?? 0,
           statusTablesResolved: networkExtraction.pageDiagnostic.statusTablesResolved ?? 0,
@@ -3268,6 +3329,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           resourceChunksRendered: networkExtraction.pageDiagnostic.resourceChunksRendered ?? 0,
           resourceChunksPlaceholder: networkExtraction.pageDiagnostic.resourceChunksPlaceholder ?? 0,
           missingRequestedTokenSets: networkExtraction.pageDiagnostic.missingRequestedTokenSets,
+          expectedRoute: networkExtraction.pageDiagnostic.expectedRoute,
+          actualRoute: networkExtraction.pageDiagnostic.actualRoute,
+          pageCanonId: networkExtraction.pageDiagnostic.pageCanonId,
           unknownJsonResourceCount,
           capturedJsonResponseCounts,
           rawJsonDebugFilesWritten,

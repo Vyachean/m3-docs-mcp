@@ -143,6 +143,7 @@ export async function renderDsdbResourceChunk(
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
     pageDiagnostic.unresolvedResourceCount += 1;
     pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.tokenTablePlaceholderReasons = [...(pageDiagnostic.tokenTablePlaceholderReasons ?? []), 'missing-resource-name'];
     pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-resource-name', tokenSets: requestedTokenSets });
   }
@@ -160,6 +161,7 @@ export async function renderDsdbResourceChunk(
     pageDiagnostic.missingRequestedTokenSets.push(...requestedTokenSets);
     pageDiagnostic.unresolvedResourceCount += 1;
     pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.tokenTablePlaceholderReasons = [...(pageDiagnostic.tokenTablePlaceholderReasons ?? []), 'missing-token-system'];
     pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-token-system', resource: resourceName, tokenSets: requestedTokenSets });
   }
@@ -173,6 +175,7 @@ export async function renderDsdbResourceChunk(
   } catch (error) {
     pageDiagnostic.unresolvedResourceCount += 1;
     pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.tokenTablePlaceholderReasons = [...(pageDiagnostic.tokenTablePlaceholderReasons ?? []), 'render-error'];
     pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', {
       reason: 'render-error',
@@ -199,6 +202,7 @@ export async function renderDsdbResourceChunk(
     }
     pageDiagnostic.unresolvedResourceCount += 1;
     pageDiagnostic.tokenTablesRenderedAsPlaceholder = (pageDiagnostic.tokenTablesRenderedAsPlaceholder ?? 0) + 1;
+    pageDiagnostic.tokenTablePlaceholderReasons = [...(pageDiagnostic.tokenTablePlaceholderReasons ?? []), 'missing-requested-token-sets'];
     pageDiagnostic.resourceChunksPlaceholder = (pageDiagnostic.resourceChunksPlaceholder ?? 0) + 1;
     return renderResourcePlaceholder('TOKEN_TABLE', { reason: 'missing-requested-token-sets', resource: resourceName, tokenSets: requestedTokenSets });
   }

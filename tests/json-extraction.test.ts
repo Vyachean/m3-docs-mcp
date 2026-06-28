@@ -452,6 +452,104 @@ describe('JSON-first extraction', () => {
     expect(result.fallbackReason).toBe('json-missing-token-tables');
   });
 
+  it('renders token tables when the resource is present even if the chunk omits tokenSets', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/segmented-buttons/specs',
+      pageData: { title: 'Segmented button' },
+      contentPage: {
+        title: 'Segmented buttons',
+        pageCanonId: 'segmented-buttons-canon',
+        sections: [{
+          name: 'Specs',
+          contentBlocks: [{
+            title: 'Tokens',
+            contentChunks: [{
+              contentChunkType: 'RESOURCE',
+              libraryModuleType: 'TOKEN_TABLE',
+              resourceName: 'designSystems/20543ce18892f7d9/components/67e2613d87ca6f98'
+            }]
+          }]
+        }]
+      },
+      fetchResource: async (resourceName, resourceType) => (
+        resourceType === 'TOKEN_TABLE' && resourceName === 'designSystems/20543ce18892f7d9/components/67e2613d87ca6f98'
+      ) ? fixture('token-table-resource.json') : null
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.page.markdown).toContain('### Button - Common');
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
+  });
+
+  it('accepts tabbed component pages when content identity matches the canonical page even if page-data title is singular', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/toolbars/specs',
+      pageData: { title: 'Toolbar' },
+      contentPage: {
+        title: 'Toolbars',
+        pageCanonId: 'toolbars-canon',
+        sections: [{
+          name: 'Specs',
+          contentBlocks: [{
+            title: 'Anatomy',
+            contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Toolbar specs content with enough text for validation, including extra copy to clear the suspicious-content threshold for this regression test and to reflect a realistic component specs section with anatomy, behavior, layout, tokens, and accessibility guidance.</p>' }]
+          }]
+        }]
+      },
+      fetchResource: async () => null,
+      routeValidation: {
+        sourceRoute: '/components/toolbars',
+        canonicalRoute: '/components/toolbars',
+        virtualRoute: '/components/toolbars/specs',
+        expectedPageCanonId: 'toolbars-canon'
+      }
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.page.title).toBe('Toolbars');
+    expect(result.pageDiagnostic.routeTitlePathMismatch).toBe(false);
+    expect(result.pageDiagnostic.expectedRoute).toBe('/components/toolbars/specs');
+    expect(result.pageDiagnostic.pageCanonId).toBe('toolbars-canon');
+  });
+
+  it('accepts route validation when page canon ids differ only by case', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/toolbars/specs',
+      pageData: {
+        title: 'Toolbar',
+        result: {
+          pageContext: {
+            pageCanonId: 'Toolbars-Canon'
+          }
+        }
+      },
+      contentPage: {
+        title: 'Toolbars',
+        sections: [{
+          name: 'Specs',
+          contentBlocks: [{
+            contentChunks: [{
+              contentChunkType: 'TEXT',
+              htmlValue: '<p>Toolbar specs content with enough text for validation, including additional copy to satisfy the quality thresholds while proving canonical identity checks stay strict and only ignore case differences.</p>'
+            }]
+          }]
+        }]
+      },
+      fetchResource: async () => null,
+      routeValidation: {
+        sourceRoute: '/components/toolbars',
+        canonicalRoute: '/components/toolbars',
+        virtualRoute: '/components/toolbars/specs',
+        expectedPageCanonId: 'toolbars-canon'
+      }
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.pageDiagnostic.routeTitlePathMismatch).toBe(false);
+    expect(result.pageDiagnostic.pageCanonId).toBe('Toolbars-Canon');
+  });
+
   it('aggregates extraction diagnostics', () => {
     const diagnostics = createEmptyExtractionDiagnostics();
     pushPageDiagnostic(diagnostics, {
