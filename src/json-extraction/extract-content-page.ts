@@ -26,7 +26,8 @@ export async function extractContentPageToMaterialPage({
   capturedAt,
   fetchResource,
   sectionIndices,
-  titleOverride
+  titleOverride,
+  routeValidation
 }: {
   url: string;
   pageData: unknown | null;
@@ -38,16 +39,29 @@ export async function extractContentPageToMaterialPage({
   sectionIndices?: number[];
   /** When provided (tab splitting), used instead of the page-data/content-page title. */
   titleOverride?: string;
+  routeValidation?: {
+    sourceRoute?: string;
+    canonicalRoute?: string;
+    virtualRoute?: string;
+    expectedPageCanonId?: string | null;
+    exportedCarbonFileId?: string | null;
+  };
 }): Promise<JsonExtractionResult> {
   const decoded = parseContentPage(contentPage);
   const pageDataMeta = extractPageDataMetadata(pageData);
-  const discoveredTitle = titleOverride ?? pageDataMeta.title ?? decoded.title;
+  const discoveredTitle = titleOverride ?? decoded.title ?? pageDataMeta.title;
   const title = discoveredTitle ?? 'Material 3 page';
   const sections = sectionIndices ? sectionIndices.map((i) => decoded.sections[i]).filter((s): s is typeof decoded.sections[number] => Boolean(s)) : decoded.sections;
   const headings = [discoveredTitle, ...sections.map((s) => s.title).filter(Boolean)].filter(
     (v): v is string => Boolean(v)
   );
-  const routeTitlePathMismatch = hasRouteTitlePathMismatch(url, title);
+  const routeIdentity = validateRouteIdentity({
+    url,
+    title,
+    pageDataMeta,
+    contentPage,
+    routeValidation
+  });
   const pageDiagnostic: ExtractionPageDiagnostic = {
     url,
     path: createMaterialPageFromBody({ url, title, headings, body: `# ${title}` }).path,
@@ -57,6 +71,7 @@ export async function extractContentPageToMaterialPage({
     unknownResourceTypes: [],
     tokenTables: 0,
     tokenTablesRendered: 0,
+    tokenTablePlaceholderReasons: [],
     tokenContextDiagnostics: [],
     statusTablesRequested: 0,
     statusTablesResolved: 0,
@@ -74,7 +89,14 @@ export async function extractContentPageToMaterialPage({
     markdownLength: 0,
     hasTitle: Boolean(discoveredTitle?.trim()),
     qualityScore: 0,
-    routeTitlePathMismatch
+    routeTitlePathMismatch: routeIdentity.routeTitlePathMismatch,
+    expectedRoute: routeIdentity.expectedRoute,
+    actualRoute: routeIdentity.actualRoute,
+    sourceRoute: routeValidation?.sourceRoute,
+    canonicalRoute: routeValidation?.canonicalRoute,
+    virtualRoute: routeValidation?.virtualRoute,
+    pageCanonId: routeIdentity.actualPageCanonId,
+    exportedCarbonFileId: routeValidation?.exportedCarbonFileId ?? null
   };
 
   const bodyParts: string[] = [`# ${title}`];
@@ -108,6 +130,80 @@ export async function extractContentPageToMaterialPage({
   if (fallbackReason) pageDiagnostic.suspiciousReasons.push(fallbackReason);
 
   return { page, pageDiagnostic, fallbackReason };
+}
+
+function validateRouteIdentity({
+  url,
+  title,
+  pageDataMeta,
+  contentPage,
+  routeValidation
+}: {
+  url: string;
+  title: string;
+  pageDataMeta: ReturnType<typeof extractPageDataMetadata>;
+  contentPage: unknown | null;
+  routeValidation?: {
+    sourceRoute?: string;
+    canonicalRoute?: string;
+    virtualRoute?: string;
+    expectedPageCanonId?: string | null;
+    exportedCarbonFileId?: string | null;
+  };
+}): {
+  routeTitlePathMismatch: boolean;
+  expectedRoute: string;
+  actualRoute: string | null;
+  actualPageCanonId: string | null;
+} {
+  const expectedRoute = normalizeRoutePath(new URL(url).pathname);
+  const actualRoute = normalizeOptionalRoutePath(pageDataMeta.pathname);
+  const actualPageCanonId = pageDataMeta.pageCanonId ?? firstStringPath(contentPage, ['pageCanonId'], ['pageCanonicalId']);
+  const expectedPageCanonId = routeValidation?.expectedPageCanonId
+    ?? routeValidation?.exportedCarbonFileId?.replace(/\.json$/i, '')
+    ?? null;
+  const acceptableRoutes = new Set([
+    expectedRoute,
+    normalizeOptionalRoutePath(routeValidation?.sourceRoute),
+    normalizeOptionalRoutePath(routeValidation?.canonicalRoute),
+    normalizeOptionalRoutePath(routeValidation?.virtualRoute)
+  ].filter((value): value is string => Boolean(value)));
+  const routeMatches = !actualRoute || acceptableRoutes.has(actualRoute);
+  const pageCanonMatches = Boolean(actualPageCanonId) && Boolean(expectedPageCanonId) && actualPageCanonId === expectedPageCanonId;
+  return {
+    routeTitlePathMismatch: routeMatches || pageCanonMatches ? false : hasRouteTitlePathMismatch(url, title),
+    expectedRoute,
+    actualRoute,
+    actualPageCanonId
+  };
+}
+
+function normalizeRoutePath(path: string): string {
+  return `/${path.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function normalizeOptionalRoutePath(path: string | null | undefined): string | null {
+  if (!path?.trim()) return null;
+  return normalizeRoutePath(path);
+}
+
+function firstStringPath(root: unknown, ...paths: string[][]): string | null {
+  for (const path of paths) {
+    let current: unknown = root;
+    for (const key of path) {
+      if (!isRecord(current) || !(key in current)) {
+        current = null;
+        break;
+      }
+      current = current[key];
+    }
+    if (typeof current === 'string' && current.trim()) return current;
+  }
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function determineFallbackReason(page: MaterialPage, pageDiagnostic: ExtractionPageDiagnostic): ExtractionFallbackReason | null {

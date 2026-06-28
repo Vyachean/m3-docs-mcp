@@ -20,6 +20,12 @@ export function normalizeCoverageOutputPath(path: string): string {
   return path.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.md$/i, '.md');
 }
 
+export function createRouteCoverageGroupKey(canonicalRoute: string, expectedOutputPaths: string[]): string {
+  const canonical = normalizeCoverageRoute(canonicalRoute);
+  const outputs = uniqueSorted(expectedOutputPaths.map(normalizeCoverageOutputPath));
+  return `${canonical}::${outputs.join('|')}`;
+}
+
 export function normalizeTabSlug(tab: { label: string; slug?: string }): string {
   if (tab.slug) return tab.slug.replace(/^\/+|\/+$/g, '');
   return tab.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -67,6 +73,7 @@ export function createRouteCoverageEntry(params: {
   return {
     sourceRoute: normalizeCoverageRoute(params.sourceRoute),
     canonicalRoute: normalizeCoverageRoute(params.canonicalRoute),
+    coverageGroupKey: createRouteCoverageGroupKey(params.canonicalRoute, planned.expectedOutputPaths),
     ...(params.routeKey ? { routeKey: params.routeKey } : {}),
     ...(params.sources ? { sources: [...params.sources].sort() } : {}),
     ...(params.reconciliationStatus ? { reconciliationStatus: params.reconciliationStatus } : {}),
@@ -96,6 +103,10 @@ export function reconcileRouteCoverageStatus(entry: RouteCoverageEntry): RouteCo
   entry.failedOutputPaths = uniqueSorted(entry.failedOutputPaths.map(normalizeCoverageOutputPath));
   entry.skippedOutputPaths = uniqueSorted(entry.skippedOutputPaths.map(normalizeCoverageOutputPath));
   entry.failureReasons = uniqueSorted(entry.failureReasons);
+  entry.coverageGroupKey = createRouteCoverageGroupKey(entry.canonicalRoute, entry.expectedOutputPaths);
+  if (entry.coverageSharedWithSourceRoutes) {
+    entry.coverageSharedWithSourceRoutes = uniqueSorted(entry.coverageSharedWithSourceRoutes.map(normalizeCoverageRoute));
+  }
 
   if (entry.status === 'policySkipped' || entry.status === 'nonContent') return entry;
   if (entry.expectedOutputPaths.length === 0) {
@@ -112,6 +123,53 @@ export function reconcileRouteCoverageStatus(entry: RouteCoverageEntry): RouteCo
   else if (allExpectedSkipped) entry.status = 'skipped';
   else entry.status = 'unresolved';
   return entry;
+}
+
+export function applySharedRouteCoverage(entries: RouteCoverageEntry[]): RouteCoverageEntry[] {
+  const groups = new Map<string, RouteCoverageEntry[]>();
+  for (const entry of entries) {
+    const key = entry.coverageGroupKey ?? createRouteCoverageGroupKey(entry.canonicalRoute, entry.expectedOutputPaths);
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
+  }
+
+  for (const [groupKey, groupEntries] of groups) {
+    const sharedExpectedVirtualRoutes = uniqueSorted(groupEntries.flatMap((entry) => entry.expectedVirtualRoutes));
+    const sharedExpectedOutputPaths = uniqueSorted(groupEntries.flatMap((entry) => entry.expectedOutputPaths));
+    const sharedSavedOutputPaths = uniqueSorted(groupEntries.flatMap((entry) => entry.savedOutputPaths));
+    const sharedFailedOutputPaths = uniqueSorted(groupEntries.flatMap((entry) => entry.failedOutputPaths));
+    const sharedSkippedOutputPaths = uniqueSorted(groupEntries.flatMap((entry) => entry.skippedOutputPaths));
+    const sharedSourceRoutes = uniqueSorted(groupEntries.map((entry) => entry.sourceRoute));
+    const sharedFailureReasons = uniqueSorted(
+      groupEntries.flatMap((entry) => entry.failureReasons).filter((reason) => reason !== 'alias-only-source-route')
+    );
+    const sharedEntry = reconcileRouteCoverageStatus({
+      ...groupEntries[0]!,
+      expectedVirtualRoutes: sharedExpectedVirtualRoutes,
+      expectedOutputPaths: sharedExpectedOutputPaths,
+      savedOutputPaths: sharedSavedOutputPaths,
+      failedOutputPaths: sharedFailedOutputPaths,
+      skippedOutputPaths: sharedSkippedOutputPaths,
+      failureReasons: sharedFailureReasons,
+      coverageGroupKey: groupKey,
+      coverageSharedWithSourceRoutes: sharedSourceRoutes
+    });
+
+    for (const entry of groupEntries) {
+      entry.expectedVirtualRoutes = [...sharedEntry.expectedVirtualRoutes];
+      entry.expectedOutputPaths = [...sharedEntry.expectedOutputPaths];
+      entry.savedOutputPaths = [...sharedEntry.savedOutputPaths];
+      entry.failedOutputPaths = [...sharedEntry.failedOutputPaths];
+      entry.skippedOutputPaths = [...sharedEntry.skippedOutputPaths];
+      entry.status = sharedEntry.status;
+      entry.failureReasons = sharedEntry.status === 'covered' ? [] : [...sharedEntry.failureReasons];
+      entry.coverageGroupKey = groupKey;
+      entry.coverageSharedWithSourceRoutes = [...sharedSourceRoutes];
+    }
+  }
+
+  return entries;
 }
 
 export function summarizeRouteCoverage(entries: RouteCoverageEntry[]): {

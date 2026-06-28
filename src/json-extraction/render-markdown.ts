@@ -488,8 +488,11 @@ export function renderTokenTableWithDiagnostics(
   displayTokenSets: string[]
 ): { markdown: string; diagnostics: TokenContextDiagnostic[] } {
   const idx = buildTagIndex(system);
-  const displaySetNames = new Set(displayTokenSets);
-  const relevantSets = system.tokenSets.filter((ts) => displaySetNames.has(ts.displayName) || displaySetNames.has(ts.tokenSetName));
+  const requestedDisplayTokenSets = displayTokenSets.filter((value) => value.trim().length > 0);
+  const displaySetNames = new Set(requestedDisplayTokenSets);
+  const relevantSets = requestedDisplayTokenSets.length === 0
+    ? system.tokenSets
+    : system.tokenSets.filter((ts) => displaySetNames.has(ts.displayName) || displaySetNames.has(ts.tokenSetName));
   if (relevantSets.length === 0) {
     return { markdown: '', diagnostics: [] };
   }
@@ -547,7 +550,9 @@ export function renderTokenTableWithDiagnostics(
     const hasHcData = rows.slice(1).some((row) => row[6] || row[7]);
     const finalRows = hasHcData ? rows : rows.map((row) => row.slice(0, 6));
     sections.push(`### ${ts.displayName}\n${markdownTable(finalRows)}`);
-    const requestedTokenSetsForSection = displayTokenSets.filter((name) => name === ts.displayName || name === ts.tokenSetName);
+    const requestedTokenSetsForSection = requestedDisplayTokenSets.length === 0
+      ? [ts.displayName || ts.tokenSetName].filter(Boolean)
+      : requestedDisplayTokenSets.filter((name) => name === ts.displayName || name === ts.tokenSetName);
     const renderedTokenSets = [ts.displayName, ts.tokenSetName].filter((value, index, arr) => Boolean(value) && arr.indexOf(value) === index);
     const availableKeys = Array.from(availableContextKeys).sort();
     const selectedKeys = Array.from(selectedContextKeys).sort();
