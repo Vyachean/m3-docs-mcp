@@ -324,6 +324,8 @@ export type CoverageDiagnostics = {
   requiredRouteCoverage?: RequiredRouteCoverageEntry[];
   routePlanSummary?: CompactRoutePlanSummary;
   fullRoutePlanSummary?: RoutePlanSummary;
+  routeCoverage?: RouteCoverageEntry[];
+  routeCoverageSummary?: RouteCoverageSummary;
 };
 
 export type RouteResolutionSummaryEntry = {
@@ -397,6 +399,7 @@ export type RoutePlanEntry = {
   carbonPath?: string | null;
   pageCanonId?: string | null;
   tabs?: string[];
+  tabSlugs?: string[];
   alternateSlugs?: string[];
   navTitle?: string;
   routeTitle?: string;
@@ -435,6 +438,43 @@ export type CompactRoutePlanSummary = {
     nonPublicRoutes: CompactRoutePlanBucketExample[];
     unresolvedAcceptedRoutes: CompactRoutePlanBucketExample[];
   };
+};
+
+export type RouteCoverageStatus = 'covered' | 'partial' | 'failed' | 'skipped' | 'unresolved';
+
+export type RouteCoverageEntry = {
+  sourceRoute: string;
+  canonicalRoute: string;
+  reconciliationStatus?: RouteReconciliationStatus;
+  navigationSource?: 'site-meta' | 'bundle-supplement';
+  pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
+  expectedVirtualRoutes: string[];
+  expectedOutputPaths: string[];
+  savedOutputPaths: string[];
+  failedOutputPaths: string[];
+  skippedOutputPaths: string[];
+  status: RouteCoverageStatus;
+  failureReasons: string[];
+};
+
+export type CompactRouteCoverageExample = Pick<
+  RouteCoverageEntry,
+  'sourceRoute' | 'canonicalRoute' | 'status' | 'failureReasons'
+> & {
+  expectedOutputPathCount: number;
+  savedOutputPathCount: number;
+  failedOutputPathCount: number;
+  skippedOutputPathCount: number;
+  expectedOutputPathExamples: string[];
+  savedOutputPathExamples: string[];
+  failedOutputPathExamples: string[];
+  skippedOutputPathExamples: string[];
+};
+
+export type RouteCoverageSummary = {
+  routeCount: number;
+  statusCounts: Record<RouteCoverageStatus, number>;
+  problematicExamples: CompactRouteCoverageExample[];
 };
 
 export type SuspiciousCrawlPage = {
@@ -521,7 +561,7 @@ export type MaterialPublicIndex = {
   failedPageCount: number;
   failedUrls: string[];
   qualitySummary?: QualitySummary;
-  coverageDiagnostics?: Pick<CoverageDiagnostics, 'coverageHealth' | 'routePlanSummary'>;
+  coverageDiagnostics?: Pick<CoverageDiagnostics, 'coverageHealth' | 'routePlanSummary' | 'routeCoverageSummary'>;
   pages: MaterialPublicPageManifestEntry[];
 };
 export type DsdbConfigSource = 'site-meta' | 'bundle' | 'browser-network' | null;

@@ -31,13 +31,82 @@ import {
 import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CompactRouteCoverageExample, CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RouteCoverageStatus, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+const ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT = 5;
+
+function normalizeCoverageRoute(path: string): string {
+  if (path === '/' || path === '') return '/';
+  return `/${path.replace(/^\/+|\/+$/g, '')}`;
+}
+
+function normalizeCoverageOutputPath(path: string): string {
+  return path.replace(/^\/+/, '');
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort();
+}
+
+function appendUnique(list: string[], value: string): void {
+  if (!list.includes(value)) list.push(value);
+}
+
+function addFailureReason(entry: RouteCoverageEntry, reason: string): void {
+  if (reason && !entry.failureReasons.includes(reason)) entry.failureReasons.push(reason);
+}
+
+function expectedCoveragePaths(baseUrl: string, canonicalRoute: string, tabSlugs?: string[]): Pick<RouteCoverageEntry, 'expectedVirtualRoutes' | 'expectedOutputPaths'> {
+  const canonical = normalizeCoverageRoute(canonicalRoute);
+  const buildOutput = (route: string): string => materialPagePath(new URL(route, baseUrl).toString());
+  if (tabSlugs && tabSlugs.length > 0) {
+    const expectedVirtualRoutes = uniqueSorted(tabSlugs.map((slug) => normalizeCoverageRoute(`${canonical}/${slug}`)));
+    return {
+      expectedVirtualRoutes,
+      expectedOutputPaths: expectedVirtualRoutes.map(buildOutput)
+    };
+  }
+  return {
+    expectedVirtualRoutes: [canonical],
+    expectedOutputPaths: [buildOutput(canonical)]
+  };
+}
+
+function summarizeRouteCoverage(entries: RouteCoverageEntry[]): { statusCounts: Record<RouteCoverageStatus, number>; problematicExamples: CompactRouteCoverageExample[] } {
+  const statusCounts: Record<RouteCoverageStatus, number> = {
+    covered: 0,
+    partial: 0,
+    failed: 0,
+    skipped: 0,
+    unresolved: 0
+  };
+  const problematicExamples: CompactRouteCoverageExample[] = [];
+  for (const entry of entries) {
+    statusCounts[entry.status] += 1;
+    if ((entry.status === 'covered') || problematicExamples.length >= ROUTE_COVERAGE_PROBLEM_EXAMPLE_LIMIT) continue;
+    problematicExamples.push({
+      sourceRoute: entry.sourceRoute,
+      canonicalRoute: entry.canonicalRoute,
+      status: entry.status,
+      failureReasons: [...entry.failureReasons],
+      expectedOutputPathCount: entry.expectedOutputPaths.length,
+      savedOutputPathCount: entry.savedOutputPaths.length,
+      failedOutputPathCount: entry.failedOutputPaths.length,
+      skippedOutputPathCount: entry.skippedOutputPaths.length,
+      expectedOutputPathExamples: entry.expectedOutputPaths.slice(0, 3),
+      savedOutputPathExamples: entry.savedOutputPaths.slice(0, 3),
+      failedOutputPathExamples: entry.failedOutputPaths.slice(0, 3),
+      skippedOutputPathExamples: entry.skippedOutputPaths.slice(0, 3),
+    });
+  }
+  return { statusCounts, problematicExamples };
 }
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
@@ -1308,19 +1377,35 @@ function buildPromotionFailureError(
 
   let diagnostics = '';
   if (index !== null) {
-    const failed = index.failedPageCount;
-    const attempted = index.attemptedPageCount;
     const saved = index.pageCount;
-    const failedPct = attempted > 0 ? ((failed / attempted) * 100).toFixed(1) : '0.0';
     const allowedPct = (DEFAULT_MAX_FAILED_PAGE_RATIO * 100).toFixed(0);
     const failedRoutes = index.failedUrls ?? [];
     const coreSpecsFailures = failedRoutes.filter((u) => u.includes('/specs')).length;
     const cacheKept = previousIndex !== null ? 'yes (previous cache unchanged)' : 'no (no previous cache existed)';
+    const extractionDiagnostics = index.extractionDiagnostics;
+    const hasModernDiagnostics = Boolean(extractionDiagnostics);
 
     const parts: string[] = [
-      `Attempted: ${attempted} | Saved: ${saved} | Failed: ${failed} (${failedPct}%) | Allowed failure rate: ${allowedPct}%`,
       `Existing cache kept: ${cacheKept}`,
     ];
+    if (hasModernDiagnostics && extractionDiagnostics) {
+      const sourceAttempted = extractionDiagnostics.sourcePagesAttempted;
+      const sourceFailed = extractionDiagnostics.sourcePagesFailed;
+      const sourceFailedPct = sourceAttempted > 0 ? ((sourceFailed / sourceAttempted) * 100).toFixed(1) : '0.0';
+      const virtualPlanned = extractionDiagnostics.virtualPagesPlanned;
+      const virtualFailed = extractionDiagnostics.virtualPagesFailed;
+      const virtualFailedPct = virtualPlanned > 0 ? ((virtualFailed / virtualPlanned) * 100).toFixed(1) : '0.0';
+      parts.unshift(
+        `Source routes: attempted=${sourceAttempted} saved=${extractionDiagnostics.sourcePagesSucceeded} failed=${sourceFailed} (${sourceFailedPct}%) allowed=${allowedPct}%`,
+        `Virtual pages: planned=${virtualPlanned} saved=${extractionDiagnostics.virtualPagesSaved} failed=${virtualFailed} (${virtualFailedPct}%) allowed=${allowedPct}%`,
+        `Saved cache pages: ${saved}`
+      );
+    } else {
+      const failed = index.failedPageCount;
+      const attempted = index.attemptedPageCount;
+      const failedPct = attempted > 0 ? ((failed / attempted) * 100).toFixed(1) : '0.0';
+      parts.unshift(`Attempted: ${attempted} | Saved: ${saved} | Failed: ${failed} (${failedPct}%) | Allowed failure rate: ${allowedPct}%`);
+    }
     if (coreSpecsFailures > 0) parts.push(`Core specs failures (*/specs routes): ${coreSpecsFailures}`);
     if (failedRoutes.length > 0 && failedRoutes.length <= 20) {
       parts.push(`Failed routes:\n  ${failedRoutes.join('\n  ')}`);
@@ -1400,6 +1485,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   const suspiciousPages: SuspiciousCrawlPage[] = [];
   const jsonFallbackRoutes = new Map<string, ExtractionFallbackReason>();
   const routeDiagnosticsByPath = new Map<string, ExtractionRouteDiagnostic>();
+  const routeCoverageBySourceRoute = new Map<string, RouteCoverageEntry>();
   const discoveredPublicDocPaths = new Set<string>();
   const sitemapPublicDocPaths = new Set<string>();
   const renderedNavPublicDocPaths = new Set<string>();
@@ -1483,6 +1569,67 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
   const markAcceptedPage = (pagePath: string): void => {
     acceptedPublicDocPaths.add(publicDocPathFromPagePath(pagePath));
+  };
+  const ensureRouteCoverageEntry = (params: {
+    sourceRoute: string;
+    canonicalRoute: string;
+    reconciliationStatus?: RouteCoverageEntry['reconciliationStatus'];
+    navigationSource?: RouteCoverageEntry['navigationSource'];
+    pageReferenceSource?: RouteCoverageEntry['pageReferenceSource'];
+    tabSlugs?: string[];
+  }): RouteCoverageEntry => {
+    const sourceRoute = normalizeCoverageRoute(params.sourceRoute);
+    const canonicalRoute = normalizeCoverageRoute(params.canonicalRoute);
+    const existing = routeCoverageBySourceRoute.get(sourceRoute);
+    if (existing) return existing;
+    const expectedPaths = expectedCoveragePaths(baseUrl, canonicalRoute, params.tabSlugs);
+    const entry: RouteCoverageEntry = {
+      sourceRoute,
+      canonicalRoute,
+      ...(params.reconciliationStatus ? { reconciliationStatus: params.reconciliationStatus } : {}),
+      ...(params.navigationSource ? { navigationSource: params.navigationSource } : {}),
+      ...(params.pageReferenceSource ? { pageReferenceSource: params.pageReferenceSource } : {}),
+      expectedVirtualRoutes: expectedPaths.expectedVirtualRoutes,
+      expectedOutputPaths: expectedPaths.expectedOutputPaths,
+      savedOutputPaths: [],
+      failedOutputPaths: [],
+      skippedOutputPaths: [],
+      status: expectedPaths.expectedOutputPaths.length > 0 ? 'unresolved' : 'unresolved',
+      failureReasons: expectedPaths.expectedOutputPaths.length > 0 ? [] : ['no-expected-output-paths'],
+    };
+    routeCoverageBySourceRoute.set(sourceRoute, entry);
+    return entry;
+  };
+  const updateRouteCoverageEntry = (sourceRoute: string, mutate: (entry: RouteCoverageEntry) => void): void => {
+    const key = normalizeCoverageRoute(sourceRoute);
+    const entry = routeCoverageBySourceRoute.get(key);
+    if (!entry) return;
+    mutate(entry);
+    entry.savedOutputPaths = uniqueSorted(entry.savedOutputPaths.map(normalizeCoverageOutputPath));
+    entry.failedOutputPaths = uniqueSorted(entry.failedOutputPaths.map(normalizeCoverageOutputPath));
+    entry.skippedOutputPaths = uniqueSorted(entry.skippedOutputPaths.map(normalizeCoverageOutputPath));
+    if (entry.expectedOutputPaths.length === 0) {
+      entry.status = 'unresolved';
+      addFailureReason(entry, 'no-expected-output-paths');
+      return;
+    }
+    if (entry.savedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.savedOutputPaths.includes(path))) {
+      entry.status = 'covered';
+      return;
+    }
+    if (entry.savedOutputPaths.length > 0) {
+      entry.status = 'partial';
+      return;
+    }
+    if (entry.failedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.failedOutputPaths.includes(path))) {
+      entry.status = 'failed';
+      return;
+    }
+    if (entry.skippedOutputPaths.length >= entry.expectedOutputPaths.length && entry.expectedOutputPaths.every((path) => entry.skippedOutputPaths.includes(path))) {
+      entry.status = 'skipped';
+      return;
+    }
+    entry.status = 'unresolved';
   };
 
   if (previousIndex) {
@@ -1878,11 +2025,20 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       ).filter((prefix) => builtRoutePlan.acceptedRoutes.some((route) => route.sources.includes('bundle') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))));
       const staleAndNonPublicRoutes = [...builtRoutePlan.staleRoutes, ...builtRoutePlan.ambiguousRoutes, ...builtRoutePlan.nonPublicRoutes];
       for (const route of builtRoutePlan.acceptedRoutes) candidatePathsSet.add(route.route);
+      for (const route of builtRoutePlan.acceptedRoutes) {
+        ensureRouteCoverageEntry({
+          sourceRoute: route.route,
+          canonicalRoute: route.canonicalRoute ?? route.route,
+          reconciliationStatus: route.reconciliationStatus,
+          navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+          tabSlugs: route.tabSlugs,
+        });
+      }
       for (const route of builtRoutePlan.staleRoutes) candidatePathsSet.add(route.route);
       for (const route of builtRoutePlan.ambiguousRoutes) candidatePathsSet.add(route.route);
       for (const route of builtRoutePlan.nonPublicRoutes) candidatePathsSet.add(route.route);
       for (const route of builtRoutePlan.nonPublicRoutes) {
-        if (route.route.startsWith('/blog/')) {
+        if (isBlogPath(route.route)) {
           coverageDiagnostics.skippedBlogCount += 1;
           policySkippedDocPaths.add(route.route);
         }
@@ -1930,8 +2086,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         requiredPaths: REQUIRED_VALIDATION_PARENT_PATHS
       });
       for (const skip of filtered.skipped) {
-        if (skip.reason !== 'blog') continue;
-        policySkippedDocPaths.add(skip.path);
+        if (skip.reason === 'blog') policySkippedDocPaths.add(skip.path);
         const slug = skip.path.replace(/^\/+|\/+$/g, '');
         if (!slug) continue;
         recordRouteDiagnostic(createRouteDiagnostic({
@@ -1940,9 +2095,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           sourceUsed: 'skipped',
           siteMetaRoute: skip.path,
           normalizedRoute: skip.path,
-          skippedReason: 'blog',
+          skippedReason: skip.reason === 'not-selected' ? 'not-selected' : 'blog',
           finalMethod: null
         }));
+        updateRouteCoverageEntry(skip.path, (entry) => {
+          for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
+          addFailureReason(entry, skip.reason === 'not-selected' ? 'source-route-not-selected' : 'policy-skipped-blog');
+        });
       }
       coverageDiagnostics.skippedBlogCount += filtered.skippedBlogCount;
       truncatedByMaxPages = filtered.truncatedByMaxPages;
@@ -1975,6 +2134,11 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             reconciliationStatus: planned?.reconciliationStatus,
             selectedBecause: route.selectedBecause
           }));
+          updateRouteCoverageEntry(planned?.route ?? route.path, (entry) => {
+            for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
+            entry.pageReferenceSource = 'missing';
+            addFailureReason(entry, 'missing-page-reference');
+          });
           continue;
         }
         const resolvedSlug = resolution.entry.slug;
@@ -1998,9 +2162,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             documentId: resolution.entry.documentId,
             selectedBecause: route.selectedBecause
           }));
+          updateRouteCoverageEntry(planned.route, (entry) => {
+            for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.skippedOutputPaths, outputPath);
+            entry.pageReferenceSource = 'bundle-table';
+            addFailureReason(entry, 'alias-only-source-route');
+          });
           continue;
         }
         resolvedRouteIndexBySlug.set(resolvedSlug, resolvedRoutes.length);
+        updateRouteCoverageEntry(planned.route, (entry) => {
+          entry.pageReferenceSource = 'bundle-table';
+        });
         resolvedRoutes.push({
           slug: resolvedSlug,
           siteMetaRoute: planned.route,
@@ -2367,6 +2539,24 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   coverageDiagnostics.skippedLegacyRouteCount = skippedLegacyRouteCount;
   coverageDiagnostics.skippedPlatformSpecificUnmappedCount = skippedPlatformSpecificUnmappedCount;
   coverageDiagnostics.skippedNonContentIndexCount = extractionDiagnostics.routeDiagnostics.filter((d) => d.skippedReason === 'non-content-index').length;
+  const routeCoverage = Array.from(routeCoverageBySourceRoute.values())
+    .map((entry) => ({
+      ...entry,
+      expectedVirtualRoutes: uniqueSorted(entry.expectedVirtualRoutes),
+      expectedOutputPaths: uniqueSorted(entry.expectedOutputPaths.map(normalizeCoverageOutputPath)),
+      savedOutputPaths: uniqueSorted(entry.savedOutputPaths.map(normalizeCoverageOutputPath)),
+      failedOutputPaths: uniqueSorted(entry.failedOutputPaths.map(normalizeCoverageOutputPath)),
+      skippedOutputPaths: uniqueSorted(entry.skippedOutputPaths.map(normalizeCoverageOutputPath)),
+      failureReasons: uniqueSorted(entry.failureReasons),
+    }))
+    .sort((a, b) => a.sourceRoute.localeCompare(b.sourceRoute));
+  coverageDiagnostics.routeCoverage = routeCoverage;
+  const routeCoverageSummary = summarizeRouteCoverage(routeCoverage);
+  coverageDiagnostics.routeCoverageSummary = {
+    routeCount: routeCoverage.length,
+    statusCounts: routeCoverageSummary.statusCounts,
+    problematicExamples: routeCoverageSummary.problematicExamples
+  };
   const requiredRouteCoverage: RequiredRouteCoverageEntry[] = [];
   coverageDiagnostics.requiredRouteCoverage = requiredRouteCoverage;
   coverageDiagnostics.routeResolutionSummary = {
@@ -2382,12 +2572,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     requiredRouteCoverage
   };
   if (routePlanSummary) {
-    const unresolvedAcceptedRoutes = Array.from(new Map(
-      routePlanSummary.extractionCandidates.map((entry) => [entry.canonicalRoute ?? entry.route, entry] as const)
-    ).values()).filter((entry) => {
-      const canonical = (entry.canonicalRoute ?? entry.route).replace(/^\/+/, '');
-      const canonicalPrefix = `${canonical}/`;
-      return !pages.some((page) => page.path === `${canonical}.md` || page.path.startsWith(canonicalPrefix));
+    const unresolvedAcceptedRoutes = routePlanSummary.extractionCandidates.filter((entry) => {
+      const coverageEntry = routeCoverage.find((routeCoverageEntry) => routeCoverageEntry.sourceRoute === normalizeCoverageRoute(entry.route));
+      return coverageEntry?.status === 'unresolved' || coverageEntry?.status === 'failed';
     });
     coverageDiagnostics.routePlanSummary = buildCompactRoutePlanSummary({
       routePlanSummary,
@@ -2476,6 +2663,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
    */
   async function runReferenceBasedRouteFetch(route: DsdbRoute, carbonVersion: string, routeUrl: string, capturedAt: string): Promise<void> {
     const routePath = routePathFromSlug(route.slug);
+    const sourceCoverageRoute = route.siteMetaRoute ?? `/${route.slug}`;
     const collectionId = route.collectionId!;
     const documentId = route.documentId!;
 
@@ -2516,6 +2704,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
     if (!pageDataOk && !carbonOk) {
       jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
+      updateRouteCoverageEntry(sourceCoverageRoute, (entry) => {
+        for (const outputPath of entry.expectedOutputPaths) appendUnique(entry.failedOutputPaths, outputPath);
+        addFailureReason(entry, 'json-fetch-failed');
+      });
       recordRouteDiagnostic(createRouteDiagnostic({
         url: routeUrl,
         path: routePath,
@@ -2534,8 +2726,19 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
     const savePage = async (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): Promise<void> => {
       if (extraction.fallbackReason) {
-        jsonFallbackRoutes.set(route.slug, extraction.fallbackReason);
-        const nonContentIndex = isNonContentIndexRoute(extraction.page.path, extraction.fallbackReason);
+        const fallbackReason = extraction.fallbackReason;
+        jsonFallbackRoutes.set(route.slug, fallbackReason);
+        const nonContentIndex = isNonContentIndexRoute(extraction.page.path, fallbackReason);
+        updateRouteCoverageEntry(sourceCoverageRoute, (entry) => {
+          const outputPath = normalizeCoverageOutputPath(extraction.page.path);
+          if (nonContentIndex) {
+            appendUnique(entry.skippedOutputPaths, outputPath);
+            addFailureReason(entry, `skipped:${fallbackReason}`);
+          } else {
+            appendUnique(entry.failedOutputPaths, outputPath);
+            addFailureReason(entry, fallbackReason);
+          }
+        });
         recordRouteDiagnostic(createRouteDiagnostic({
           url: extraction.page.url,
           path: extraction.page.path,
@@ -2580,6 +2783,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       if (materialPage.text.length <= MIN_PAGE_TEXT_LENGTH || writtenPaths.has(materialPage.path)) return;
       pages.push(materialPage);
       markAcceptedPage(materialPage.path);
+      updateRouteCoverageEntry(sourceCoverageRoute, (entry) => {
+        appendUnique(entry.savedOutputPaths, materialPage.path);
+      });
       pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
       recordRouteDiagnostic(createRouteDiagnostic({
         url: materialPage.url,

@@ -15,6 +15,7 @@ import type {
   MaterialPage,
   MaterialPublicIndex,
   MaterialPublicPageManifestEntry,
+  RouteCoverageEntry,
   RoutePlanEntry,
   QualitySummary
 } from './types.js';
@@ -66,90 +67,16 @@ const DEFAULT_MIN_RETAINED_PAGE_RATIO = 0.8;
 export const DEFAULT_MAX_FAILED_PAGE_RATIO = 0.2;
 const MIN_ATTEMPTS_FOR_FAILURE_RATIO_CHECK = 10;
 
-function normalizeRouteKey(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  const pathname = trimmed.startsWith('http://') || trimmed.startsWith('https://')
-    ? (() => {
-        try {
-          return new URL(trimmed).pathname;
-        } catch {
-          return trimmed;
-        }
-      })()
-    : trimmed;
-  const normalized = pathname
-    .replace(/^\/+/, '')
-    .replace(/\.md$/i, '')
-    .replace(/\/+$/, '');
-  return normalized;
-}
-
-function hasRoutePrefix(pathKey: string, routeKey: string): boolean {
-  return pathKey === routeKey || pathKey.startsWith(`${routeKey}/`);
-}
-
-function relatedRouteKeys(diagnostic: ExtractionRouteDiagnostic): Set<string> {
-  const keys = new Set<string>();
-  const add = (value?: string) => {
-    if (!value) return;
-    const normalized = normalizeRouteKey(value);
-    if (normalized) keys.add(normalized);
-  };
-  add(diagnostic.path);
-  add(diagnostic.sourceRoute);
-  add(diagnostic.siteMetaRoute);
-  add(diagnostic.normalizedRoute);
-  add(diagnostic.bundleMatchedRoute);
-  add(diagnostic.virtualRoute);
-  return keys;
-}
-
-function summarizeMissingAcceptedRoute(
-  entry: Pick<RoutePlanEntry, 'route' | 'canonicalRoute' | 'outputPath'>,
-  pages: MaterialIndex['pages'],
-  routeDiagnostics: ExtractionRouteDiagnostic[]
-): string {
-  const routeKey = normalizeRouteKey(entry.canonicalRoute ?? entry.route);
-  const exactOutputKey = normalizeRouteKey(entry.outputPath ?? `${routeKey}.md`);
-  const matchingDiagnostics = routeDiagnostics.filter((diagnostic) => {
-    const keys = relatedRouteKeys(diagnostic);
-    if (keys.has(routeKey)) return true;
-    return Array.from(keys).some((key) => hasRoutePrefix(key, routeKey));
-  });
-  const hasDiagnostics = matchingDiagnostics.length > 0;
-  const candidateVirtualPageCount = [
-    ...pages.map((page) => normalizeRouteKey(page.path)),
-    ...matchingDiagnostics.flatMap((diagnostic) => {
-      const values = [diagnostic.path, diagnostic.virtualRoute]
-        .filter((value): value is string => Boolean(value))
-        .map((value) => normalizeRouteKey(value));
-      return values;
-    })
-  ].filter((key) => key !== exactOutputKey && hasRoutePrefix(key, routeKey)).length;
-
-  return `${entry.canonicalRoute ?? entry.route}[diag=${hasDiagnostics ? 'y' : 'n'},virtual=${candidateVirtualPageCount > 0 ? 'y' : 'n'}]`;
-}
-
-function isAcceptedRouteCovered(
-  entry: Pick<RoutePlanEntry, 'route' | 'canonicalRoute' | 'outputPath'>,
-  pages: MaterialIndex['pages'],
-  routeDiagnostics: ExtractionRouteDiagnostic[]
-): boolean {
-  const routeKey = normalizeRouteKey(entry.canonicalRoute ?? entry.route);
-  const exactOutputKey = normalizeRouteKey(entry.outputPath ?? `${routeKey}.md`);
-  const savedPageKeys = new Set(pages.map((page) => normalizeRouteKey(page.path)));
-  if (savedPageKeys.has(exactOutputKey)) return true;
-  if (Array.from(savedPageKeys).some((key) => key !== exactOutputKey && hasRoutePrefix(key, routeKey))) return true;
-
-  const savedDiagnostics = routeDiagnostics.filter((diagnostic) => diagnostic.sourceUsed !== 'failed' && diagnostic.sourceUsed !== 'skipped');
-  if (savedDiagnostics.some((diagnostic) => relatedRouteKeys(diagnostic).has(routeKey))) return true;
-
-  return savedDiagnostics.some((diagnostic) => {
-    const diagnosticPathKey = normalizeRouteKey(diagnostic.path);
-    if (!savedPageKeys.has(diagnosticPathKey)) return false;
-    return relatedRouteKeys(diagnostic).has(routeKey);
-  });
+function summarizeRouteCoverageFailure(entry: RouteCoverageEntry): string {
+  const summarize = (paths: string[]): string => paths.slice(0, 3).join(', ') || 'none';
+  return [
+    `${entry.sourceRoute}[status=${entry.status}]`,
+    `expected=${entry.expectedOutputPaths.length} (${summarize(entry.expectedOutputPaths)})`,
+    `saved=${entry.savedOutputPaths.length} (${summarize(entry.savedOutputPaths)})`,
+    `failed=${entry.failedOutputPaths.length} (${summarize(entry.failedOutputPaths)})`,
+    `skipped=${entry.skippedOutputPaths.length} (${summarize(entry.skippedOutputPaths)})`,
+    `reasons=${entry.failureReasons.join('|') || 'none'}`
+  ].join(', ');
 }
 
 export function computeCoverageHealth(diag: CoverageDiagnostics): CoverageHealth {
@@ -371,6 +298,7 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
   const routeDiagnostics = nextIndex.extractionDiagnostics?.routeDiagnostics ?? [];
   const coverageDiag = nextIndex.coverageDiagnostics;
   const extractionDiag = nextIndex.extractionDiagnostics;
+  const routeCoverage = coverageDiag?.routeCoverage ?? [];
 
   // Accounting invariant: every attempted source route's virtual pages must be accounted for as
   // either saved or failed — never silently dropped. This should always hold by construction; a
@@ -553,19 +481,22 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
 
   const routePlanSummary = nextIndex.coverageDiagnostics?.fullRoutePlanSummary;
   const compactRoutePlanSummary = nextIndex.coverageDiagnostics?.routePlanSummary;
+  const fullRunRouteCoverage = !(nextIndex.coverageDiagnostics?.isLimitedRun ?? false)
+    ? routeCoverage
+    : [];
+  if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && fullRunRouteCoverage.length > 0) {
+    const unresolvedAcceptedRoutes = fullRunRouteCoverage.filter((entry) => entry.status === 'unresolved' || entry.status === 'failed');
+    if (unresolvedAcceptedRoutes.length > 0) {
+      throw new Error(
+        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map(summarizeRouteCoverageFailure).join('; ')}. ` +
+        'Keeping the existing cache. Use --force to promote anyway.'
+      );
+    }
+  }
   if (!(nextIndex.coverageDiagnostics?.isLimitedRun ?? false) && routePlanSummary) {
     if (routePlanSummary.ambiguousRoutes.length > 0) {
       throw new Error(
         `Public documentation routes were ambiguous during reconciliation: ${routePlanSummary.ambiguousRoutes.map((entry) => entry.route).join(', ')}. ` +
-        'Keeping the existing cache. Use --force to promote anyway.'
-      );
-    }
-    const unresolvedAcceptedRoutes = Array.from(new Map(
-      routePlanSummary.extractionCandidates.map((entry) => [entry.canonicalRoute ?? entry.route, entry] as const)
-    ).values()).filter((entry) => !isAcceptedRouteCovered(entry, nextIndex.pages, routeDiagnostics));
-    if (unresolvedAcceptedRoutes.length > 0) {
-      throw new Error(
-        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map((entry) => summarizeMissingAcceptedRoute(entry, nextIndex.pages, routeDiagnostics)).join(', ')}. ` +
         'Keeping the existing cache. Use --force to promote anyway.'
       );
     }
@@ -574,14 +505,6 @@ export function assertSafeCachePromotion(nextIndex: MaterialIndex, previousIndex
     if ((compactRoutePlanSummary.reconciliationStatusCounts.rejectedAmbiguous ?? 0) > 0) {
       throw new Error(
         `Public documentation routes were ambiguous during reconciliation: ${ambiguousExamples.map((entry) => entry.route).join(', ') || 'see diagnostics'}. ` +
-        'Keeping the existing cache. Use --force to promote anyway.'
-      );
-    }
-    const unresolvedAcceptedRoutes = compactRoutePlanSummary.problematicExamples.unresolvedAcceptedRoutes
-      .filter((entry) => !isAcceptedRouteCovered(entry, nextIndex.pages, routeDiagnostics));
-    if (unresolvedAcceptedRoutes.length > 0) {
-      throw new Error(
-        `Accepted public documentation routes are missing from cache output: ${unresolvedAcceptedRoutes.map((entry) => summarizeMissingAcceptedRoute(entry, nextIndex.pages, routeDiagnostics)).join(', ')}. ` +
         'Keeping the existing cache. Use --force to promote anyway.'
       );
     }
@@ -672,6 +595,7 @@ function toPublicIndex(index: MaterialIndex): MaterialPublicIndex {
       coverageDiagnostics: {
         ...(index.coverageDiagnostics.coverageHealth ? { coverageHealth: index.coverageDiagnostics.coverageHealth } : {}),
         ...(index.coverageDiagnostics.routePlanSummary ? { routePlanSummary: index.coverageDiagnostics.routePlanSummary } : {}),
+        ...(index.coverageDiagnostics.routeCoverageSummary ? { routeCoverageSummary: index.coverageDiagnostics.routeCoverageSummary } : {}),
       }
     } : {}),
     pages: index.pages.map((page) => ({

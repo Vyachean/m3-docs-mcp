@@ -18,6 +18,7 @@ type RouteCandidate = {
   pageCanonId?: string | null;
   verifiedIdentity?: boolean;
   tabs?: string[];
+  tabSlugs?: string[];
   alternateSlugs?: string[];
 };
 
@@ -59,6 +60,7 @@ function addCandidate(map: Map<string, RouteCandidate>, route: string, source: R
   if (patch.pageCanonId && !current.pageCanonId) current.pageCanonId = patch.pageCanonId;
   if (patch.verifiedIdentity !== undefined) current.verifiedIdentity = patch.verifiedIdentity;
   if (patch.tabs && !current.tabs) current.tabs = patch.tabs;
+  if (patch.tabSlugs && !current.tabSlugs) current.tabSlugs = patch.tabSlugs;
   if (patch.alternateSlugs) {
     current.alternateSlugs = Array.from(new Set([...(current.alternateSlugs ?? []), ...patch.alternateSlugs]));
   }
@@ -208,9 +210,15 @@ function toPlanEntry(
     ...(candidate.carbonPath ? { carbonPath: candidate.carbonPath } : {}),
     ...(candidate.pageCanonId ? { pageCanonId: candidate.pageCanonId } : {}),
     ...(candidate.tabs ? { tabs: candidate.tabs } : {}),
+    ...(candidate.tabSlugs ? { tabSlugs: candidate.tabSlugs } : {}),
     ...(candidate.alternateSlugs ? { alternateSlugs: candidate.alternateSlugs } : {}),
     ...overrides,
   };
+}
+
+function normalizeTabSlug(tab: { label: string; slug?: string }): string {
+  if (tab.slug) return tab.slug.replace(/^\/+|\/+$/g, '');
+  return tab.label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
 function reconcileCandidate(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[], includeBlog: boolean): ReconciledRoute {
@@ -376,6 +384,7 @@ export function buildRoutePlan(params: {
       verifiedIdentity: true,
       routeTitle: entry.title,
       tabs: entry.tabs?.map((tab) => tab.label),
+      tabSlugs: entry.tabs?.map((tab) => normalizeTabSlug(tab)),
       alternateSlugs: entry.alternateSlugs,
     });
   }
