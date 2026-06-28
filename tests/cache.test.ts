@@ -1819,6 +1819,49 @@ describe('cache helpers', () => {
     });
 
     expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/reasons=json-no-sections/);
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(/reasons=json-no-sections/);
+  });
+
+  it('still fails when an accepted public route is unresolved in summary-only coverage data', () => {
+    const diag = createEmptyExtractionDiagnostics();
+    for (const slug of REQUIRED_SAMPLE_SLUGS) pushRouteDiagnostic(diag, requiredSampleDiagnostic(slug));
+    pushRouteDiagnostic(diag, requiredSampleDiagnostic('components/missing-component/specs', {
+      path: 'components/missing-component/specs.md',
+      sourceRoute: 'components/missing-component',
+      sourceUsed: 'failed',
+      finalMethod: null,
+      jsonSucceeded: false,
+      directJsonSucceeded: false,
+      fallbackReasons: ['json-no-sections'],
+      virtualRoute: 'https://m3.material.io/components/missing-component/specs'
+    }));
+
+    const nextIndex = materialIndex(0, {
+      pages: requiredSamplePages(),
+      extractionDiagnostics: diag,
+      coverageDiagnostics: {
+        ...minimalCoverageDiagnostics({ isLimitedRun: false }),
+        fullRoutePlanSummary: {
+          acceptedRoutes: [],
+          staleRoutes: [],
+          removedRoutes: [],
+          ambiguousRoutes: [],
+          nonPublicRoutes: [],
+          extractionCandidates: [{
+            route: '/components/missing-component',
+            canonicalRoute: '/components/missing-component',
+            outputPath: 'components/missing-component.md',
+            sources: ['site_meta', 'bundle'],
+            publicDocsClassification: 'public-docs',
+            reconciliationStatus: 'exact'
+          }]
+        }
+      }
+    });
+
+    expect(() => assertSafeCachePromotion(nextIndex, null)).toThrow(
+      'Accepted public documentation routes are missing from cache output: /components/missing-component[diag=y,virtual=y]'
+    );
   });
 
   it('fails when an accepted route has no expected output paths and remains unresolved', () => {
