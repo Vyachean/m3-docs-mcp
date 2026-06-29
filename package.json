@@ -22,7 +22,9 @@
     "test:mutation:full": "stryker run",
     "verify:docs-values": "vitest run tests/docs-values.test.ts",
     "inspect:site-data": "npm run build && node scripts/inspect-site-data.mjs",
-    "verify:update-smoke": "npm run build && node dist/index.js update --max-pages 80 --min-pages 20 --concurrency 6",
+    "verify:update-smoke": "npm run verify:cache:smoke",
+    "verify:cache:smoke": "npm run build && node scripts/verify-full-cache-refresh.mjs --smoke",
+    "verify:cache:full": "npm run build && node scripts/verify-full-cache-refresh.mjs",
     "start": "node dist/index.js serve",
     "crawl": "node dist/index.js update"
   },

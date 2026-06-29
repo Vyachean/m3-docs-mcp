@@ -1,3 +1,5 @@
+import { createFetchDiagnostic, type FetchDiagnostic } from '../raw-artifacts/fetch-diagnostics.js';
+
 // Isolated Carbon/page-reference resolver. The only module allowed to parse the Angular bundle.
 //
 // site_meta.js does not carry the {collectionId, documentId} pair needed to fetch
@@ -50,18 +52,73 @@ type FetchLike = typeof fetch;
 
 const MAIN_BUNDLE_SRC_RE = /src="(\/static\/angular\/main\.[a-f0-9]+\.js)"/;
 
-export async function fetchAngularBundleText(baseUrl: string, signal?: AbortSignal, fetchImpl: FetchLike = fetch): Promise<string> {
-  const shellRes = await fetchImpl(baseUrl, { signal });
-  if (!shellRes.ok) throw new Error(`Failed to fetch ${baseUrl}: HTTP ${shellRes.status}`);
+export async function fetchAngularBundleText(
+  baseUrl: string,
+  signal?: AbortSignal,
+  fetchImpl: FetchLike = fetch,
+  diagnostics: FetchDiagnostic[] = []
+): Promise<string> {
+  let shellRes: Response;
+  try {
+    shellRes = await fetchImpl(baseUrl, { signal });
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url: baseUrl, expectedKind: 'site-shell', outcome: 'network-error',
+      networkError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: site shell fetch (for Angular bundle discovery) threw a network error'
+    }));
+    throw err;
+  }
+  if (!shellRes.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url: baseUrl, expectedKind: 'site-shell', httpStatus: shellRes.status, outcome: 'http-error',
+      reason: `rejected: site shell fetch returned HTTP ${shellRes.status}`
+    }));
+    throw new Error(`Failed to fetch ${baseUrl}: HTTP ${shellRes.status}`);
+  }
   const html = await shellRes.text();
+  diagnostics.push(createFetchDiagnostic({
+    url: baseUrl, expectedKind: 'site-shell', httpStatus: shellRes.status,
+    contentType: shellRes.headers?.get?.('content-type') ?? null, outcome: 'success',
+    reason: 'accepted: site shell fetched for Angular bundle URL discovery'
+  }));
 
   const match = html.match(MAIN_BUNDLE_SRC_RE);
-  if (!match?.[1]) throw new Error('Angular main bundle URL not found in page HTML');
+  if (!match?.[1]) {
+    diagnostics.push(createFetchDiagnostic({
+      url: baseUrl, expectedKind: 'angular-bundle', outcome: 'parse-error',
+      parseError: 'Angular main bundle URL not found in page HTML',
+      reason: 'rejected: site shell HTML did not contain a recognizable Angular main bundle <script src>'
+    }));
+    throw new Error('Angular main bundle URL not found in page HTML');
+  }
 
   const bundleUrl = new URL(match[1], baseUrl).toString();
-  const bundleRes = await fetchImpl(bundleUrl, { signal });
-  if (!bundleRes.ok) throw new Error(`Failed to fetch Angular bundle ${bundleUrl}: HTTP ${bundleRes.status}`);
-  return bundleRes.text();
+  let bundleRes: Response;
+  try {
+    bundleRes = await fetchImpl(bundleUrl, { signal });
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url: bundleUrl, expectedKind: 'angular-bundle', outcome: 'network-error',
+      networkError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: Angular bundle fetch threw a network error'
+    }));
+    throw err;
+  }
+  if (!bundleRes.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url: bundleUrl, expectedKind: 'angular-bundle', httpStatus: bundleRes.status, outcome: 'http-error',
+      reason: `rejected: Angular bundle fetch returned HTTP ${bundleRes.status}`
+    }));
+    throw new Error(`Failed to fetch Angular bundle ${bundleUrl}: HTTP ${bundleRes.status}`);
+  }
+  const bundleText = await bundleRes.text();
+  diagnostics.push(createFetchDiagnostic({
+    url: bundleUrl, expectedKind: 'angular-bundle', httpStatus: bundleRes.status,
+    contentType: bundleRes.headers?.get?.('content-type') ?? null, outcome: 'success',
+    reason: 'accepted: Angular main bundle fetched'
+  }));
+  return bundleText;
 }
 
 // ── carbonVersion ────────────────────────────────────────────────────────────

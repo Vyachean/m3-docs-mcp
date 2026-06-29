@@ -2,6 +2,7 @@ import { deriveCollectionSegmentFromSlug, fallbackPageCanonId, extractPageDataMe
 import { classifyJsonResponse } from './classify-json-response.js';
 import { createJsonPageBundle, type JsonPageBundle } from './json-bundle.js';
 import type { JsonCapturedResponse } from './json-bundle.js';
+import { createFetchDiagnostic, type FetchDiagnostic } from '../raw-artifacts/fetch-diagnostics.js';
 
 export type JsonRouteDescriptor = {
   slug: string;
@@ -19,10 +20,20 @@ export async function fetchJsonPageBundle(
   carbonVersion: string,
   route: JsonRouteDescriptor,
   signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  diagnostics: FetchDiagnostic[] = []
 ): Promise<JsonPageBundle> {
   const responses: JsonCapturedResponse[] = [];
-  const pageData = await fetchFirstJsonOrNull(buildPageDataCandidateUrls(baseUrl, route), signal, fetchImpl, responses);
+  const sourceRoute = route.slug ? `/${route.slug.replace(/^\/+/, '')}` : null;
+  const pageData = await fetchFirstJsonOrNull(
+    buildPageDataCandidateUrls(baseUrl, route),
+    signal,
+    fetchImpl,
+    responses,
+    'page-data',
+    sourceRoute,
+    diagnostics
+  );
   const metadata = extractPageDataMetadata(pageData);
   const pageCanonId = metadata.pageCanonId
     ?? fallbackPageCanonId(pageData)
@@ -34,10 +45,13 @@ export async function fetchJsonPageBundle(
     buildContentPageCandidateUrls(baseUrl, carbonVersion, [pageCanonId, route.documentId, stripJsonExtension(route.exportedCarbonFileId)]),
     signal,
     fetchImpl,
-    responses
+    responses,
+    'carbon-content',
+    sourceRoute,
+    diagnostics
   );
 
-  const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, responses, signal, fetchImpl);
+  const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, responses, signal, fetchImpl, sourceRoute, diagnostics);
 
   return {
     ...createJsonPageBundle({ pageData, contentPage, pageCanonId, responses }),
@@ -55,11 +69,13 @@ export function createDsdbResourceFetcher(
   carbonVersion: string,
   responses: JsonCapturedResponse[] = [],
   signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  sourceRoute: string | null = null,
+  diagnostics: FetchDiagnostic[] = []
 ): (resourceName: string, resourceType?: string) => Promise<unknown | null> {
   return async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
     const urls = buildDsdbResourceCandidateUrls(baseUrl, carbonVersion, resourceName, resourceType);
-    return fetchFirstJsonOrNull(urls, signal, fetchImpl, responses);
+    return fetchFirstJsonOrNull(urls, signal, fetchImpl, responses, 'dsdb-resource', sourceRoute, diagnostics);
   };
 }
 
@@ -113,10 +129,15 @@ async function fetchFirstJsonOrNull(
   urls: string[],
   signal: AbortSignal | undefined,
   fetchImpl: FetchLike,
-  responses: JsonCapturedResponse[]
+  responses: JsonCapturedResponse[],
+  expectedKind: FetchDiagnostic['expectedKind'] = 'network-capture',
+  sourceRoute: string | null = null,
+  diagnostics: FetchDiagnostic[] = []
 ): Promise<unknown | null> {
-  for (const url of urls) {
-    const response = await fetchJsonOrNull(url, signal, fetchImpl, responses);
+  for (let i = 0; i < urls.length; i += 1) {
+    const url = urls[i]!;
+    const isLastCandidate = i === urls.length - 1;
+    const response = await fetchJsonOrNull(url, signal, fetchImpl, responses, expectedKind, sourceRoute, diagnostics, isLastCandidate);
     if (response) return response;
   }
   return null;
@@ -126,25 +147,67 @@ async function fetchJsonOrNull(
   url: string,
   signal: AbortSignal | undefined,
   fetchImpl: FetchLike,
-  responses: JsonCapturedResponse[]
+  responses: JsonCapturedResponse[],
+  expectedKind: FetchDiagnostic['expectedKind'],
+  sourceRoute: string | null,
+  diagnostics: FetchDiagnostic[],
+  isLastCandidate: boolean
 ): Promise<unknown | null> {
   let response: Response;
   try {
     response = await fetchImpl(url, { signal });
-  } catch {
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url,
+      expectedKind,
+      sourceRoute,
+      outcome: 'network-error',
+      networkError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: candidate fetch threw a network error'
+    }));
     return null;
   }
-  if (!response.ok) return null;
+  if (!response.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url,
+      expectedKind,
+      sourceRoute,
+      httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null,
+      outcome: 'http-error',
+      reason: `rejected: candidate fetch returned HTTP ${response.status}`
+    }));
+    return null;
+  }
   let payload: unknown;
   try {
     payload = await response.json() as unknown;
-  } catch {
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url,
+      expectedKind,
+      sourceRoute,
+      httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null,
+      outcome: 'parse-error',
+      parseError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: candidate response body failed JSON parsing'
+    }));
     return null;
   }
   const classified = classifyJsonResponse({ url, payload });
   if (!responses.some((entry) => entry.url === classified.url && entry.type === classified.type && JSON.stringify(entry.payload) === JSON.stringify(classified.payload))) {
     responses.push(classified);
   }
+  diagnostics.push(createFetchDiagnostic({
+    url,
+    expectedKind,
+    sourceRoute,
+    httpStatus: response.status,
+    contentType: response.headers?.get?.('content-type') ?? null,
+    outcome: 'success',
+    reason: isLastCandidate ? 'accepted: candidate fetch returned a parsable JSON body' : 'accepted: candidate fetch returned a parsable JSON body (preferred over later, untried candidates)'
+  }));
   return payload;
 }
 
@@ -173,21 +236,46 @@ export async function fetchPageDataByReference(
   baseUrl: string,
   reference: { collectionId: string; documentId: string },
   signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  diagnostics: FetchDiagnostic[] = [],
+  sourceRoute: string | null = null
 ): Promise<PageDataFetchResult> {
   const url = `${baseUrl}/page-data/${reference.collectionId}/${reference.documentId}.json`;
   let response: Response;
   try {
     response = await fetchImpl(url, { signal });
   } catch (err) {
-    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+    const networkError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'page-data', sourceRoute, outcome: 'network-error', networkError,
+      reason: 'rejected: dedicated reference-based page-data fetch threw a network error'
+    }));
+    return { status: 'fetch-error', url, error: networkError };
   }
-  if (!response.ok) return { status: 'http-error', url, httpStatus: response.status };
+  if (!response.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'page-data', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'http-error',
+      reason: `rejected: dedicated reference-based page-data fetch returned HTTP ${response.status}`
+    }));
+    return { status: 'http-error', url, httpStatus: response.status };
+  }
   try {
     const data = (await response.json()) as unknown;
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'page-data', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'success',
+      reason: 'accepted: dedicated reference-based page-data fetch (collectionId/documentId)'
+    }));
     return { status: 'ok', url, httpStatus: response.status, data };
   } catch (err) {
-    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+    const parseError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'page-data', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'parse-error', parseError,
+      reason: 'rejected: dedicated reference-based page-data response failed JSON parsing'
+    }));
+    return { status: 'fetch-error', url, error: parseError };
   }
 }
 
@@ -203,7 +291,9 @@ export async function fetchCarbonContentByReference(
   carbonVersion: string,
   exportedCarbonFileId: string | undefined,
   signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  diagnostics: FetchDiagnostic[] = [],
+  sourceRoute: string | null = null
 ): Promise<CarbonContentFetchResult> {
   if (!exportedCarbonFileId) return { status: 'not-available' };
   const url = `${baseUrl}/_dsm/content/m3/${carbonVersion}/${exportedCarbonFileId}`;
@@ -211,13 +301,36 @@ export async function fetchCarbonContentByReference(
   try {
     response = await fetchImpl(url, { signal });
   } catch (err) {
-    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+    const networkError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'carbon-content', sourceRoute, outcome: 'network-error', networkError,
+      reason: 'rejected: dedicated reference-based carbon-content fetch threw a network error'
+    }));
+    return { status: 'fetch-error', url, error: networkError };
   }
-  if (!response.ok) return { status: 'http-error', url, httpStatus: response.status };
+  if (!response.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'carbon-content', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'http-error',
+      reason: `rejected: dedicated reference-based carbon-content fetch returned HTTP ${response.status}`
+    }));
+    return { status: 'http-error', url, httpStatus: response.status };
+  }
   try {
     const data = (await response.json()) as unknown;
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'carbon-content', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'success',
+      reason: 'accepted: dedicated reference-based carbon-content fetch (exportedCarbonFileId)'
+    }));
     return { status: 'ok', url, httpStatus: response.status, data };
   } catch (err) {
-    return { status: 'fetch-error', url, error: err instanceof Error ? err.message : String(err) };
+    const parseError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'carbon-content', sourceRoute, httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'parse-error', parseError,
+      reason: 'rejected: dedicated reference-based carbon-content response failed JSON parsing'
+    }));
+    return { status: 'fetch-error', url, error: parseError };
   }
 }

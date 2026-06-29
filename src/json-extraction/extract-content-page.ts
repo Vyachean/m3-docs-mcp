@@ -1,5 +1,5 @@
 import type { ExtractionFallbackReason, ExtractionPageDiagnostic, MaterialPage } from '../types.js';
-import { decodeResourceChunk, renderDsdbResourceChunk, type DsdbResourceFetcher } from './extract-dsdb-resource.js';
+import { decodeResourceChunk, renderDsdbResourceChunk, type CollectedTokenTable, type DsdbResourceFetcher } from './extract-dsdb-resource.js';
 import { extractPageDataMetadata } from './extract-page-data.js';
 import { compactJson, parseContentPage, type DecodedContentChunk } from './schemas.js';
 import {
@@ -17,6 +17,11 @@ export type JsonExtractionResult = {
   page: MaterialPage;
   pageDiagnostic: ExtractionPageDiagnostic;
   fallbackReason: ExtractionFallbackReason | null;
+  /** Decoded token-table systems captured during rendering (see CollectedTokenTable's doc
+   *  comment in extract-dsdb-resource.ts) — populated regardless of fallbackReason, so callers
+   *  building the documentation graph can use them even for pages whose Markdown didn't pass
+   *  quality checks. Empty when the page had no TOKEN_TABLE resource chunks. */
+  collectedTokenTables: CollectedTokenTable[];
 };
 
 export async function extractContentPageToMaterialPage({
@@ -99,13 +104,14 @@ export async function extractContentPageToMaterialPage({
     exportedCarbonFileId: routeValidation?.exportedCarbonFileId ?? null
   };
 
+  const collectedTokenTables: CollectedTokenTable[] = [];
   const bodyParts: string[] = [`# ${title}`];
   for (const section of sections) {
     if (section.title.trim()) bodyParts.push(`## ${section.title.trim()}`);
     for (const block of section.blocks) {
       if (block.title?.trim()) bodyParts.push(`### ${block.title.trim()}`);
       for (const chunk of block.chunks) {
-        const rendered = await renderChunkMarkdown(chunk, fetchResource, pageDiagnostic);
+        const rendered = await renderChunkMarkdown(chunk, fetchResource, pageDiagnostic, collectedTokenTables);
         if (rendered.trim()) bodyParts.push(rendered.trim());
       }
     }
@@ -129,7 +135,7 @@ export async function extractContentPageToMaterialPage({
   const fallbackReason = determineFallbackReason(page, pageDiagnostic);
   if (fallbackReason) pageDiagnostic.suspiciousReasons.push(fallbackReason);
 
-  return { page, pageDiagnostic, fallbackReason };
+  return { page, pageDiagnostic, fallbackReason, collectedTokenTables };
 }
 
 function validateRouteIdentity({
@@ -254,7 +260,8 @@ function hasRouteTitlePathMismatch(url: string, title: string): boolean {
 async function renderChunkMarkdown(
   chunk: DecodedContentChunk,
   fetchResource: DsdbResourceFetcher,
-  pageDiagnostic: ExtractionPageDiagnostic
+  pageDiagnostic: ExtractionPageDiagnostic,
+  collectedTokenTables: CollectedTokenTable[] = []
 ): Promise<string> {
   const chunkType = chunk.contentChunkType
     ?? chunk.type
@@ -286,7 +293,7 @@ async function renderChunkMarkdown(
   }
 
   if (chunkType === 'RESOURCE') {
-    return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic);
+    return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic, collectedTokenTables);
   }
 
   pageDiagnostic.unknownChunkTypes.push(chunkType);

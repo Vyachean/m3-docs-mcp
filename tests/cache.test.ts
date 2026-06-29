@@ -1949,6 +1949,7 @@ describe('cache helpers', () => {
           partialRoutes: 0,
           failedRoutes: 1,
           unresolvedRoutes: 0,
+          skippedRoutes: 0,
           policySkippedRoutes: 0,
           nonContentRoutes: 0,
           expectedOutputCount: 2,
@@ -2185,6 +2186,33 @@ describe('computeCoverageHealth', () => {
     expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-partial:max-pages-limited:30', 'coverage-gap:accepted=70:discovered=100'], coverageHealth: 'partial' })).toBe('partial');
   });
 
+  it('returns partial, not failed, when a max-pages-limited run has routes skipped for not being selected', () => {
+    // Regression test: a --max-pages-limited run always has accepted routes whose expected output
+    // paths are all in skippedOutputPaths (reconcileRouteCoverageStatus gives them status
+    // 'skipped', summarized into routeCoverageSummary.skippedRoutes) simply because the page
+    // budget didn't select them — that must not be conflated with a genuinely unresolved route.
+    expect(computeCoverageHealth({
+      ...baseDiag,
+      coverageVerified: false,
+      coverageWarnings: ['coverage-partial:max-pages-limited:40'],
+      coverageHealth: 'partial',
+      routeCoverageSummary: {
+        totalAcceptedRoutes: 3,
+        coveredRoutes: 1,
+        partialRoutes: 0,
+        failedRoutes: 0,
+        unresolvedRoutes: 0,
+        skippedRoutes: 2,
+        policySkippedRoutes: 0,
+        nonContentRoutes: 0,
+        expectedOutputCount: 3,
+        savedOutputCount: 1,
+        failedOutputCount: 0,
+        problematicExamples: []
+      }
+    })).toBe('partial');
+  });
+
   it('returns failed when an unexpected coverage gap exists without max-pages', () => {
     expect(computeCoverageHealth({ ...baseDiag, coverageVerified: false, coverageWarnings: ['coverage-gap:accepted=10:discovered=100'], coverageHealth: 'failed' })).toBe('failed');
   });
@@ -2205,6 +2233,7 @@ describe('computeCoverageHealth', () => {
         partialRoutes: 0,
         failedRoutes: 1,
         unresolvedRoutes: 1,
+        skippedRoutes: 0,
         policySkippedRoutes: 0,
         nonContentRoutes: 0,
         expectedOutputCount: 2,
