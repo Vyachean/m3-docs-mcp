@@ -1,6 +1,7 @@
 import { getDefaultCacheDir } from '../cache.js';
 import { readRouteGraph } from '../graph/graph-store.js';
 import type { RouteNode } from '../graph/graph-types.js';
+import { normalizeGraphRoute } from '../graph/route-identity.js';
 import { REQUIRED_RENDERER_ROUTES } from '../rendered/renderer-report.js';
 import { failedCheck, passedCheck, type CheckResult } from './types.js';
 
@@ -19,11 +20,6 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
  * `unresolved` (no coverage entry / no expected output) are both hard failures for a required
  * route; `stale` is also treated as a hard failure since a required route must be live.
  */
-
-function normalizeRouteKey(route: string): string {
-  const trimmed = route.replace(/\.md$/i, '').trim();
-  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`;
-}
 
 /**
  * A required route like "/components/switch/specs" is usually a virtual tab page of a tabbed
@@ -71,13 +67,13 @@ function dedupeBySharedCanonical(nodes: RouteNode[]): RouteNode[] {
 }
 
 function findRouteNodes(routes: RouteNode[], required: string): RouteNode[] {
-  const normalized = normalizeRouteKey(required);
-  const tabMatches = routes.filter((node) => node.tabs.some((tab) => normalizeRouteKey(tab.route) === normalized));
+  const normalized = normalizeGraphRoute(required);
+  const tabMatches = routes.filter((node) => node.tabs.some((tab) => normalizeGraphRoute(tab.route) === normalized));
   if (tabMatches.length > 0) return dedupeBySharedCanonical(tabMatches);
   return routes.filter((node) => {
-    if (normalizeRouteKey(node.route) === normalized) return true;
-    if (node.canonicalRoute && normalizeRouteKey(node.canonicalRoute) === normalized) return true;
-    return node.aliases.some((alias) => normalizeRouteKey(alias) === normalized);
+    if (normalizeGraphRoute(node.route) === normalized) return true;
+    if (node.canonicalRoute && normalizeGraphRoute(node.canonicalRoute) === normalized) return true;
+    return node.aliases.some((alias) => normalizeGraphRoute(alias) === normalized);
   });
 }
 

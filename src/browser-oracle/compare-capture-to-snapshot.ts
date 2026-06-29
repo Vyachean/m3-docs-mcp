@@ -3,6 +3,7 @@ import { readArtifactIndex, type ArtifactIndex } from '../raw-artifacts/artifact
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { readPageGraph, readTokenTableGraph } from '../graph/graph-store.js';
 import type { PageGraph, PageNode, TokenTableGraph, TokenTableNode } from '../graph/graph-types.js';
+import { normalizeGraphRoute } from '../graph/route-identity.js';
 import type { RequiredRouteCapture, RequiredRoutesCaptureReport } from './browser-oracle-types.js';
 
 /**
@@ -52,11 +53,6 @@ export type RequiredRoutesComparisonReport = {
   allPassed: boolean;
 };
 
-function normalizeRouteKey(route: string): string {
-  const trimmed = route.replace(/\.md$/i, '').trim();
-  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`;
-}
-
 function artifactMatchKeys(artifact: ArtifactRecord): string[] {
   const keys: string[] = [artifact.sourceUrl];
   try {
@@ -88,10 +84,10 @@ function isResourceInArtifactIndex(resourceUrl: string, resourceId: string, arti
 
 function findPageNodeForRoute(pageGraph: PageGraph | null, route: string): PageNode | null {
   if (!pageGraph) return null;
-  const normalized = normalizeRouteKey(route);
+  const normalized = normalizeGraphRoute(route);
   return (
-    pageGraph.pages.find((page) => normalizeRouteKey(page.route) === normalized)
-    ?? pageGraph.pages.find((page) => normalizeRouteKey(page.provenance.sourceRoute ?? '') === normalized)
+    pageGraph.pages.find((page) => normalizeGraphRoute(page.route) === normalized)
+    ?? pageGraph.pages.find((page) => normalizeGraphRoute(page.provenance.sourceRoute ?? '') === normalized)
     ?? null
   );
 }
@@ -107,8 +103,8 @@ function computeMissingHeadings(capturedHeadings: string[], pageNode: PageNode |
 
 function tokenTableNodesForRoute(tokenTableGraph: TokenTableGraph | null, route: string): TokenTableNode[] {
   if (!tokenTableGraph) return [];
-  const normalized = normalizeRouteKey(route);
-  return tokenTableGraph.tokenTables.filter((node) => node.routes.some((r) => normalizeRouteKey(r) === normalized));
+  const normalized = normalizeGraphRoute(route);
+  return tokenTableGraph.tokenTables.filter((node) => node.routes.some((r) => normalizeGraphRoute(r) === normalized));
 }
 
 /** Loose label match: a visible DOM label is considered resolved when it equals, contains, or is

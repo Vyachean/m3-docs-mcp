@@ -1,9 +1,13 @@
 import { materialPagePath } from '../crawler-utils.js';
+import { extractRequestedTokenSets } from '../json-extraction/extract-dsdb-resource.js';
 import { extractBundleRouteTable, extractCarbonVersion, type BundleRouteEntry } from '../json-extraction/page-reference-resolver.js';
+import { parseTokenTableSystem } from '../json-extraction/schemas.js';
 import { readArtifactText } from '../raw-artifacts/artifact-store.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { normalizeTabSlug } from '../route-coverage.js';
 import type { ExtractionRouteDiagnostic, MaterialIndex } from '../types.js';
+import { buildRouteGraph } from './route-graph.js';
+import { buildTokenTableGraph, buildTokenTableNode } from './token-table-graph.js';
 import {
   type PageChunkNode,
   type PageGraph,
@@ -14,7 +18,9 @@ import {
   type RouteGraph,
   type RouteNode,
   type SourceArtifactRef,
+  type TokenTableGraph,
 } from './graph-types.js';
+import { normalizeGraphRoute } from './route-identity.js';
 import {
   imageResourceId,
   statusTableResourceId,
@@ -35,6 +41,7 @@ type RawCarbonChunk = {
   resourceName: string | null;
   libraryModuleType: string | null;
   contentChunkType: string | null;
+  requestedTokenSets: string[];
 };
 
 type RawCarbonBlock = {
@@ -65,12 +72,14 @@ type RawResourceEntry = {
   kind: ResourceNode['kind'];
   resourceName: string | null;
   sourceArtifact: SourceArtifactRef | null;
+  sourceUrl: string | null;
   route: string;
   pageId: string;
   sectionId: string | null;
   chunkId: string;
   status: ResourceNode['status'];
   unresolvedReason: string | null;
+  requestedTokenSets: string[];
 };
 
 type RawPageBuild = {
@@ -166,6 +175,7 @@ function decodeCarbonPage(raw: unknown): RawCarbonPage | null {
           resourceName: readString(rawChunk.resourceName),
           libraryModuleType: readString(rawChunk.libraryModuleType),
           contentChunkType: readString(rawChunk.contentChunkType),
+          requestedTokenSets: extractRequestedTokenSets(rawChunk),
         });
       }
       blocks.push({
@@ -202,7 +212,7 @@ function findDsdbArtifact(
 }
 
 function routeSectionFromPath(route: string): string {
-  return route.replace(/^\/+/, '').split('/')[0] ?? '';
+  return normalizeGraphRoute(route).replace(/^\/+/, '').split('/')[0] ?? '';
 }
 
 function buildRawPage(
@@ -214,7 +224,8 @@ function buildRawPage(
 ): RawPageBuild | null {
   const sourceRoute = diagnostic.sourceRoute ?? diagnostic.normalizedRoute ?? diagnostic.virtualRoute;
   if (!sourceRoute) return null;
-  const route = diagnostic.virtualRoute ?? sourceRoute;
+  const normalizedSourceRoute = normalizeGraphRoute(sourceRoute);
+  const route = normalizeGraphRoute(diagnostic.virtualRoute ?? normalizedSourceRoute);
 
   let selectedSections = carbon.sections;
   if (diagnostic.virtualSource === 'tab') {
@@ -232,7 +243,7 @@ function buildRawPage(
   }
   if (selectedSections.length === 0) return null;
 
-  const sourceArtifacts = (artifactsBySourceRoute.get(sourceRoute) ?? [])
+  const sourceArtifacts = (artifactsBySourceRoute.get(normalizedSourceRoute) ?? [])
     .map(toSourceArtifactRef)
     .filter((ref): ref is SourceArtifactRef => ref !== null);
 
@@ -290,12 +301,14 @@ function buildRawPage(
             kind: 'image',
             resourceName: chunk.imageUrl ?? chunk.imageUrlFife,
             sourceArtifact: null,
+            sourceUrl: chunk.imageUrl ?? chunk.imageUrlFife,
             route,
             pageId,
             sectionId,
             chunkId,
             status: 'resolved',
             unresolvedReason: null,
+            requestedTokenSets: [],
           });
         } else if (rawType === 'VIDEO') {
           chunkType = 'video';
@@ -305,12 +318,14 @@ function buildRawPage(
             kind: 'video',
             resourceName: chunk.videoUrl,
             sourceArtifact: null,
+            sourceUrl: chunk.videoUrl,
             route,
             pageId,
             sectionId,
             chunkId,
             status: 'resolved',
             unresolvedReason: null,
+            requestedTokenSets: [],
           });
         } else if (rawType === 'RESOURCE') {
           chunkType = 'resource';
@@ -324,12 +339,14 @@ function buildRawPage(
               kind: 'token-table',
               resourceName: chunk.resourceName,
               sourceArtifact: dsdbArtifact ? toSourceArtifactRef(dsdbArtifact) : null,
+              sourceUrl: dsdbArtifact?.sourceUrl ?? null,
               route,
               pageId,
               sectionId,
               chunkId,
               status: dsdbArtifact ? 'resolved' : 'unresolved',
               unresolvedReason: dsdbArtifact ? null : 'missing-token-table-resource',
+              requestedTokenSets: chunk.requestedTokenSets,
             });
           } else if (moduleType === 'STATUS_TABLE') {
             resourceId = statusTableResourceId(route, chunkIndex, chunk.resourceName);
@@ -339,12 +356,14 @@ function buildRawPage(
               kind: 'status-table',
               resourceName: chunk.resourceName,
               sourceArtifact: dsdbArtifact ? toSourceArtifactRef(dsdbArtifact) : null,
+              sourceUrl: dsdbArtifact?.sourceUrl ?? null,
               route,
               pageId,
               sectionId,
               chunkId,
               status: dsdbArtifact ? 'resolved' : 'unresolved',
               unresolvedReason: dsdbArtifact ? null : 'missing-status-table-resource',
+              requestedTokenSets: [],
             });
           } else {
             resourceId = unknownResourceId(route, chunkIndex);
@@ -353,12 +372,14 @@ function buildRawPage(
               kind: 'unknown-resource',
               resourceName: chunk.resourceName ?? moduleType,
               sourceArtifact: null,
+              sourceUrl: null,
               route,
               pageId,
               sectionId,
               chunkId,
               status: 'unresolved',
               unresolvedReason: `unknown-resource-type:${moduleType}`,
+              requestedTokenSets: [],
             });
             if (!unsupportedChunkTypes.includes(moduleType)) unsupportedChunkTypes.push(moduleType);
           }
@@ -393,9 +414,9 @@ function buildRawPage(
         ...sourceArtifacts,
         ...(toSourceArtifactRef(carbonArtifact) ? [toSourceArtifactRef(carbonArtifact)!] : []),
       ],
-      sourceRoute,
-      canonicalRoute: diagnostic.canonicalRoute ?? sourceRoute,
-      virtualRoute: diagnostic.virtualRoute ?? null,
+      sourceRoute: normalizedSourceRoute,
+      canonicalRoute: diagnostic.canonicalRoute ? normalizeGraphRoute(diagnostic.canonicalRoute) : normalizedSourceRoute,
+      virtualRoute: diagnostic.virtualRoute ? normalizeGraphRoute(diagnostic.virtualRoute) : null,
     },
   };
 
@@ -432,31 +453,131 @@ function buildCoverageForVirtualRoute(baseUrl: string, route: string, parentCove
   };
 }
 
-export async function enrichGraphFromRawArtifacts(params: {
+function buildResourceGraphFromRaw(rawPageBuilds: RawPageBuild[], generatedAt: string): ResourceGraph {
+  const resourceById = new Map<string, ResourceNode>();
+  for (const raw of rawPageBuilds) {
+    for (const resource of raw.resources) {
+      const existing = resourceById.get(resource.resourceId);
+      if (existing) {
+        if (!existing.routes.includes(resource.route)) existing.routes.push(resource.route);
+        if (!existing.pageIds.includes(resource.pageId)) existing.pageIds.push(resource.pageId);
+        if (!existing.chunkIds.includes(resource.chunkId)) existing.chunkIds.push(resource.chunkId);
+        if (resource.status === 'resolved') {
+          existing.status = 'resolved';
+          existing.unresolvedReason = null;
+        }
+        if (!existing.sourceArtifact && resource.sourceArtifact) existing.sourceArtifact = resource.sourceArtifact;
+        if (!existing.resourceName && resource.resourceName) existing.resourceName = resource.resourceName;
+      } else {
+        resourceById.set(resource.resourceId, {
+          resourceId: resource.resourceId,
+          kind: resource.kind,
+          resourceName: resource.resourceName,
+          sourceArtifact: resource.sourceArtifact,
+          routes: [resource.route],
+          pageIds: [resource.pageId],
+          chunkIds: [resource.chunkId],
+          status: resource.status,
+          unresolvedReason: resource.unresolvedReason,
+        });
+      }
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    generatedAt,
+    resources: Array.from(resourceById.values()),
+  };
+}
+
+function readTokenSystem(resource: unknown): ReturnType<typeof parseTokenTableSystem> {
+  if (typeof resource !== 'object' || resource === null || Array.isArray(resource)) return null;
+  const direct = 'system' in resource ? resource.system : undefined;
+  const directSystem = parseTokenTableSystem(direct);
+  if (directSystem) return directSystem;
+  const payload = 'payload' in resource ? resource.payload : undefined;
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  return 'system' in payload ? parseTokenTableSystem(payload.system) : null;
+}
+
+async function buildTokenTableGraphFromRaw(
+  rawPageBuilds: RawPageBuild[],
+  cacheDir: string,
+  generatedAt: string
+): Promise<TokenTableGraph> {
+  const byResourceId = new Map<string, {
+    resourceName: string | null;
+    requestedTokenSets: Set<string>;
+    routes: Set<string>;
+    sourceArtifactId: string | null;
+  }>();
+
+  for (const raw of rawPageBuilds) {
+    for (const resource of raw.resources) {
+      if (resource.kind !== 'token-table') continue;
+      const entry = byResourceId.get(resource.resourceId) ?? {
+        resourceName: resource.resourceName,
+        requestedTokenSets: new Set<string>(),
+        routes: new Set<string>(),
+        sourceArtifactId: resource.sourceArtifact?.artifactId ?? null,
+      };
+      resource.requestedTokenSets.forEach((tokenSet) => entry.requestedTokenSets.add(tokenSet));
+      entry.routes.add(resource.route);
+      if (!entry.resourceName && resource.resourceName) entry.resourceName = resource.resourceName;
+      if (!entry.sourceArtifactId && resource.sourceArtifact?.artifactId) entry.sourceArtifactId = resource.sourceArtifact.artifactId;
+      byResourceId.set(resource.resourceId, entry);
+    }
+  }
+
+  const tokenTables = [];
+  for (const [resourceId, entry] of byResourceId.entries()) {
+    if (!entry.sourceArtifactId) continue;
+    const artifactLocalPath = entry.sourceArtifactId.split(':').slice(1).join(':');
+    if (!artifactLocalPath) continue;
+    const raw = JSON.parse(await readArtifactText(artifactLocalPath, cacheDir)) as unknown;
+    const system = readTokenSystem(raw);
+    if (!system) continue;
+    tokenTables.push(buildTokenTableNode({
+      resourceId,
+      resourceName: entry.resourceName,
+      system,
+      requestedTokenSets: Array.from(entry.requestedTokenSets),
+      routes: Array.from(entry.routes),
+    }));
+  }
+
+  return buildTokenTableGraph({ generatedAt, tokenTables });
+}
+
+export async function buildRawBackedGraph(params: {
   cacheDir: string;
   artifactRecords: ArtifactRecord[];
-  routeGraph: RouteGraph;
-  legacyPageGraph: PageGraph;
-  legacyResourceGraph: ResourceGraph;
   index: MaterialIndex;
 }): Promise<{
   routeGraph: RouteGraph;
   pageGraph: PageGraph;
   resourceGraph: ResourceGraph;
+  tokenTableGraph: TokenTableGraph;
 }> {
-  const { cacheDir, artifactRecords, legacyPageGraph, legacyResourceGraph, index } = params;
-  const routeGraph: RouteGraph = {
-    ...params.routeGraph,
-    routes: params.routeGraph.routes.map((route) => ({
-      ...route,
-      reference: { ...route.reference },
-      tabs: route.tabs.map((tab) => ({ ...tab })),
-      sourceArtifacts: [...route.sourceArtifacts],
-      expectedOutputPaths: [...route.expectedOutputPaths],
-      generatedOutputPaths: [...route.generatedOutputPaths],
-      coverage: { ...route.coverage, reasons: [...route.coverage.reasons], expectedOutputPaths: [...route.coverage.expectedOutputPaths], savedOutputPaths: [...route.coverage.savedOutputPaths], failedOutputPaths: [...route.coverage.failedOutputPaths], skippedOutputPaths: [...route.coverage.skippedOutputPaths], sharedWithRoutes: [...route.coverage.sharedWithRoutes] },
-    })),
-  };
+  const { cacheDir, artifactRecords, index } = params;
+  const generatedAt = index.capturedAt;
+  const routePlanEntries = index.coverageDiagnostics?.fullRoutePlanSummary
+    ? [
+        ...index.coverageDiagnostics.fullRoutePlanSummary.acceptedRoutes,
+        ...index.coverageDiagnostics.fullRoutePlanSummary.staleRoutes,
+        ...index.coverageDiagnostics.fullRoutePlanSummary.ambiguousRoutes,
+        ...index.coverageDiagnostics.fullRoutePlanSummary.nonPublicRoutes,
+      ]
+    : [];
+
+  const routeGraph = buildRouteGraph({
+    baseUrl: index.source,
+    generatedAt,
+    routePlanEntries,
+    routeCoverage: index.coverageDiagnostics?.routeCoverage ?? [],
+    artifactRecords,
+  });
 
   const artifactsBySourceRoute = new Map<string, ArtifactRecord[]>();
   const dsdbArtifactsByTrailingSegment = new Map<string, ArtifactRecord[]>();
@@ -467,9 +588,10 @@ export async function enrichGraphFromRawArtifacts(params: {
 
   for (const artifact of artifactRecords) {
     if (artifact.sourceRoute) {
-      const list = artifactsBySourceRoute.get(artifact.sourceRoute);
+      const sourceRoute = normalizeGraphRoute(artifact.sourceRoute);
+      const list = artifactsBySourceRoute.get(sourceRoute);
       if (list) list.push(artifact);
-      else artifactsBySourceRoute.set(artifact.sourceRoute, [artifact]);
+      else artifactsBySourceRoute.set(sourceRoute, [artifact]);
     }
     if (artifact.kind === 'dsdb-resource') {
       const trailing = artifact.localPath.replace(/\.json$/i, '').split('/').filter(Boolean).at(-1) ?? artifact.localPath;
@@ -481,17 +603,17 @@ export async function enrichGraphFromRawArtifacts(params: {
       const bundleText = await readArtifactText(artifact.localPath, cacheDir);
       carbonVersion = extractCarbonVersion(bundleText);
       for (const entry of extractBundleRouteTable(bundleText)) {
-        const route = `/${entry.slug.replace(/^\/+/, '')}`;
+        const route = normalizeGraphRoute(entry.slug);
         bundleEntriesByRoute.set(route, entry);
         for (const alias of entry.alternateSlugs ?? []) {
-          bundleEntriesByAlias.set(`/${alias.replace(/^\/+/, '')}`, entry);
+          bundleEntriesByAlias.set(normalizeGraphRoute(alias), entry);
         }
       }
     }
     if (artifact.kind === 'carbon-content' && artifact.sourceRoute) {
       const raw = JSON.parse(await readArtifactText(artifact.localPath, cacheDir)) as unknown;
       const page = decodeCarbonPage(raw);
-      if (page) carbonBySourceRoute.set(artifact.sourceRoute, { page, artifact });
+      if (page) carbonBySourceRoute.set(normalizeGraphRoute(artifact.sourceRoute), { page, artifact });
     }
   }
 
@@ -506,7 +628,7 @@ export async function enrichGraphFromRawArtifacts(params: {
       route.reference.exportedCarbonFileId = entry.exportedCarbonFileId ?? route.reference.exportedCarbonFileId;
       route.reference.pageCanonId = carbonPage?.pageCanonId ?? entry.pageCanonId ?? route.reference.pageCanonId;
       route.reference.carbonVersion = carbonVersion ?? route.reference.carbonVersion;
-      route.aliases = Array.from(new Set([...(route.aliases ?? []), ...(entry.alternateSlugs ?? []).map((alias) => `/${alias.replace(/^\/+/, '')}`)]));
+      route.aliases = Array.from(new Set([...(route.aliases ?? []), ...(entry.alternateSlugs ?? []).map((alias) => normalizeGraphRoute(alias))]));
       const existingMatchedBySlug = new Map(route.tabs.map((tab) => [tab.slug, tab]));
       route.tabs = (entry.tabs ?? []).map((tab, index) => {
         const slug = normalizeTabSlug(tab);
@@ -546,10 +668,9 @@ export async function enrichGraphFromRawArtifacts(params: {
   const rawPagesByRoute = new Map<string, RawPageBuild>();
   const rawPageBuilds: RawPageBuild[] = [];
   for (const diagnostic of index.extractionDiagnostics?.routeDiagnostics ?? []) {
-    if (diagnostic.sourceUsed !== 'direct-json') continue;
     const sourceRoute = diagnostic.sourceRoute ?? diagnostic.normalizedRoute ?? null;
     if (!sourceRoute) continue;
-    const carbon = carbonBySourceRoute.get(sourceRoute);
+    const carbon = carbonBySourceRoute.get(normalizeGraphRoute(sourceRoute));
     if (!carbon) continue;
     const built = buildRawPage(diagnostic, carbon.page, carbon.artifact, artifactsBySourceRoute, dsdbArtifactsByTrailingSegment);
     if (!built) continue;
@@ -571,61 +692,13 @@ export async function enrichGraphFromRawArtifacts(params: {
     }
   }
 
-  const mergedPages: PageNode[] = [];
-  for (const legacyPage of legacyPageGraph.pages) {
-    const raw = rawPagesByRoute.get(legacyPage.route);
-    mergedPages.push(raw ? raw.page : legacyPage);
-    rawPagesByRoute.delete(legacyPage.route);
-  }
-  mergedPages.push(...Array.from(rawPagesByRoute.values()).map((entry) => entry.page));
-  const pageGraph: PageGraph = { ...legacyPageGraph, pages: mergedPages };
+  const pageGraph: PageGraph = {
+    schemaVersion: 1,
+    generatedAt,
+    pages: Array.from(rawPagesByRoute.values()).map((entry) => entry.page),
+  };
+  const resourceGraph = buildResourceGraphFromRaw(rawPageBuilds, generatedAt);
+  const tokenTableGraph = await buildTokenTableGraphFromRaw(rawPageBuilds, cacheDir, generatedAt);
 
-  const resourceById = new Map<string, ResourceNode>(legacyResourceGraph.resources.map((resource) => [
-    resource.resourceId,
-    {
-      ...resource,
-      routes: [...resource.routes],
-      pageIds: [...resource.pageIds],
-      chunkIds: [...resource.chunkIds],
-    },
-  ]));
-  for (const raw of rawPageBuilds) {
-    for (const resource of raw.resources) {
-      const existing = resourceById.get(resource.resourceId);
-      if (existing) {
-        if (!existing.routes.includes(resource.route)) existing.routes.push(resource.route);
-        if (!existing.pageIds.includes(resource.pageId)) existing.pageIds.push(resource.pageId);
-        if (!existing.chunkIds.includes(resource.chunkId)) existing.chunkIds.push(resource.chunkId);
-        if (existing.status === 'resolved' || resource.status === 'resolved') {
-          existing.status = 'resolved';
-          existing.unresolvedReason = null;
-        }
-        if (!existing.sourceArtifact && resource.sourceArtifact) existing.sourceArtifact = resource.sourceArtifact;
-        if (!existing.resourceName && resource.resourceName) existing.resourceName = resource.resourceName;
-      } else {
-        resourceById.set(resource.resourceId, {
-          resourceId: resource.resourceId,
-          kind: resource.kind,
-          resourceName: resource.resourceName,
-          sourceArtifact: resource.sourceArtifact,
-          routes: [resource.route],
-          pageIds: [resource.pageId],
-          chunkIds: [resource.chunkId],
-          status: resource.status,
-          unresolvedReason: resource.unresolvedReason,
-        });
-      }
-    }
-  }
-  for (const page of pageGraph.pages) {
-    for (const chunk of page.chunks) {
-      if (!chunk.resourceId) continue;
-      const resource = resourceById.get(chunk.resourceId);
-      if (resource && !resource.pageIds.includes(page.pageId)) resource.pageIds.push(page.pageId);
-      if (resource && !resource.routes.includes(page.route)) resource.routes.push(page.route);
-    }
-  }
-  const resourceGraph: ResourceGraph = { ...legacyResourceGraph, resources: Array.from(resourceById.values()) };
-
-  return { routeGraph, pageGraph, resourceGraph };
+  return { routeGraph, pageGraph, resourceGraph, tokenTableGraph };
 }

@@ -8,6 +8,7 @@ import {
   readTokenTableGraph,
 } from '../graph/graph-store.js';
 import type { PageGraph, ProvenanceGraph, ResourceGraph, RouteGraph, SectionGraph, TokenTableGraph } from '../graph/graph-types.js';
+import { normalizeGraphRoute } from '../graph/route-identity.js';
 import { readArtifactIndex, type ArtifactIndex } from '../raw-artifacts/artifact-index.js';
 import type { MaterialIndex } from '../types.js';
 
@@ -62,7 +63,7 @@ export function routeGraphAvailability(context: GraphToolContext): GraphAvailabi
 }
 
 export function normalizeRouteInput(route: string): string {
-  return `/${route.trim().replace(/^\/+|\/+$/g, '')}`;
+  return normalizeGraphRoute(route);
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

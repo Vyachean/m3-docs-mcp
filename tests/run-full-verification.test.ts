@@ -44,6 +44,21 @@ const REQUIRED_ROUTES = [
   '/foundations/design-tokens/overview',
 ];
 
+const PASSING_REBUILD_FN = async () => ({
+  pages: REQUIRED_PAGE_PATHS.map((relativePath) => ({
+    id: relativePath,
+    title: relativePath,
+    url: `https://m3.material.io/${relativePath.replace(/^pages\//, '').replace(/\.md$/, '')}`,
+    path: relativePath.replace(/^pages\//, ''),
+    section: 'components',
+    headings: ['OK'],
+    text: 'OK',
+    markdown: '# OK',
+    capturedAt: '2026-06-01T00:00:00.000Z',
+  })),
+  report: { schemaVersion: 1 as const, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] },
+});
+
 function makeRouteNode(route: string): RouteNode {
   const outputPath = `${route.replace(/^\//, '')}.md`;
   return {
@@ -128,6 +143,7 @@ describe('runFullVerification', () => {
       // here we inject a fake store so this orchestration test only depends on stage ordering, not
       // on building a real search index from fixture pages.
       searchIndexStore: { searchDocs: async () => [{}] },
+      renderedOutputRebuildFn: PASSING_REBUILD_FN,
     });
 
     expect(verification.results.map((r) => r.stage)).toEqual([
@@ -159,6 +175,7 @@ describe('runFullVerification', () => {
       mode: 'smoke',
       skipBrowserOracle: true,
       searchIndexStore: { searchDocs: async () => [{}] },
+      renderedOutputRebuildFn: PASSING_REBUILD_FN,
     });
     const oracleResult = verification.results.find((r) => r.stage === 'browser-oracle');
     expect(oracleResult?.passed).toBe(true);
@@ -167,7 +184,7 @@ describe('runFullVerification', () => {
 
   it('stops after stage 1 (raw-snapshot) when it fails, never reaching later stages', async () => {
     // No fixtures written at all -> manifest.json missing -> stage 1 fails immediately.
-    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN, renderedOutputRebuildFn: PASSING_REBUILD_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('raw-snapshot');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot']);
@@ -177,7 +194,7 @@ describe('runFullVerification', () => {
     await writePassingFixtures();
     // Remove the route graph file so stage 2 fails after stage 1 passes.
     await rm(path.join(cacheDir, 'graph', 'routes.json'), { force: true });
-    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN, renderedOutputRebuildFn: PASSING_REBUILD_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('route-graph');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph']);
@@ -201,7 +218,7 @@ describe('runFullVerification', () => {
       }],
     }, cacheDir);
 
-    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN, renderedOutputRebuildFn: PASSING_REBUILD_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('structured-graph');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph', 'browser-oracle', 'structured-graph']);
@@ -222,6 +239,7 @@ describe('runFullVerification', () => {
           routes: [],
         };
       },
+      renderedOutputRebuildFn: PASSING_REBUILD_FN,
     });
     expect(called).toBe(true);
     expect(verification.results.find((r) => r.stage === 'browser-oracle')?.details?.skipped).toBe(false);

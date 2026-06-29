@@ -1,6 +1,7 @@
 import { getDefaultCacheDir } from '../cache.js';
 import { readPageGraph, readResourceGraph, readTokenTableGraph } from '../graph/graph-store.js';
 import type { ResourceNode } from '../graph/graph-types.js';
+import { normalizeGraphRoute } from '../graph/route-identity.js';
 import { REQUIRED_RENDERER_ROUTES } from '../rendered/renderer-report.js';
 import { failedCheck, passedCheck, type CheckResult } from './types.js';
 
@@ -25,13 +26,8 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
  * resources, not on every missing token variant.
  */
 
-function normalizeRouteKey(route: string): string {
-  const trimmed = route.replace(/\.md$/i, '').trim();
-  return `/${trimmed.replace(/^\/+/, '').replace(/\/+$/, '')}`;
-}
-
 function resourceRoutedToRequired(resource: ResourceNode, requiredNormalized: Set<string>): boolean {
-  return resource.routes.some((route) => requiredNormalized.has(normalizeRouteKey(route)));
+  return resource.routes.some((route) => requiredNormalized.has(normalizeGraphRoute(route)));
 }
 
 export type ValidateStructuredGraphInput = {
@@ -42,7 +38,7 @@ export type ValidateStructuredGraphInput = {
 export async function validateStructuredGraph(input: ValidateStructuredGraphInput = {}): Promise<CheckResult> {
   const cacheDir = input.cacheDir ?? getDefaultCacheDir();
   const requiredRoutes = input.requiredRoutes ?? REQUIRED_RENDERER_ROUTES;
-  const requiredNormalized = new Set(requiredRoutes.map(normalizeRouteKey));
+  const requiredNormalized = new Set(requiredRoutes.map(normalizeGraphRoute));
   const stage = 'structured-graph';
 
   const [resourceGraph, tokenTableGraph, pageGraph] = await Promise.all([
@@ -59,6 +55,8 @@ export async function validateStructuredGraph(input: ValidateStructuredGraphInpu
   }
 
   const reasons: string[] = [];
+  const resourceById = new Map(resourceGraph.resources.map((resource) => [resource.resourceId, resource]));
+  const tokenTableById = new Map(tokenTableGraph.tokenTables.map((tokenTable) => [tokenTable.resourceId, tokenTable]));
 
   for (const resource of resourceGraph.resources) {
     if (resource.status !== 'unresolved') continue;
@@ -70,11 +68,38 @@ export async function validateStructuredGraph(input: ValidateStructuredGraphInpu
 
   if (pageGraph) {
     for (const page of pageGraph.pages) {
-      if (!requiredNormalized.has(normalizeRouteKey(page.route))) continue;
-      if (page.unsupportedChunkTypes.length === 0) continue;
-      reasons.push(
-        `Required page ${page.route} has unknown chunk/resource type(s) recorded: ${page.unsupportedChunkTypes.join(', ')}.`
-      );
+      if (!requiredNormalized.has(normalizeGraphRoute(page.route))) continue;
+      if (page.sections.length === 0) reasons.push(`Required page ${page.route} has no sections in graph/pages.json.`);
+      if (page.chunks.length === 0) reasons.push(`Required page ${page.route} has no chunks in graph/pages.json.`);
+      if (page.resourceIds.length === 0) reasons.push(`Required page ${page.route} has no resourceIds in graph/pages.json.`);
+      if (page.route.endsWith('/specs') && page.tokenTableIds.length === 0) {
+        reasons.push(`Required specs page ${page.route} has no tokenTableIds in graph/pages.json.`);
+      }
+      if (page.unsupportedChunkTypes.length > 0) {
+        reasons.push(
+          `Required page ${page.route} has unknown chunk/resource type(s) recorded: ${page.unsupportedChunkTypes.join(', ')}.`
+        );
+      }
+      for (const resourceId of page.resourceIds) {
+        const resource = resourceById.get(resourceId);
+        if (!resource) {
+          reasons.push(`Required page ${page.route} references missing resourceId ${resourceId}.`);
+          continue;
+        }
+        if (resource.status !== 'resolved') {
+          reasons.push(
+            `Required page ${page.route} references unresolved ${resource.kind} resource "${resource.resourceName ?? resource.resourceId}": ${resource.unresolvedReason ?? 'unknown reason'}.`
+          );
+        }
+        if (!resource.routes.some((route) => normalizeGraphRoute(route) === normalizeGraphRoute(page.route))) {
+          reasons.push(`Required page ${page.route} references resource ${resourceId} that is not routed back to ${page.route}.`);
+        }
+      }
+      for (const tokenTableId of page.tokenTableIds) {
+        if (!tokenTableById.has(tokenTableId)) {
+          reasons.push(`Required page ${page.route} references missing token table ${tokenTableId}.`);
+        }
+      }
     }
   }
 

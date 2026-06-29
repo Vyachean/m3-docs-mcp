@@ -1,5 +1,6 @@
 import type { ExtractionRouteDiagnostic, RouteCoverageEntry, RouteCoverageStatus, RoutePlanEntry } from '../types.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
+import { normalizeGraphRoute } from './route-identity.js';
 import {
   RouteGraphSchema,
   type PageGraph,
@@ -129,9 +130,9 @@ function lookupSourceArtifacts(
   planEntry: RoutePlanEntry,
   artifactsBySourceRoute: Map<string, ArtifactRecord[]>
 ): ArtifactRecord[] {
-  const keys = new Set<string>([planEntry.route]);
-  if (planEntry.canonicalRoute) keys.add(planEntry.canonicalRoute);
-  for (const alias of planEntry.alternateSlugs ?? []) keys.add(alias);
+  const keys = new Set<string>([normalizeGraphRoute(planEntry.route)]);
+  if (planEntry.canonicalRoute) keys.add(normalizeGraphRoute(planEntry.canonicalRoute));
+  for (const alias of planEntry.alternateSlugs ?? []) keys.add(normalizeGraphRoute(alias));
 
   const seenIds = new Set<string>();
   const records: ArtifactRecord[] = [];
@@ -187,10 +188,10 @@ function buildRouteNode(
   const tabs = (planEntry.tabSlugs ?? planEntry.tabs ?? []).map((slugOrLabel, index) => {
     const label = planEntry.tabs?.[index] ?? slugOrLabel;
     const slug = planEntry.tabSlugs?.[index] ?? slugOrLabel;
-    const base = planEntry.canonicalRoute ?? planEntry.route;
+    const base = normalizeGraphRoute(planEntry.canonicalRoute ?? planEntry.route);
     return {
       label,
-      route: `${base}/${slug}`,
+      route: normalizeGraphRoute(`${base}/${slug}`),
       slug,
       matchedSectionId: null,
       matchReason: 'unmatched' as const,
@@ -198,11 +199,11 @@ function buildRouteNode(
   });
 
   return {
-    route: planEntry.route,
-    canonicalRoute: planEntry.canonicalRoute ?? null,
-    aliases: planEntry.alternateSlugs ?? [],
+    route: normalizeGraphRoute(planEntry.route),
+    canonicalRoute: planEntry.canonicalRoute ? normalizeGraphRoute(planEntry.canonicalRoute) : null,
+    aliases: (planEntry.alternateSlugs ?? []).map((alias) => normalizeGraphRoute(alias)),
     title: planEntry.routeTitle ?? planEntry.navTitle ?? null,
-    section: planEntry.route.replace(/^\/+/, '').split('/')[0] ?? null,
+    section: normalizeGraphRoute(planEntry.route).replace(/^\/+/, '').split('/')[0] ?? null,
     reference: {
       collectionId: planEntry.collectionId ?? null,
       documentId: planEntry.documentId ?? null,
@@ -239,7 +240,7 @@ export function backfillRouteTabMatches(
   const tabDiagnosticByVirtualRoute = new Map<string, ExtractionRouteDiagnostic>();
   for (const diagnostic of routeDiagnostics) {
     if (diagnostic.virtualSource === 'tab' && diagnostic.virtualRoute) {
-      tabDiagnosticByVirtualRoute.set(diagnostic.virtualRoute, diagnostic);
+      tabDiagnosticByVirtualRoute.set(normalizeGraphRoute(diagnostic.virtualRoute), diagnostic);
     }
   }
   const pageByRoute = new Map(pageGraph.pages.map((page) => [page.route, page]));
@@ -277,22 +278,24 @@ export type BuildRouteGraphInput = {
 
 export function buildRouteGraph(input: BuildRouteGraphInput): RouteGraph {
   const coverageByRoute = new Map<string, RouteCoverageEntry>();
-  for (const entry of input.routeCoverage) coverageByRoute.set(entry.sourceRoute, entry);
+  for (const entry of input.routeCoverage) coverageByRoute.set(normalizeGraphRoute(entry.sourceRoute), entry);
 
   const artifactsBySourceRoute = new Map<string, ArtifactRecord[]>();
   for (const artifact of input.artifactRecords ?? []) {
     if (!artifact.sourceRoute) continue;
-    const list = artifactsBySourceRoute.get(artifact.sourceRoute);
+    const sourceRoute = normalizeGraphRoute(artifact.sourceRoute);
+    const list = artifactsBySourceRoute.get(sourceRoute);
     if (list) list.push(artifact);
-    else artifactsBySourceRoute.set(artifact.sourceRoute, [artifact]);
+    else artifactsBySourceRoute.set(sourceRoute, [artifact]);
   }
 
   const seen = new Set<string>();
   const routes: RouteNode[] = [];
   for (const planEntry of input.routePlanEntries) {
-    if (seen.has(planEntry.route)) continue;
-    seen.add(planEntry.route);
-    routes.push(buildRouteNode(planEntry, coverageByRoute.get(planEntry.route) ?? null, artifactsBySourceRoute));
+    const route = normalizeGraphRoute(planEntry.route);
+    if (seen.has(route)) continue;
+    seen.add(route);
+    routes.push(buildRouteNode(planEntry, coverageByRoute.get(route) ?? null, artifactsBySourceRoute));
   }
 
   mergeSourceArtifactsAcrossSharedCanonicalRoutes(routes);

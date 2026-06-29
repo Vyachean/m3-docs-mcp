@@ -4,7 +4,7 @@ import { validateRawSnapshot } from './validate-raw-snapshot.js';
 import { validateRouteGraph } from './validate-route-graph.js';
 import { validateBrowserOracle } from './validate-browser-oracle.js';
 import { validateStructuredGraph } from './validate-structured-graph.js';
-import { validateRenderedOutput } from './validate-rendered-output.js';
+import { validateRenderedOutput, type ValidateRenderedOutputInput } from './validate-rendered-output.js';
 import { validateSearchIndex } from './validate-search-index.js';
 import { validateCoverageSummary, type CoverageMode } from './validate-coverage-summary.js';
 import { failedCheck, type CheckResult } from './types.js';
@@ -45,6 +45,7 @@ export type RunFullVerificationOptions = {
    *  instead of building a real MaterialDocsStore against the cache dir. */
   searchIndexQueries?: readonly string[];
   searchIndexStore?: { searchDocs: (query: string, limit?: number) => Promise<unknown[]> };
+  renderedOutputRebuildFn?: ValidateRenderedOutputInput['rebuildFromRawFn'];
 };
 
 export type RunFullVerificationResult = {
@@ -105,7 +106,7 @@ export async function runFullVerification(options: RunFullVerificationOptions = 
   results.push(stage4);
   if (!stage4.passed) return finish(results);
 
-  const stage5 = await validateRenderedOutput({ cacheDir, mode });
+  const stage5 = await validateRenderedOutput({ cacheDir, mode, rebuildFromRawFn: options.renderedOutputRebuildFn });
   results.push(stage5);
   if (!stage5.passed) return finish(results);
 

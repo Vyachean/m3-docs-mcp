@@ -1,5 +1,6 @@
 import type { ExtractionPageDiagnostic, ExtractionRouteDiagnostic, MaterialPageMeta } from '../types.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
+import { markdownPathToRoute, normalizeGraphRoute } from './route-identity.js';
 import {
   PageGraphSchema,
   SectionGraphSchema,
@@ -141,8 +142,8 @@ function buildPageNode(
   // field must report the page's actual identity (virtualRoute when this page is a tab), otherwise
   // every tab of a tabbed component collapses onto the same reported route, which breaks anything
   // matching pages/routes 1:1 (e.g. validate-route-graph.ts's required-route lookup).
-  const sourceRouteForArtifacts = routeDiagnostic?.sourceRoute ?? routeDiagnostic?.normalizedRoute ?? page.path.replace(/\.md$/i, '');
-  const route = routeDiagnostic?.virtualRoute ?? sourceRouteForArtifacts;
+  const sourceRouteForArtifacts = normalizeGraphRoute(routeDiagnostic?.sourceRoute ?? routeDiagnostic?.normalizedRoute ?? markdownPathToRoute(page.path));
+  const route = normalizeGraphRoute(routeDiagnostic?.virtualRoute ?? sourceRouteForArtifacts);
   const sourceArtifacts = (artifactsBySourceRoute.get(sourceRouteForArtifacts) ?? [])
     .map(toSourceArtifactRef)
     .filter((ref): ref is SourceArtifactRef => ref !== null);
@@ -167,9 +168,9 @@ function buildPageNode(
     unsupportedChunkTypes: pageDiagnostic?.unknownChunkTypes ?? [],
     provenance: {
       sourceArtifacts,
-      sourceRoute: routeDiagnostic?.sourceRoute ?? null,
-      canonicalRoute: routeDiagnostic?.canonicalRoute ?? null,
-      virtualRoute: routeDiagnostic?.virtualRoute ?? null,
+      sourceRoute: routeDiagnostic?.sourceRoute ? normalizeGraphRoute(routeDiagnostic.sourceRoute) : null,
+      canonicalRoute: routeDiagnostic?.canonicalRoute ? normalizeGraphRoute(routeDiagnostic.canonicalRoute) : null,
+      virtualRoute: routeDiagnostic?.virtualRoute ? normalizeGraphRoute(routeDiagnostic.virtualRoute) : null,
     },
   };
 }
@@ -193,9 +194,10 @@ export function buildPageGraph(input: BuildPageGraphInput): PageGraph {
   const artifactsBySourceRoute = new Map<string, ArtifactRecord[]>();
   for (const artifact of input.artifactRecords ?? []) {
     if (!artifact.sourceRoute) continue;
-    const list = artifactsBySourceRoute.get(artifact.sourceRoute);
+    const sourceRoute = normalizeGraphRoute(artifact.sourceRoute);
+    const list = artifactsBySourceRoute.get(sourceRoute);
     if (list) list.push(artifact);
-    else artifactsBySourceRoute.set(artifact.sourceRoute, [artifact]);
+    else artifactsBySourceRoute.set(sourceRoute, [artifact]);
   }
 
   const pages = input.pages.map((page) =>

@@ -4,7 +4,7 @@ import type { DecodedTokenTableSystem } from '../json-extraction/schemas.js';
 import { buildPageGraph, deriveSectionGraph } from './page-graph.js';
 import { buildProvenanceGraph } from './provenance.js';
 import { buildResourceGraph } from './resource-graph.js';
-import { enrichGraphFromRawArtifacts } from './raw-graph-build.js';
+import { buildRawBackedGraph } from './raw-graph-build.js';
 import {
   writePageGraph,
   writeProvenanceGraph,
@@ -148,29 +148,24 @@ export async function buildAndWriteGraph(
   artifactRecords: ArtifactRecord[] = [],
   collectedTokenTables: CollectedTokenTableInput[] = []
 ): Promise<BuiltGraph> {
-  const legacyGraph = buildGraphFromIndex(index, artifactRecords, collectedTokenTables);
-  const enriched = await enrichGraphFromRawArtifacts({
-    cacheDir,
-    artifactRecords,
-    routeGraph: legacyGraph.routeGraph,
-    legacyPageGraph: legacyGraph.pageGraph,
-    legacyResourceGraph: legacyGraph.resourceGraph,
-    index,
-  });
-  const graph: BuiltGraph = {
-    ...legacyGraph,
-    routeGraph: enriched.routeGraph,
-    pageGraph: enriched.pageGraph,
-    resourceGraph: enriched.resourceGraph,
-    sectionGraph: deriveSectionGraph(enriched.pageGraph, legacyGraph.sectionGraph.generatedAt),
-  };
+  let graph = buildGraphFromIndex(index, artifactRecords, collectedTokenTables);
+  if (artifactRecords.length > 0) {
+    const rawBacked = await buildRawBackedGraph({ cacheDir, artifactRecords, index });
+    graph = {
+      routeGraph: rawBacked.routeGraph,
+      pageGraph: rawBacked.pageGraph,
+      resourceGraph: rawBacked.resourceGraph,
+      tokenTableGraph: rawBacked.tokenTableGraph,
+      sectionGraph: deriveSectionGraph(rawBacked.pageGraph, index.capturedAt),
+      provenanceGraph: buildProvenanceGraph({
+      generatedAt: index.capturedAt,
+      routeGraph: rawBacked.routeGraph,
+      pageGraph: rawBacked.pageGraph,
+      resourceGraph: rawBacked.resourceGraph,
+      }),
+    };
+  }
   backfillResourcePageIds(graph.resourceGraph, graph.pageGraph);
-  graph.provenanceGraph = buildProvenanceGraph({
-    generatedAt: graph.provenanceGraph.generatedAt,
-    routeGraph: graph.routeGraph,
-    pageGraph: graph.pageGraph,
-    resourceGraph: graph.resourceGraph,
-  });
   await Promise.all([
     writeRouteGraph(graph.routeGraph, cacheDir),
     writePageGraph(graph.pageGraph, cacheDir),

@@ -1,6 +1,8 @@
 import { access, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { getDefaultCacheDir } from '../cache.js';
+import { normalizeGraphRoute, routeToMarkdownPath } from '../graph/route-identity.js';
+import { rebuildMarkdownFromRaw } from '../rendered/markdown-renderer.js';
 import { readRendererReport } from '../rendered/renderer-report.js';
 import { failedCheck, passedCheck, type CheckResult } from './types.js';
 
@@ -33,8 +35,10 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
 export const REQUIRED_PAGE_PATHS: readonly string[] = [
   'pages/components/switch/overview.md',
   'pages/components/switch/specs.md',
-  'pages/components/toolbars/overview.md',
-  'pages/components/toolbars/specs.md',
+  'pages/components/buttons/overview.md',
+  'pages/components/buttons/specs.md',
+  'pages/components/lists/overview.md',
+  'pages/components/lists/specs.md',
   'pages/components/segmented-buttons/overview.md',
   'pages/components/segmented-buttons/specs.md',
 ];
@@ -90,6 +94,7 @@ export type ValidateRenderedOutputInput = {
    *  script's `mode === 'full'` gate (a 20-40 page smoke crawl is not expected to cover every
    *  required component). Defaults to "full". */
   mode?: 'smoke' | 'full';
+  rebuildFromRawFn?: typeof rebuildMarkdownFromRaw;
 };
 
 export async function validateRenderedOutput(input: ValidateRenderedOutputInput = {}): Promise<CheckResult> {
@@ -97,6 +102,7 @@ export async function validateRenderedOutput(input: ValidateRenderedOutputInput 
   const mode = input.mode ?? 'full';
   const stage = 'rendered-output';
   const reasons: string[] = [];
+  const rebuildFromRawFn = input.rebuildFromRawFn ?? rebuildMarkdownFromRaw;
 
   const rendererReport = await readRendererReport(cacheDir);
   if (!rendererReport) {
@@ -136,6 +142,27 @@ export async function validateRenderedOutput(input: ValidateRenderedOutputInput 
     reasons.push(
       `Unresolved token/status table placeholders in generated specs pages: ${summary}${placeholderFailures.length > 10 ? `; and ${placeholderFailures.length - 10} more` : ''}.`
     );
+  }
+
+  if (mode === 'full') {
+    const rebuilt = await rebuildFromRawFn(cacheDir);
+    const rebuiltByRoute = new Map(rebuilt.pages.map((page) => [normalizeGraphRoute(page.path), page]));
+    const requiredOfflineRoutes = REQUIRED_PAGE_PATHS.map((pagePath) => normalizeGraphRoute(pagePath));
+    for (const route of requiredOfflineRoutes) {
+      const rebuiltPage = rebuiltByRoute.get(normalizeGraphRoute(route));
+      if (!rebuiltPage) {
+        reasons.push(`Offline rebuild did not produce required route ${route}.`);
+        continue;
+      }
+      const matchedPattern = PLACEHOLDER_PATTERNS.find((pattern) => rebuiltPage.markdown.includes(pattern));
+      if (matchedPattern) {
+        reasons.push(`Offline rebuild produced unresolved placeholder content for ${route}: ${matchedPattern}.`);
+      }
+      const expectedPath = routeToMarkdownPath(route);
+      if (rebuiltPage.path !== expectedPath) {
+        reasons.push(`Offline rebuild produced unexpected output path for ${route}: ${rebuiltPage.path} (expected ${expectedPath}).`);
+      }
+    }
   }
 
   if (reasons.length > 0) {

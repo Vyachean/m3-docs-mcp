@@ -4,6 +4,7 @@ import { readArtifactText } from '../raw-artifacts/artifact-store.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { readPageGraph, readProvenanceGraph } from '../graph/graph-store.js';
 import type { PageGraph, PageNode, ProvenanceGraph } from '../graph/graph-types.js';
+import { normalizeGraphRoute } from '../graph/route-identity.js';
 import { extractContentPageToMaterialPage, type JsonExtractionResult } from '../json-extraction/extract-content-page.js';
 import type { DsdbResourceFetcher } from '../json-extraction/extract-dsdb-resource.js';
 import { extractPageDataMetadata } from '../json-extraction/extract-page-data.js';
@@ -84,11 +85,6 @@ function routeUrlFor(baseUrl: string, route: string): string {
  *  one by crawler.ts's persistRawArtifact call sites (e.g. "/components/buttons/specs"). Routes
  *  read back from the two structures must be normalized to the same form before being used as a
  *  shared lookup key, or findArtifactsBySourceRoute silently returns nothing. */
-function normalizeRouteKey(route: string): string {
-  const trimmed = route.replace(/\.md$/i, '').trim();
-  return `/${trimmed.replace(/^\/+/, '')}`;
-}
-
 /**
  * Rebuilds every renderable route's Markdown from the cache directory's persisted `raw/**`
  * artifacts and `graph/pages.json`, without touching the network. Returns both the rebuilt
@@ -227,7 +223,7 @@ export async function rebuildMarkdownFromRaw(
 function groupPageNodesBySourceRoute(pageGraph: PageGraph | null): Map<string, PageNode[]> {
   const groups = new Map<string, PageNode[]>();
   for (const page of pageGraph?.pages ?? []) {
-    const key = normalizeRouteKey(page.provenance.sourceRoute ?? page.route);
+    const key = normalizeGraphRoute(page.provenance.sourceRoute ?? page.route);
     const list = groups.get(key);
     if (list) list.push(page);
     else groups.set(key, [page]);

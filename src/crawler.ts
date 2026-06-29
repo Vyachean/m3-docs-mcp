@@ -3052,7 +3052,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       aliasMatchedBy: route.aliasMatchedBy,
       reconciliationStatus: route.reconciliationStatus,
       contentSource,
-      sourceRoute: routePath,
+      sourceRoute: sourceCoverageRoute,
       pageDataFetchedOnce: true,
       pageDataUrl,
       pageDataStatus,

@@ -1,6 +1,7 @@
 import type { ExtractionPageDiagnostic, ExtractionRouteDiagnostic, StatusTableDiagnostic, TokenContextDiagnostic } from '../types.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { ResourceGraphSchema, type ResourceGraph, type ResourceNode, type SourceArtifactRef } from './graph-types.js';
+import { normalizeGraphRoute } from './route-identity.js';
 import {
   imageResourceId,
   statusTableResourceId,
@@ -239,13 +240,11 @@ export type BuildResourceGraphInput = {
 export function buildResourceGraph(input: BuildResourceGraphInput): ResourceGraph {
   const routeByPath = new Map<string, string | undefined>();
   for (const routeDiagnostic of input.routeDiagnostics) {
-    routeByPath.set(
-      routeDiagnostic.path,
-      routeDiagnostic.virtualRoute
-        ?? routeDiagnostic.canonicalRoute
-        ?? routeDiagnostic.sourceRoute
-        ?? routeDiagnostic.normalizedRoute
-    );
+    const route = routeDiagnostic.virtualRoute
+      ?? routeDiagnostic.canonicalRoute
+      ?? routeDiagnostic.sourceRoute
+      ?? routeDiagnostic.normalizedRoute;
+    routeByPath.set(routeDiagnostic.path, route ? normalizeGraphRoute(route) : undefined);
   }
 
   const artifactsByTrailingSegment = new Map<string, ArtifactRecord[]>();

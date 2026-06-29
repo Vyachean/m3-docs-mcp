@@ -11,6 +11,17 @@ import {
 } from '../src/validation/validate-rendered-output.js';
 
 let cacheDir: string;
+const REBUILT_REQUIRED_PAGES = REQUIRED_PAGE_PATHS.map((pagePath) => ({
+  id: pagePath,
+  title: pagePath,
+  url: `https://m3.material.io/${pagePath.replace(/^pages\//, '').replace(/\.md$/, '')}`,
+  path: pagePath.replace(/^pages\//, ''),
+  section: 'components',
+  headings: ['OK'],
+  text: 'OK',
+  markdown: '# OK',
+  capturedAt: '2026-06-01T00:00:00.000Z',
+}));
 
 beforeEach(async () => {
   cacheDir = await mkdtemp(path.join(tmpdir(), 'm3-docs-mcp-validate-rendered-'));
@@ -88,7 +99,7 @@ describe('collectSpecMarkdownFiles', () => {
 describe('validateRenderedOutput', () => {
   it('fails when diagnostics/renderer-report.json is missing', async () => {
     await writeRequiredPages();
-    const result = await validateRenderedOutput({ cacheDir, mode: 'full' });
+    const result = await validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: async () => ({ pages: REBUILT_REQUIRED_PAGES, report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] } }) });
     expect(result.passed).toBe(false);
     expect(result.reasons.some((r) => r.includes('renderer-report.json is missing'))).toBe(true);
   });
@@ -101,14 +112,14 @@ describe('validateRenderedOutput', () => {
       requiredRouteFailures: ['/components/switch/specs'],
     }, cacheDir);
     await writeRequiredPages();
-    const result = await validateRenderedOutput({ cacheDir, mode: 'full' });
+    const result = await validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: async () => ({ pages: REBUILT_REQUIRED_PAGES, report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] } }) });
     expect(result.passed).toBe(false);
     expect(result.reasons.some((r) => r.includes('/components/switch/specs'))).toBe(true);
   });
 
   it('fails on full mode when a required generated page is missing', async () => {
     await writePassingRendererReport();
-    const result = await validateRenderedOutput({ cacheDir, mode: 'full' });
+    const result = await validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: async () => ({ pages: REBUILT_REQUIRED_PAGES, report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] } }) });
     expect(result.passed).toBe(false);
     expect(result.reasons.some((r) => r.includes('Missing required generated page'))).toBe(true);
   });
@@ -124,7 +135,7 @@ describe('validateRenderedOutput', () => {
     await writeRequiredPages();
     const specsPath = path.join(cacheDir, 'pages', 'components', 'switch', 'specs.md');
     await writeFile(specsPath, '# Switch specs\n\n[TOKEN_TABLE placeholder: missing-requested-token-sets]', 'utf8');
-    const result = await validateRenderedOutput({ cacheDir, mode: 'full' });
+    const result = await validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: async () => ({ pages: REBUILT_REQUIRED_PAGES, report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] } }) });
     expect(result.passed).toBe(false);
     expect(result.reasons.some((r) => r.includes('placeholder'))).toBe(true);
   });
@@ -132,8 +143,23 @@ describe('validateRenderedOutput', () => {
   it('passes when everything is in order', async () => {
     await writePassingRendererReport();
     await writeRequiredPages();
-    const result = await validateRenderedOutput({ cacheDir, mode: 'full' });
-    expect(result.passed).toBe(true);
+    const result = await validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: async () => ({ pages: REBUILT_REQUIRED_PAGES, report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] } }) });
     expect(result.reasons).toEqual([]);
+    expect(result.passed).toBe(true);
+  });
+
+  it('fails when offline rebuild misses a required route', async () => {
+    await writePassingRendererReport();
+    await writeRequiredPages();
+    const result = await validateRenderedOutput({
+      cacheDir,
+      mode: 'full',
+      rebuildFromRawFn: async () => ({
+        pages: REBUILT_REQUIRED_PAGES.filter((page) => page.path !== 'components/switch/specs.md'),
+        report: { schemaVersion: 1, generatedAt: '2026-06-01T00:00:00.000Z', routes: [], requiredRouteFailures: [] }
+      })
+    });
+    expect(result.passed).toBe(false);
+    expect(result.reasons.some((reason) => reason.includes('Offline rebuild did not produce required route /components/switch/specs'))).toBe(true);
   });
 });
