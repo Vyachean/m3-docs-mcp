@@ -13,6 +13,7 @@ import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './js
 import { computeSourceAndVirtualPageCounters, createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
 import { buildAndWriteGraph } from './graph/build-graph.js';
+import { dsdbArtifactBaseName } from './graph/resource-identity.js';
 import { extractPageDataMetadata } from './json-extraction/extract-page-data.js';
 import { createDsdbResourceFetcher, fetchCarbonContentByReference, fetchJsonPageBundle, fetchPageDataByReference } from './json-extraction/fetch-json-page.js';
 import { SiteMetaParseError, fetchSiteMeta, type SiteMeta } from './json-extraction/fetch-site-meta.js';
@@ -90,10 +91,9 @@ function withArtifactPersistence(
   return async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
     const resource = await baseFetcher(resourceName, resourceType);
     if (resource !== null && resource !== undefined) {
-      const trailingSegment = resourceName.split('/').filter(Boolean).at(-1) ?? resourceName;
       await persistRawArtifact({
         kind: 'dsdb-resource',
-        pathParts: [carbonVersion, trailingSegment],
+        pathParts: [carbonVersion, dsdbArtifactBaseName(resourceName)],
         sourceUrl: `dsdb-resource:${resourceName}`,
         content: JSON.stringify(resource),
         contentType: 'application/json',
@@ -2346,7 +2346,17 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       const resolvedRoutes: DsdbRoute[] = [];
       const resolvedRouteIndexBySlug = new Map<string, number>();
       for (const route of filtered.selected) {
-        const planned = routePlanSummary.acceptedRoutes.find((entry) => (entry.canonicalRoute ?? entry.route) === route.path || entry.route === route.routeKey);
+        // Match by the candidate's own route identity first — route.routeKey is always that
+        // candidate's own RoutePlanEntry.route, a 1:1 key. Falling back to a canonicalRoute
+        // comparison here is unsafe: two distinct accepted entries (e.g. a site_meta alias like
+        // "/components/switches" and its bundle-table canonical sibling "/components/switch")
+        // can share the same canonicalRoute, so matching on it can return the WRONG entry — e.g.
+        // resolving candidate "/components/switch" to "/components/switches"'s plan entry merely
+        // because the latter's canonicalRoute happens to equal the former's own route. That swap
+        // mis-tags sourceCoverageRoute/siteMetaRoute downstream, corrupting raw artifact
+        // attribution and the offline Markdown rebuild for the canonical route.
+        const planned = routePlanSummary.acceptedRoutes.find((entry) => entry.route === route.routeKey)
+          ?? routePlanSummary.acceptedRoutes.find((entry) => (entry.canonicalRoute ?? entry.route) === route.path);
         const resolutionPath = planned?.canonicalRoute ?? route.path;
         const resolution = resolvePageReference(resolutionPath, bundleRoutes);
         const slug = route.path.replace(/^\/+|\/+$/g, '');

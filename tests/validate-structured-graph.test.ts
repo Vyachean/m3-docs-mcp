@@ -109,6 +109,97 @@ describe('validateStructuredGraph', () => {
     expect(result.reasons).toEqual([]);
   });
 
+  // Regression: m3-docs-cache production failures — status-table resources for
+  // /components/lists/overview, /components/switch/overview, and /components/buttons/overview
+  // (designSystems/030656e0a1083ef1/components/<id>) were reported unresolved
+  // ("missing-status-table-resource") because the live DSDB fetch was silently skipped for these
+  // chunks. Strict validation must keep failing whenever a required status-table resource is
+  // unresolved, and must pass once it resolves.
+  it('fails when a required status-table resource is unresolved (designSystems/030656e0a1083ef1)', async () => {
+    await writeResourceGraph(makeResourceGraph({
+      resources: [{
+        resourceId: 'status-table:designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+        kind: 'status-table',
+        resourceName: 'designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+        sourceArtifact: null,
+        routes: ['/components/switch/overview'],
+        pageIds: [],
+        chunkIds: ['chunk-status-table-0'],
+        status: 'unresolved',
+        unresolvedReason: 'missing-status-table-resource',
+      }],
+    }), cacheDir);
+    await writeTokenTableGraph(makeTokenTableGraph(), cacheDir);
+    const result = await validateStructuredGraph({ cacheDir, requiredRoutes: REQUIRED_ROUTES });
+    expect(result.passed).toBe(false);
+    expect(result.reasons.some((r) => r.includes('Unresolved status-table resource') && r.includes('designSystems/030656e0a1083ef1/components/0fe2e78f2f029241'))).toBe(true);
+  });
+
+  it('passes once the required status-table resource resolves to a DSDB artifact', async () => {
+    await writeResourceGraph(makeResourceGraph({
+      resources: [{
+        resourceId: 'status-table:designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+        kind: 'status-table',
+        resourceName: 'designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+        sourceArtifact: { artifactId: 'dsdb-resource:raw/dsdb/cv-1/designSystems_030656e0a1083ef1_components_0fe2e78f2f029241.json', kind: 'dsdb-resource' },
+        routes: ['/components/switch/overview'],
+        pageIds: [],
+        chunkIds: ['chunk-status-table-0'],
+        status: 'resolved',
+        unresolvedReason: null,
+      }],
+    }), cacheDir);
+    await writeTokenTableGraph(makeTokenTableGraph(), cacheDir);
+    const result = await validateStructuredGraph({ cacheDir, requiredRoutes: REQUIRED_ROUTES });
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('passes for all three production-required status-table routes (lists, switch, buttons) once resolved', async () => {
+    const requiredRoutes = ['/components/lists/overview', '/components/switch/overview', '/components/buttons/overview'];
+    await writeResourceGraph(makeResourceGraph({
+      resources: [
+        {
+          resourceId: 'status-table:designSystems/030656e0a1083ef1/components/11cb6b2ed0f6dee4',
+          kind: 'status-table',
+          resourceName: 'designSystems/030656e0a1083ef1/components/11cb6b2ed0f6dee4',
+          sourceArtifact: { artifactId: 'dsdb-resource:raw/dsdb/cv-1/designSystems_030656e0a1083ef1_components_11cb6b2ed0f6dee4.json', kind: 'dsdb-resource' },
+          routes: ['/components/lists/overview'],
+          pageIds: [],
+          chunkIds: ['chunk-status-table-0'],
+          status: 'resolved',
+          unresolvedReason: null,
+        },
+        {
+          resourceId: 'status-table:designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+          kind: 'status-table',
+          resourceName: 'designSystems/030656e0a1083ef1/components/0fe2e78f2f029241',
+          sourceArtifact: { artifactId: 'dsdb-resource:raw/dsdb/cv-1/designSystems_030656e0a1083ef1_components_0fe2e78f2f029241.json', kind: 'dsdb-resource' },
+          routes: ['/components/switch/overview'],
+          pageIds: [],
+          chunkIds: ['chunk-status-table-0'],
+          status: 'resolved',
+          unresolvedReason: null,
+        },
+        {
+          resourceId: 'status-table:designSystems/030656e0a1083ef1/components/4c66f2c4b2f2cb18',
+          kind: 'status-table',
+          resourceName: 'designSystems/030656e0a1083ef1/components/4c66f2c4b2f2cb18',
+          sourceArtifact: { artifactId: 'dsdb-resource:raw/dsdb/cv-1/designSystems_030656e0a1083ef1_components_4c66f2c4b2f2cb18.json', kind: 'dsdb-resource' },
+          routes: ['/components/buttons/overview'],
+          pageIds: [],
+          chunkIds: ['chunk-status-table-0'],
+          status: 'resolved',
+          unresolvedReason: null,
+        },
+      ],
+    }), cacheDir);
+    await writeTokenTableGraph(makeTokenTableGraph(), cacheDir);
+    const result = await validateStructuredGraph({ cacheDir, requiredRoutes });
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
+  });
+
   it('fails when a required page has an unknown chunk/resource type', async () => {
     await writeResourceGraph(makeResourceGraph(), cacheDir);
     await writeTokenTableGraph(makeTokenTableGraph(), cacheDir);

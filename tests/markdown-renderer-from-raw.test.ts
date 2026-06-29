@@ -105,11 +105,12 @@ async function seedRawSnapshotForButtonSpecsRoute(): Promise<{ artifactRecords: 
   artifactRecords.push(carbonArtifact);
 
   // resourceName from content-token-table.json: designSystems/20543ce18892f7d9/components/6c818a16475113bd
-  // The "trailing segment" convention crawler.ts's withArtifactPersistence uses for dsdb-resource
-  // artifacts is the last "/"-separated part of the resource name.
+  // crawler.ts's withArtifactPersistence names dsdb-resource artifacts via dsdbArtifactBaseName,
+  // which folds the design system id into the basename for designSystems/<id>/components/<id>
+  // resource names (so two design systems sharing a trailing component id can't collide on disk).
   const dsdbArtifact = await persistArtifact({
     kind: 'dsdb-resource',
-    pathParts: ['carbon-v1', '6c818a16475113bd'],
+    pathParts: ['carbon-v1', 'designSystems_20543ce18892f7d9_components_6c818a16475113bd'],
     sourceUrl: 'dsdb-resource:designSystems/20543ce18892f7d9/components/6c818a16475113bd',
     content: JSON.stringify(tokenTableResource),
     contentType: 'application/json',

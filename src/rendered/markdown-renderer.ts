@@ -4,6 +4,7 @@ import { readArtifactText } from '../raw-artifacts/artifact-store.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { readPageGraph, readProvenanceGraph } from '../graph/graph-store.js';
 import type { PageGraph, PageNode, ProvenanceGraph } from '../graph/graph-types.js';
+import { dsdbArtifactBaseName } from '../graph/resource-identity.js';
 import { normalizeGraphRoute } from '../graph/route-identity.js';
 import { extractContentPageToMaterialPage, type JsonExtractionResult } from '../json-extraction/extract-content-page.js';
 import type { DsdbResourceFetcher } from '../json-extraction/extract-dsdb-resource.js';
@@ -41,21 +42,18 @@ export type RebuildFromRawResult = {
   report: RendererReport;
 };
 
-function dsdbTrailingSegment(resourceName: string): string {
-  return resourceName.split('/').filter(Boolean).at(-1) ?? resourceName;
-}
-
 /** Builds a DsdbResourceFetcher backed entirely by already-persisted `dsdb-resource` artifacts —
- *  matched by the same trailing-path-segment convention crawler.ts's `withArtifactPersistence`
- *  uses to name them, so a resource fetched live and one read back from raw/** resolve the same
- *  way. Returns null (not a network error) when no matching artifact was persisted. */
+ *  matched by the same basename convention crawler.ts's `withArtifactPersistence` uses to name
+ *  them (`dsdbArtifactBaseName`, design-system-id-qualified to avoid cross-design-system
+ *  collisions), so a resource fetched live and one read back from raw/** resolve the same way.
+ *  Returns null (not a network error) when no matching artifact was persisted. */
 function createFromRawDsdbResourceFetcher(
   artifactIndex: ArtifactIndex,
   cacheDir: string
 ): DsdbResourceFetcher {
   const dsdbArtifacts = findArtifactsByKind(artifactIndex, 'dsdb-resource');
   return async (resourceName: string): Promise<unknown | null> => {
-    const trailing = dsdbTrailingSegment(resourceName);
+    const trailing = dsdbArtifactBaseName(resourceName);
     const match = dsdbArtifacts.find((artifact) => artifact.localPath.endsWith(`/${trailing}.json`) || artifact.localPath.endsWith(`/${trailing}`));
     if (!match) return null;
     try {

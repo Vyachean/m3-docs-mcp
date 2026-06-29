@@ -1219,22 +1219,28 @@ describe('crawlMaterialDocs', () => {
     const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
 
     expect(index.pages.map((page) => page.path)).toEqual(['components/switch/overview.md', 'components/switch/specs.md']);
+    // The bundle-sourced candidate "/components/switch" is its own exact bundle-table match
+    // (reconciliationStatus 'exact') and is the one that actually gets fetched — the
+    // site_meta-sourced alias "/components/switches" shares the same canonicalRoute but must
+    // resolve to *its own* plan entry, not get cross-matched onto this one (see crawler.ts's
+    // route-plan-entry lookup fix: matching by canonicalRoute alone previously let two distinct
+    // accepted entries with the same canonicalRoute swap identities).
     const overviewDiagnostic = index.extractionDiagnostics?.routeDiagnostics?.find((d) => d.path === 'components/switch/overview.md');
     expect(overviewDiagnostic).toMatchObject({
-      siteMetaRoute: '/components/switches',
-      normalizedRoute: '/components/switches',
+      siteMetaRoute: '/components/switch',
+      normalizedRoute: '/components/switch',
       bundleMatchedRoute: '/components/switch',
-      reconciliationStatus: 'normalizedSlugMatch',
+      reconciliationStatus: 'exact',
       pageReferenceSource: 'bundle-table',
       collectionId: 'ComponentsM3',
       documentId: 'doc-switch'
     });
     expect(index.coverageDiagnostics?.routePlanSummary).toMatchObject({
-      reconciliationStatusCounts: { normalizedSlugMatch: 1 }
+      reconciliationStatusCounts: { exact: 1, normalizedSlugMatch: 1 }
     });
     expect(index.coverageDiagnostics?.routeCoverage).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        sourceRoute: '/components/switches',
+        sourceRoute: '/components/switch',
         canonicalRoute: '/components/switch',
         expectedVirtualRoutes: ['/components/switch/overview', '/components/switch/specs'],
         expectedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
@@ -1250,6 +1256,11 @@ describe('crawlMaterialDocs', () => {
               route: '/components/switches',
               canonicalRoute: '/components/switch',
               reconciliationStatus: 'normalizedSlugMatch'
+            }),
+            expect.objectContaining({
+              route: '/components/switch',
+              canonicalRoute: '/components/switch',
+              reconciliationStatus: 'exact'
             })
           ])
         }
