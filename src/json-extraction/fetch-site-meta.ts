@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createFetchDiagnostic, type FetchDiagnostic } from '../raw-artifacts/fetch-diagnostics.js';
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -77,20 +78,48 @@ type FetchLike = typeof fetch;
 export async function fetchSiteMeta(
   baseUrl: string,
   signal?: AbortSignal,
-  fetchImpl: FetchLike = fetch
+  fetchImpl: FetchLike = fetch,
+  diagnostics: FetchDiagnostic[] = [],
+  onRawText?: (text: string, response: Response) => void
 ): Promise<SiteMeta> {
   const url = new URL('/site_meta.js', baseUrl).toString();
   let response: Response;
   try {
     response = await fetchImpl(url, { signal });
   } catch (err) {
-    throw new SiteMetaParseError(`site_meta.js fetch failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+    const networkError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'site-meta', outcome: 'network-error', networkError,
+      reason: 'rejected: site_meta.js fetch threw a network error'
+    }));
+    throw new SiteMetaParseError(`site_meta.js fetch failed: ${networkError}`, { cause: err });
   }
   if (!response.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'site-meta', httpStatus: response.status, outcome: 'http-error',
+      reason: `rejected: site_meta.js fetch returned HTTP ${response.status}`
+    }));
     throw new SiteMetaParseError(`site_meta.js fetch failed: HTTP ${response.status} ${response.statusText}`);
   }
   const text = await response.text();
-  return parseSiteMetaJs(text);
+  onRawText?.(text, response);
+  try {
+    const siteMeta = parseSiteMetaJs(text);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'site-meta', httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'success',
+      reason: 'accepted: site_meta.js fetched and parsed'
+    }));
+    return siteMeta;
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'site-meta', httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'parse-error',
+      parseError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: site_meta.js fetched but could not be parsed/validated'
+    }));
+    throw err;
+  }
 }
 
 /**

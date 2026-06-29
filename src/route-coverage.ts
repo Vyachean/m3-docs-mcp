@@ -180,6 +180,7 @@ export function summarizeRouteCoverage(entries: RouteCoverageEntry[]): {
   partialRoutes: number;
   failedRoutes: number;
   unresolvedRoutes: number;
+  skippedRoutes: number;
   policySkippedRoutes: number;
   nonContentRoutes: number;
   expectedOutputCount: number;
@@ -193,6 +194,7 @@ export function summarizeRouteCoverage(entries: RouteCoverageEntry[]): {
     partialRoutes: 0,
     failedRoutes: 0,
     unresolvedRoutes: 0,
+    skippedRoutes: 0,
     policySkippedRoutes: 0,
     nonContentRoutes: 0,
     expectedOutputCount: 0,
@@ -209,6 +211,12 @@ export function summarizeRouteCoverage(entries: RouteCoverageEntry[]): {
     else if (entry.status === 'failed') summary.failedRoutes += 1;
     else if (entry.status === 'policySkipped') summary.policySkippedRoutes += 1;
     else if (entry.status === 'nonContent') summary.nonContentRoutes += 1;
+    // 'skipped' (all expected output paths explicitly skipped, e.g. source-route-not-selected on
+    // a --max-pages-limited run) is distinct from a genuine 'unresolved' route (no expected output
+    // paths at all, or an ambiguous mix) — counting it as unresolved previously made
+    // computeCoverageHealth() report "failed" for every intentionally-partial/smoke crawl, since
+    // any --max-pages budget smaller than the full accepted-route count guarantees skipped routes.
+    else if (entry.status === 'skipped') summary.skippedRoutes += 1;
     else summary.unresolvedRoutes += 1;
     if (
       entry.status === 'covered'

@@ -3,55 +3,38 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { z } from 'zod';
+import { runFullVerification } from '../dist/validation/run-full-verification.js';
 
-const REQUIRED_PAGE_PATHS = [
-  'pages/components/switch/overview.md',
-  'pages/components/switch/specs.md',
-  'pages/components/toolbars/overview.md',
-  'pages/components/toolbars/specs.md',
-  'pages/components/segmented-buttons/overview.md',
-  'pages/components/segmented-buttons/specs.md'
-];
-
-const PLACEHOLDER_PATTERNS = [
-  '[TOKEN_TABLE placeholder',
-  'missing-requested-token-sets',
-  'missing-token-system',
-  'missing-resource-name'
-];
-
-const ProblematicExampleSchema = z.object({
-  sourceRoute: z.string(),
-  canonicalRoute: z.string(),
-  status: z.string(),
-  failureReasons: z.array(z.string()).default([])
-}).passthrough();
-
-const RouteCoverageSummarySchema = z.object({
-  failedRoutes: z.number().int().nonnegative(),
-  unresolvedRoutes: z.number().int().nonnegative(),
-  partialRoutes: z.number().int().nonnegative(),
-  problematicExamples: z.array(ProblematicExampleSchema).default([])
-}).passthrough();
-
-const IndexSchema = z.object({
-  coverageDiagnostics: z.object({
-    coverageHealth: z.string(),
-    routeCoverageSummary: RouteCoverageSummarySchema,
-    routeCoverage: z.array(ProblematicExampleSchema.extend({
-      expectedOutputPaths: z.array(z.string()).default([]),
-      savedOutputPaths: z.array(z.string()).default([]),
-      failedOutputPaths: z.array(z.string()).default([]),
-      skippedOutputPaths: z.array(z.string()).default([])
-    })).default([])
-  }).passthrough()
-}).passthrough();
+/**
+ * Runs the documented 1-7 ordered verification pipeline (src/validation/run-full-verification.ts)
+ * against a freshly-crawled cache built by the built CLI's `update` command.
+ *
+ * Order (each stage implemented as an independently unit-tested src/validation/*.ts module):
+ *   1. raw-snapshot      — site shell / site_meta / Angular bundle / carbonVersion present+hashed
+ *   2. route-graph        — no missing artifacts / no ambiguous-unresolved required routes
+ *   3. browser-oracle     — live Playwright capture vs. raw snapshot/graph (best-effort, logged)
+ *   4. structured-graph   — no unresolved required DSDB/token/status resources, no unknown chunks
+ *   5. rendered-output    — renderer-report requiredRouteFailures empty, no token placeholders,
+ *                           required generated pages present on disk
+ *   6. search-index       — MaterialDocsStore.searchDocs smoke proxy (no persisted index file
+ *                           exists in this repo yet — see validate-search-index.ts module doc)
+ *   7. coverage-summary   — coverageDiagnostics.coverageHealth + zero problematic route counts
+ *
+ * This script's job is solely to: run the built CLI into a fresh temp cache dir, call
+ * runFullVerification in order, and turn the result into clear console diagnostics + a process
+ * exit code. It deliberately does NOT promote the temp cache dir over any existing production
+ * cache — `update`'s own internal promotion logic (assertSafeCachePromotion/promoteStagingCache
+ * in src/cache.ts) already enforces "don't promote partial over good" at the CLI level, and this
+ * script only ever targets a disposable --cache-dir tempCacheDir. Failed runs intentionally keep
+ * the temp cache dir on disk for inspection (never deleted on failure).
+ */
 
 async function main() {
   const mode = process.argv.includes('--smoke') ? 'smoke' : 'full';
+  const skipBrowserOracle = process.argv.includes('--skip-browser-oracle');
   const tempCacheDir = await fs.mkdtemp(path.join(os.tmpdir(), 'm3-docs-cache-verify-'));
   let keepTempDir = true;
+
   let cliExitCode = null;
 
   try {
@@ -60,14 +43,17 @@ async function main() {
       throw new Error(`Built CLI exited with code ${cliExitCode}.`);
     }
 
-  const index = await readVerifiedIndex(tempCacheDir);
-  const routeCoverageSummary = index.coverageDiagnostics.routeCoverageSummary;
+    const verification = await runFullVerification({
+      cacheDir: tempCacheDir,
+      mode,
+      skipBrowserOracle,
+    });
 
-  assertCoverage(index.coverageDiagnostics.coverageHealth, routeCoverageSummary, mode);
-  if (mode === 'full') {
-    await assertRequiredPages(tempCacheDir);
-  }
-  await assertNoTokenTablePlaceholders(tempCacheDir, mode);
+    printStageResults(mode, verification.results);
+
+    if (!verification.allPassed) {
+      throw new Error(`Verification stage "${verification.firstFailedStage}" failed. See stage diagnostics above.`);
+    }
 
     console.error(`[verify:cache:${mode}] Success. cacheDir=${tempCacheDir}`);
     await fs.rm(tempCacheDir, { recursive: true, force: true });
@@ -87,6 +73,17 @@ async function main() {
   }
 }
 
+function printStageResults(mode, results) {
+  for (const result of results) {
+    const skipped = result.details?.skipped === true;
+    const label = skipped ? 'SKIPPED' : result.passed ? 'PASS' : 'FAIL';
+    console.error(`[verify:cache:${mode}] [${label}] stage=${result.stage}`);
+    for (const reason of result.reasons) {
+      console.error(`[verify:cache:${mode}]   - ${reason}`);
+    }
+  }
+}
+
 function runBuiltCli(tempCacheDir, mode) {
   const args = [
     'dist/index.js',
@@ -94,13 +91,18 @@ function runBuiltCli(tempCacheDir, mode) {
     '--cache-dir',
     tempCacheDir,
     '--concurrency',
-    '6'
+    '6',
+    // tempCacheDir is always brand new, so without this flag crawlMaterialDocs' first-cache
+    // partial-promotion safeguard skips promotion entirely on a limited/smoke run (no
+    // index.json/manifest.json/graph written at all), leaving nothing for the stages below to
+    // validate. See src/crawler.ts shouldSkipInitialPartialPromotion.
+    '--promote-partial'
   ];
 
   if (mode === 'smoke') {
     args.push('--max-pages', '40', '--min-pages', '20');
   } else {
-    args.push('--min-pages', '150');
+    args.push('--min-pages', '150', '--strict-graph');
   }
 
   console.error(`[verify:cache:${mode}] Running: node ${args.join(' ')}`);
@@ -120,91 +122,6 @@ function runBuiltCli(tempCacheDir, mode) {
       resolve(code ?? 1);
     });
   });
-}
-
-async function readVerifiedIndex(tempCacheDir) {
-  const indexPath = path.join(tempCacheDir, 'index.json');
-  const raw = await fs.readFile(indexPath, 'utf8');
-  const parsed = JSON.parse(raw);
-  return IndexSchema.parse(parsed);
-}
-
-function assertCoverage(coverageHealth, routeCoverageSummary, mode) {
-  if (mode === 'smoke') {
-    if (coverageHealth !== 'partial' && coverageHealth !== 'verified') {
-      throw new Error(`Expected coverageDiagnostics.coverageHealth to be "partial" or "verified" for smoke, received ${JSON.stringify(coverageHealth)}.`);
-    }
-    return;
-  }
-  if (coverageHealth !== 'verified') {
-    throw new Error(`Expected coverageDiagnostics.coverageHealth to be "verified" for ${mode}, received ${JSON.stringify(coverageHealth)}.`);
-  }
-  const failures = [
-    ['failedRoutes', routeCoverageSummary.failedRoutes],
-    ['unresolvedRoutes', routeCoverageSummary.unresolvedRoutes],
-    ['partialRoutes', routeCoverageSummary.partialRoutes]
-  ].filter(([, value]) => value !== 0);
-
-  if (failures.length > 0) {
-    const summary = failures.map(([key, value]) => `${key}=${value}`).join(', ');
-    throw new Error(`Expected zero problematic route counts for ${mode}, received ${summary}.`);
-  }
-}
-
-async function assertRequiredPages(tempCacheDir) {
-  const missingPaths = [];
-  for (const relativePath of REQUIRED_PAGE_PATHS) {
-    const absolutePath = path.join(tempCacheDir, relativePath);
-    try {
-      await fs.access(absolutePath);
-    } catch {
-      missingPaths.push(relativePath);
-    }
-  }
-
-  if (missingPaths.length > 0) {
-    throw new Error(`Missing required generated page(s): ${missingPaths.join(', ')}.`);
-  }
-}
-
-async function assertNoTokenTablePlaceholders(tempCacheDir, mode) {
-  const pagesDir = path.join(tempCacheDir, 'pages');
-  const specFiles = await collectSpecMarkdownFiles(pagesDir);
-  if (mode === 'smoke' && specFiles.length === 0) return;
-  const failures = [];
-
-  for (const filePath of specFiles) {
-    const markdown = await fs.readFile(filePath, 'utf8');
-    const matchedPattern = PLACEHOLDER_PATTERNS.find((pattern) => markdown.includes(pattern));
-    if (!matchedPattern) continue;
-    failures.push({
-      path: path.relative(tempCacheDir, filePath),
-      pattern: matchedPattern
-    });
-  }
-
-  if (failures.length > 0) {
-    const summary = failures.slice(0, 10).map((failure) => `${failure.path} -> ${failure.pattern}`).join('; ');
-    throw new Error(`Found unresolved token table placeholders in generated specs pages during ${mode}: ${summary}${failures.length > 10 ? `; and ${failures.length - 10} more` : ''}.`);
-  }
-}
-
-async function collectSpecMarkdownFiles(rootDir) {
-  const results = [];
-  await walk(rootDir, results);
-  return results.filter((filePath) => filePath.endsWith('/specs.md'));
-}
-
-async function walk(currentDir, results) {
-  const entries = await fs.readdir(currentDir, { withFileTypes: true });
-  for (const entry of entries) {
-    const entryPath = path.join(currentDir, entry.name);
-    if (entry.isDirectory()) {
-      await walk(entryPath, results);
-      continue;
-    }
-    if (entry.isFile()) results.push(entryPath);
-  }
 }
 
 async function printFailureDiagnostics({ tempCacheDir, cliExitCode, mode, error }) {
@@ -300,14 +217,15 @@ async function printIndexCoverage(indexPath, label) {
   try {
     const raw = await fs.readFile(indexPath, 'utf8');
     const parsed = JSON.parse(raw);
-    const index = IndexSchema.parse(parsed);
+    const coverageDiagnostics = parsed.coverageDiagnostics ?? {};
+    const routeCoverageSummary = coverageDiagnostics.routeCoverageSummary ?? {};
     console.error(`${label} coverageDiagnostics.routeCoverageSummary:`);
-    console.error(JSON.stringify(index.coverageDiagnostics.routeCoverageSummary, null, 2));
-    if (index.coverageDiagnostics.routeCoverageSummary.problematicExamples.length > 0) {
+    console.error(JSON.stringify(routeCoverageSummary, null, 2));
+    if ((routeCoverageSummary.problematicExamples ?? []).length > 0) {
       console.error(`${label} problematic route coverage examples:`);
-      console.error(JSON.stringify(index.coverageDiagnostics.routeCoverageSummary.problematicExamples, null, 2));
+      console.error(JSON.stringify(routeCoverageSummary.problematicExamples, null, 2));
     }
-    const groupedFailureReasons = groupFailureReasons(index.coverageDiagnostics.routeCoverage ?? []);
+    const groupedFailureReasons = groupFailureReasons(coverageDiagnostics.routeCoverage ?? []);
     if (Object.keys(groupedFailureReasons).length > 0) {
       console.error(`${label} failed route diagnostics grouped by fallback reason:`);
       console.error(JSON.stringify(groupedFailureReasons, null, 2));

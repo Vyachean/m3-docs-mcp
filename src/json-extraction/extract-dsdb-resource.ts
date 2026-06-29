@@ -19,6 +19,20 @@ import {
 
 export type DsdbResourceFetcher = (resourceName: string, resourceType?: string) => Promise<unknown | null>;
 
+/**
+ * A decoded token-table system captured at render time, alongside the resource name and the
+ * requested token sets it was rendered with — exactly the shape `buildTokenTableNode`
+ * (src/graph/token-table-graph.ts) needs to build a real structured `graph/token-tables.json`
+ * node, instead of discarding the decoded system after rendering Markdown. Callers of
+ * `renderDsdbResourceChunk`/the extraction pipeline may pass a `collectedTokenTables` sink array;
+ * when omitted, behavior (and the rendered Markdown) is unchanged.
+ */
+export type CollectedTokenTable = {
+  resourceName: string;
+  requestedTokenSets: string[];
+  system: TokenTableSystem;
+};
+
 export type UnsupportedResourceChunk = {
   readonly _unsupported: true;
   readonly issues: readonly string[];
@@ -53,7 +67,8 @@ export function extractResourceName(raw: unknown): string | null {
 export async function renderDsdbResourceChunk(
   chunk: DecodedResourceChunk | UnsupportedResourceChunk,
   fetchResource: DsdbResourceFetcher,
-  pageDiagnostic: ExtractionPageDiagnostic
+  pageDiagnostic: ExtractionPageDiagnostic,
+  collectedTokenTables: CollectedTokenTable[] = []
 ): Promise<string> {
   pageDiagnostic.resourceChunksRequested = (pageDiagnostic.resourceChunksRequested ?? 0) + 1;
 
@@ -168,6 +183,10 @@ export async function renderDsdbResourceChunk(
 
   pageDiagnostic.tokenTablesDecoded = (pageDiagnostic.tokenTablesDecoded ?? 0) + 1;
   pageDiagnostic.resourceChunksDecoded = (pageDiagnostic.resourceChunksDecoded ?? 0) + 1;
+  // Capture the decoded system (before rendering throws it away) so the graph builder can
+  // construct a real graph/token-tables.json node with token name/value/role data — see
+  // CollectedTokenTable's doc comment and src/graph/token-table-graph.ts's buildTokenTableNode.
+  collectedTokenTables.push({ resourceName, requestedTokenSets, system });
 
   let tokenRender: ReturnType<typeof renderTokenTableWithDiagnostics>;
   try {

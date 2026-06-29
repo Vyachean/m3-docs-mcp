@@ -8,6 +8,7 @@ import { pushPageDiagnostic, createEmptyExtractionDiagnostics, pushRouteDiagnost
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from '../src/json-extraction/capture-network-json.js';
 import { classifyJsonResponse, classifyResponseType } from '../src/json-extraction/classify-json-response.js';
 import { extractContentPageToMaterialPage } from '../src/json-extraction/extract-content-page.js';
+import { buildTokenTableNode } from '../src/graph/token-table-graph.js';
 import { deriveCollectionSegmentFromSlug, extractPageDataMetadata } from '../src/json-extraction/extract-page-data.js';
 import { buildJsonPageBundleFromResponses, writeRawJsonDebugFiles } from '../src/json-extraction/json-bundle.js';
 import { buildDsdbResourceCandidateUrls, buildPageDataCandidateUrls, fetchJsonPageBundle } from '../src/json-extraction/fetch-json-page.js';
@@ -126,6 +127,41 @@ describe('JSON-first extraction', () => {
         multipleContextVariantsAvailable: true
       })
     ]);
+  });
+
+  it('collects the decoded token-table system alongside the rendered Markdown, for the documentation graph builder', async () => {
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/components/button/specs',
+      pageData: null,
+      contentPage: fixture('content-token-table.json'),
+      fetchResource: async (resourceName, resourceType) => (
+        resourceType === 'TOKEN_TABLE' && resourceName === 'designSystems/20543ce18892f7d9/components/6c818a16475113bd'
+      ) ? fixture('token-table-resource.json') : null
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.collectedTokenTables).toHaveLength(1);
+    const collected = result.collectedTokenTables[0]!;
+    expect(collected.resourceName).toBe('designSystems/20543ce18892f7d9/components/6c818a16475113bd');
+    expect(Array.isArray(collected.requestedTokenSets)).toBe(true);
+    expect(collected.system.tokenSets.length).toBeGreaterThan(0);
+
+    // The graph builder can consume this directly — real token name/value/role data, not an
+    // opaque Markdown blob — closing the stage 3/4 TODO documented in token-table-graph.ts.
+    const node = buildTokenTableNode({
+      resourceId: `token-table:${collected.resourceName}`,
+      resourceName: collected.resourceName,
+      system: collected.system,
+      requestedTokenSets: collected.requestedTokenSets,
+      routes: ['/components/button/specs']
+    });
+    expect(node.resourceId).toBe('token-table:designSystems/20543ce18892f7d9/components/6c818a16475113bd');
+    expect(node.routes).toEqual(['/components/button/specs']);
+    expect(node.tokenSets.length).toBeGreaterThan(0);
+    const allTokens = node.tokenSets.flatMap((set) => set.tokens);
+    expect(allTokens.some((token) => token.tokenName === 'md.comp.button.container.color')).toBe(true);
+    const containerColorToken = allTokens.find((token) => token.tokenName === 'md.comp.button.container.color');
+    expect(containerColorToken?.values.some((value) => value.role === 'light' && value.value)).toBe(true);
   });
 
   it('renders missing token sets as explicit notes and records diagnostics', async () => {
