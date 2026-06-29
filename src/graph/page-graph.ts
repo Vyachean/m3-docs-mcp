@@ -10,6 +10,14 @@ import {
   type SectionGraph,
   type SourceArtifactRef,
 } from './graph-types.js';
+import {
+  imageResourceId,
+  statusTableResourceId,
+  tokenTablePlaceholderResourceId,
+  tokenTableResourceId,
+  unknownResourceId,
+  videoResourceId,
+} from './resource-identity.js';
 
 /** Maps an ArtifactRecord (page-data/carbon-content/dsdb-resource/network-capture) to a graph SourceArtifactRef. */
 function toSourceArtifactRef(artifact: ArtifactRecord): SourceArtifactRef | null {
@@ -25,16 +33,14 @@ function toSourceArtifactRef(artifact: ArtifactRecord): SourceArtifactRef | null
  * matching `ExtractionPageDiagnostic` and `ExtractionRouteDiagnostic` entries recorded during
  * the same crawl (src/json-extraction/diagnostics.ts's pushPageDiagnostic/pushRouteDiagnostic).
  *
- * Caveat (documented for the renderer-refactor stage, stage 5): the current extraction pipeline
- * (extract-content-page.ts) discards the decoded section/block/chunk tree once it has rendered
- * each chunk to a Markdown string — `ExtractionPageDiagnostic` only records aggregate counters
- * (tokenTables, imageCount, videoCount, unknownChunkTypes, ...), not chunk-level identity. So
- * this builder can faithfully reconstruct: headings (one section per heading), and synthetic
- * per-page chunk nodes for token tables / images / videos / unsupported chunks *as counts*, but
- * it cannot assign each chunk a stable identity tied to a specific resource-graph node yet — that
- * requires extract-content-page.ts to thread chunk ids through (a stage 5 prerequisite, noted in
- * the report). resourceIds/tokenTableIds on PageNode are therefore populated by resource-graph.ts
- * via route-matching (see buildResourceGraph), not by direct chunk back-references here.
+ * Resource chunks (token tables, status tables, images, videos, unknown resources) are derived
+ * from the same `ExtractionPageDiagnostic` counters/diagnostics that `resource-graph.ts` reads,
+ * using the *same* id construction (`./resource-identity.ts`) — so `PageNode.chunks[].resourceId`
+ * always points at a real `ResourceNode.resourceId`, and `resourceIds`/`tokenTableIds` are real
+ * cross-references rather than empty placeholders. `extract-content-page.ts` does not retain a
+ * stable per-chunk id from the Carbon JSON itself (the decoded schema has none — see schemas.ts),
+ * so chunk ids here are positional within a page (`chunk-token-table-0`, `chunk-image-1`, ...),
+ * stable for a given artifact snapshot.
  */
 
 function sectionsFromHeadings(headings: string[]): { sections: PageSectionNode[]; chunks: PageChunkNode[] } {
@@ -59,25 +65,65 @@ function sectionsFromHeadings(headings: string[]): { sections: PageSectionNode[]
   return { sections, chunks };
 }
 
-function syntheticResourceChunks(diagnostic: ExtractionPageDiagnostic | null): PageChunkNode[] {
+function resourceChunksFromDiagnostic(diagnostic: ExtractionPageDiagnostic | null): PageChunkNode[] {
   if (!diagnostic) return [];
   const chunks: PageChunkNode[] = [];
-  for (let i = 0; i < diagnostic.tokenTables; i += 1) {
-    chunks.push({ chunkId: `chunk-token-table-${i}`, chunkType: 'resource', resourceId: null, textExcerpt: 'token table' });
-  }
-  for (let i = 0; i < (diagnostic.statusTablesRequested ?? 0); i += 1) {
-    chunks.push({ chunkId: `chunk-status-table-${i}`, chunkType: 'resource', resourceId: null, textExcerpt: 'status table' });
-  }
+
+  diagnostic.tokenContextDiagnostics.forEach((tokenDiagnostic, index) => {
+    const resourceId = tokenTableResourceId(diagnostic.path, index, tokenDiagnostic.resourceName ?? null);
+    chunks.push({
+      chunkId: `chunk-token-table-${index}`,
+      chunkType: 'resource',
+      resourceId,
+      textExcerpt: tokenDiagnostic.resourceName ?? 'token table',
+    });
+  });
+  (diagnostic.tokenTablePlaceholderReasons ?? []).forEach((reason, index) => {
+    const resourceId = tokenTablePlaceholderResourceId(diagnostic.path, index);
+    chunks.push({
+      chunkId: `chunk-token-table-placeholder-${index}`,
+      chunkType: 'resource',
+      resourceId,
+      textExcerpt: `token table (${reason})`,
+    });
+  });
+
+  (diagnostic.statusTableDiagnostics ?? []).forEach((statusDiagnostic, index) => {
+    const resourceId = statusTableResourceId(diagnostic.path, index, statusDiagnostic.resourceName ?? null);
+    chunks.push({
+      chunkId: `chunk-status-table-${index}`,
+      chunkType: 'resource',
+      resourceId,
+      textExcerpt: statusDiagnostic.resourceName ?? 'status table',
+    });
+  });
+
   for (let i = 0; i < diagnostic.imageCount; i += 1) {
-    chunks.push({ chunkId: `chunk-image-${i}`, chunkType: 'image', resourceId: null, textExcerpt: null });
+    chunks.push({ chunkId: `chunk-image-${i}`, chunkType: 'image', resourceId: imageResourceId(diagnostic.path, i), textExcerpt: null });
   }
   for (let i = 0; i < diagnostic.videoCount; i += 1) {
-    chunks.push({ chunkId: `chunk-video-${i}`, chunkType: 'video', resourceId: null, textExcerpt: null });
+    chunks.push({ chunkId: `chunk-video-${i}`, chunkType: 'video', resourceId: videoResourceId(diagnostic.path, i), textExcerpt: null });
   }
   diagnostic.unknownChunkTypes.forEach((type, i) => {
-    chunks.push({ chunkId: `chunk-unsupported-${i}`, chunkType: 'unsupported', resourceId: null, textExcerpt: type });
+    chunks.push({ chunkId: `chunk-unsupported-${i}`, chunkType: 'unsupported', resourceId: unknownResourceId(diagnostic.path, i), textExcerpt: type });
   });
   return chunks;
+}
+
+/** Real cross-references for `PageNode.resourceIds`/`tokenTableIds`, derived from the same chunk
+ *  list (deduplicated — a token table with multiple resolved token diagnostics still produces
+ *  one resourceId, matching how resource-graph.ts's `upsertResource` collapses them). */
+function resourceCrossReferences(chunks: PageChunkNode[]): { resourceIds: string[]; tokenTableIds: string[] } {
+  const resourceIds: string[] = [];
+  const tokenTableIds: string[] = [];
+  for (const chunk of chunks) {
+    if (!chunk.resourceId) continue;
+    if (!resourceIds.includes(chunk.resourceId)) resourceIds.push(chunk.resourceId);
+    if (chunk.resourceId.startsWith('token-table:') && !tokenTableIds.includes(chunk.resourceId)) {
+      tokenTableIds.push(chunk.resourceId);
+    }
+  }
+  return { resourceIds, tokenTableIds };
 }
 
 function buildPageNode(
@@ -87,7 +133,8 @@ function buildPageNode(
   artifactsBySourceRoute: Map<string, ArtifactRecord[]>
 ): PageNode {
   const { sections, chunks: headingChunks } = sectionsFromHeadings(page.headings);
-  const resourceChunks = syntheticResourceChunks(pageDiagnostic);
+  const resourceChunks = resourceChunksFromDiagnostic(pageDiagnostic);
+  const { resourceIds, tokenTableIds } = resourceCrossReferences(resourceChunks);
   // sourceRoute is the page actually fetched (e.g. "/components/switch"); virtualRoute is this
   // specific tab's own route (e.g. "/components/switch/specs"). artifactsBySourceRoute is keyed
   // by the fetched page, so artifact lookup must use sourceRoute — but the PageNode's own `route`
@@ -106,13 +153,17 @@ function buildPageNode(
     title: page.title,
     section: page.section,
     tabs: routeDiagnostic?.tabName
-      ? [{ label: routeDiagnostic.tabName, route: routeDiagnostic.virtualRoute ?? route }]
+      ? [{
+          label: routeDiagnostic.tabName,
+          route: routeDiagnostic.virtualRoute ?? route,
+          sectionIndex: routeDiagnostic.tabMatchedSectionIndex ?? null,
+        }]
       : [],
     headings: page.headings,
     sections,
     chunks: [...headingChunks, ...resourceChunks],
-    resourceIds: [],
-    tokenTableIds: [],
+    resourceIds,
+    tokenTableIds,
     unsupportedChunkTypes: pageDiagnostic?.unknownChunkTypes ?? [],
     provenance: {
       sourceArtifacts,

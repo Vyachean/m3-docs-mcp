@@ -249,6 +249,17 @@ describe('crawlMaterialDocs', () => {
     await rm(cacheDir, { recursive: true, force: true });
   });
 
+  it('strictGraph: true aborts promotion instead of promoting a cache that fails real validation', async () => {
+    // This DOM-fallback fixture only covers 2 pages (dialogs/index), nowhere near satisfying the
+    // fixed required-route set that validateStructuredGraph/validateRenderedOutput/
+    // validateCoverageSummary check in full mode — exactly the case where the old non-fatal
+    // behavior would silently promote a broken-by-the-spec's-definition cache. strictGraph:true
+    // must reject promotion instead.
+    await expect(
+      crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2, force: true, strictGraph: true })
+    ).rejects.toThrow(/Strict cache validation failed/);
+  });
+
   it('crawls discovered same-origin documentation pages into a promoted cache', async () => {
     const index = await crawlMaterialDocs({ cacheDir, allowBrowserFallback: true, maxPages: 5, minPageCount: 2, force: true });
 

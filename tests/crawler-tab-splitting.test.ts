@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pagesDir } from '../src/cache.js';
+import { buildGraphFromIndex } from '../src/graph/build-graph.js';
 
 // No Playwright browser should be needed for this scenario (everything resolves via direct
 // JSON), but mock it the same way every other crawler-flow test does so a real Chromium install
@@ -134,6 +135,52 @@ describe('deterministic pipeline: bundle-supplement + tab-splitting (real fixtur
           || (routeDiag.tokenTablesRenderedFromInline ?? 0) > 0;
         expect(explained).toBe(true);
       }
+    }
+
+    // Real tab/section matching (graph/route-graph.ts's backfillRouteTabMatches): the buttons
+    // route's tabs were genuinely matched against decoded content-page sections at crawl time
+    // (matchTabToSection), so the graph must not collapse them to the old hardcoded
+    // null/'unmatched' placeholder.
+    const graph = buildGraphFromIndex(index, [], []);
+    const buttonsRoute = graph.routeGraph.routes.find((r) => r.route === '/components/buttons');
+    expect(buttonsRoute?.tabs.length).toBeGreaterThan(0);
+    for (const tab of buttonsRoute?.tabs ?? []) {
+      expect(tab.matchReason).not.toBe('unmatched');
+      expect(tab.matchedSectionId).toBeTruthy();
+    }
+
+    // Real resource cross-links (graph/page-graph.ts + resource-graph.ts sharing resource-identity.ts):
+    // any page chunk that claims to reference a resource must point at a resource that actually
+    // exists in the resource graph, and PageNode.resourceIds must include it. This fixture has no
+    // token/status tables, so this just guards the invariant for whichever chunks do exist; a
+    // richer fixture with real resource chunks is covered in tests/graph-page-resource-links.test.ts.
+    const resourceIds = new Set(graph.resourceGraph.resources.map((r) => r.resourceId));
+    for (const page of graph.pageGraph.pages) {
+      for (const chunk of page.chunks) {
+        if (chunk.chunkType !== 'resource') continue;
+        expect(chunk.resourceId).toBeTruthy();
+        expect(resourceIds.has(chunk.resourceId!)).toBe(true);
+        expect(page.resourceIds).toContain(chunk.resourceId);
+      }
+    }
+
+    // Route normalization (spec: route ids must be paths, never full URLs) — regression guard
+    // for the bug this test caught: crawler.ts's tab-splitting loop was passing the full
+    // `https://m3.material.io/...` tab URL as `virtualRoute` instead of its pathname, which
+    // silently broke RouteNode.tabs[].route <-> PageNode.route matching (backfillRouteTabMatches
+    // above would never find a match). Every route-shaped field across the graph must be a path.
+    const routeLikeFields = [
+      ...graph.routeGraph.routes.flatMap((r) => [r.route, r.canonicalRoute, ...r.aliases, ...r.tabs.map((t) => t.route)]),
+      ...graph.pageGraph.pages.flatMap((p) => [
+        p.route,
+        ...p.tabs.map((t) => t.route),
+        p.provenance.sourceRoute,
+        p.provenance.canonicalRoute,
+        p.provenance.virtualRoute,
+      ]),
+    ].filter((v): v is string => Boolean(v));
+    for (const field of routeLikeFields) {
+      expect(field).not.toContain('://');
     }
   }, 30_000);
 

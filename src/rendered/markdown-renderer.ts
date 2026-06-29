@@ -6,6 +6,8 @@ import { readPageGraph, readProvenanceGraph } from '../graph/graph-store.js';
 import type { PageGraph, PageNode, ProvenanceGraph } from '../graph/graph-types.js';
 import { extractContentPageToMaterialPage, type JsonExtractionResult } from '../json-extraction/extract-content-page.js';
 import type { DsdbResourceFetcher } from '../json-extraction/extract-dsdb-resource.js';
+import { extractPageDataMetadata } from '../json-extraction/extract-page-data.js';
+import { parseContentPage } from '../json-extraction/schemas.js';
 import type { MaterialPage } from '../types.js';
 import { artifactIdsForSubject, buildRendererRouteReport, collectRequiredRouteFailures } from './build-renderer-report.js';
 import { REQUIRED_RENDERER_ROUTES, type RendererReport, type RendererRouteReport } from './renderer-report.js';
@@ -23,12 +25,14 @@ import { REQUIRED_RENDERER_ROUTES, type RendererReport, type RendererRouteReport
  *   tagged with a `sourceRoute`) can be rebuilt; routes that only ever had a DOM/browser
  *   extraction (no persisted page-data/carbon-content artifact) are skipped and reported as
  *   `renderedMarkdownPath: null` in the renderer report, not silently dropped.
- * - Tab-split virtual pages are not reconstructed individually — the rebuild renders one
- *   Markdown page per `PageNode.provenance.sourceRoute` group (the route the artifacts were
- *   fetched for), matching what `runReferenceBasedRouteFetch` does for non-tab routes. Tab
- *   splitting depends on the bundle's tab list, which is not part of the raw/graph snapshot;
- *   broadening this is a stage 6+ concern, not required for stage 5's "renderer doesn't need a
- *   live fetch" property.
+ * - Tab-split virtual pages (e.g. /components/switch/{overview,specs}) ARE reconstructed
+ *   individually: when a `PageNode.provenance.sourceRoute` group contains more than one tabbed
+ *   PageNode, this renders one Markdown page per tab from the single shared page-data/
+ *   carbon-content artifact, using `PageTabRef.sectionIndex` (recorded at crawl time by
+ *   `matchTabToSection`, threaded through `ExtractionRouteDiagnostic.tabMatchedSectionIndex` and
+ *   `page-graph.ts`) to select the matched section — the same `sectionIndices`/`titleOverride`
+ *   mechanism `crawler.ts`'s live tab-splitting loop uses, just driven from the graph instead of
+ *   a live bundle-table lookup.
  */
 
 export type RebuildFromRawResult = {
@@ -123,6 +127,48 @@ export async function rebuildMarkdownFromRaw(
             page: null,
             pageDiagnostic: null,
             contentPage: null,
+            sourceArtifactIds: artifactIdsForSubject(provenanceGraph, `page:${pageNode.pageId}`),
+          })
+        );
+      }
+      continue;
+    }
+
+    // Tab-split virtual pages: a source route group with more than one tabbed PageNode means the
+    // single fetched page-data/carbon-content artifact was split into one cache page per tab at
+    // crawl time (crawler.ts's tab-splitting loop) — reconstruct it the same way here, one
+    // extraction per tab, instead of one combined extraction for the whole group.
+    const isTabbedGroup = pageNodes.length > 1 && pageNodes.every((node) => node.tabs.length > 0);
+    if (isTabbedGroup) {
+      const decodedContentPage = contentJson ? parseContentPage(contentJson) : null;
+      const parentTitle = pageDataJson ? extractPageDataMetadata(pageDataJson).title : null;
+      const effectiveParentTitle = decodedContentPage?.title ?? parentTitle ?? null;
+
+      for (const pageNode of pageNodes) {
+        const tab = pageNode.tabs[0]!;
+        const tabUrl = routeUrlFor(baseUrl, pageNode.route);
+        const tabExtraction: JsonExtractionResult = await extractContentPageToMaterialPage({
+          url: tabUrl,
+          pageData: pageDataJson,
+          contentPage: contentJson,
+          fetchResource,
+          sectionIndices: tab.sectionIndex !== null ? [tab.sectionIndex] : undefined,
+          titleOverride: effectiveParentTitle ? `${effectiveParentTitle} ${tab.label}` : tab.label,
+          routeValidation: {
+            sourceRoute,
+            canonicalRoute: pageNode.provenance.canonicalRoute ?? sourceRoute,
+            virtualRoute: pageNode.route,
+          },
+        });
+
+        if (!tabExtraction.fallbackReason) pages.push(tabExtraction.page);
+
+        routeReports.push(
+          buildRendererRouteReport({
+            route: pageNode.route,
+            page: tabExtraction.fallbackReason ? null : tabExtraction.page,
+            pageDiagnostic: tabExtraction.pageDiagnostic,
+            contentPage: contentJson,
             sourceArtifactIds: artifactIdsForSubject(provenanceGraph, `page:${pageNode.pageId}`),
           })
         );

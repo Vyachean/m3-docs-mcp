@@ -1,6 +1,14 @@
 import type { ExtractionPageDiagnostic, ExtractionRouteDiagnostic, StatusTableDiagnostic, TokenContextDiagnostic } from '../types.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { ResourceGraphSchema, type ResourceGraph, type ResourceNode, type SourceArtifactRef } from './graph-types.js';
+import {
+  imageResourceId,
+  statusTableResourceId,
+  tokenTablePlaceholderResourceId,
+  tokenTableResourceId,
+  unknownResourceId,
+  videoResourceId,
+} from './resource-identity.js';
 
 /** Maps an ArtifactRecord (page-data/carbon-content/dsdb-resource/network-capture) to a graph SourceArtifactRef. */
 function toSourceArtifactRef(artifact: ArtifactRecord): SourceArtifactRef | null {
@@ -64,7 +72,7 @@ function tokenTableResources(
 ): void {
   diagnostic.tokenContextDiagnostics.forEach((tokenDiagnostic: TokenContextDiagnostic, index: number) => {
     const resourceName = tokenDiagnostic.resourceName;
-    const id = resourceName ? `token-table:${resourceName}` : `token-table:${diagnostic.path}:${index}`;
+    const id = tokenTableResourceId(diagnostic.path, index, resourceName ?? null);
     const unresolved = tokenDiagnostic.unresolvedTokenCount > 0 || tokenDiagnostic.missingRequestedTokenSetCount > 0;
     const matchedArtifact = resourceName ? findArtifactForResourceName(artifactsByTrailingSegment, resourceName) : null;
     upsertResource(
@@ -76,6 +84,7 @@ function tokenTableResources(
         resourceName,
         sourceArtifact: matchedArtifact ? toSourceArtifactRef(matchedArtifact) : null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: unresolved ? 'unresolved' : 'resolved',
         unresolvedReason: unresolved ? 'unresolved-or-missing-token-sets' : null,
@@ -86,7 +95,7 @@ function tokenTableResources(
   });
 
   (diagnostic.tokenTablePlaceholderReasons ?? []).forEach((reason: string, index: number) => {
-    const id = `token-table:${diagnostic.path}:placeholder:${index}`;
+    const id = tokenTablePlaceholderResourceId(diagnostic.path, index);
     upsertResource(
       resources,
       id,
@@ -96,6 +105,7 @@ function tokenTableResources(
         resourceName: null,
         sourceArtifact: null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: 'unresolved',
         unresolvedReason: reason,
@@ -114,7 +124,7 @@ function statusTableResources(
 ): void {
   (diagnostic.statusTableDiagnostics ?? []).forEach((statusDiagnostic: StatusTableDiagnostic, index: number) => {
     const resourceName = statusDiagnostic.resourceName;
-    const id = resourceName ? `status-table:${resourceName}` : `status-table:${diagnostic.path}:${index}`;
+    const id = statusTableResourceId(diagnostic.path, index, resourceName ?? null);
     const unresolved = !statusDiagnostic.rendered;
     const matchedArtifact = resourceName ? findArtifactForResourceName(artifactsByTrailingSegment, resourceName) : null;
     upsertResource(
@@ -126,6 +136,7 @@ function statusTableResources(
         resourceName,
         sourceArtifact: matchedArtifact ? toSourceArtifactRef(matchedArtifact) : null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: unresolved ? 'unresolved' : 'resolved',
         unresolvedReason: unresolved
@@ -146,7 +157,7 @@ function mediaResources(
   route: string | undefined
 ): void {
   for (let i = 0; i < diagnostic.imageCount; i += 1) {
-    const id = `image:${diagnostic.path}:${i}`;
+    const id = imageResourceId(diagnostic.path, i);
     upsertResource(
       resources,
       id,
@@ -156,6 +167,7 @@ function mediaResources(
         resourceName: null,
         sourceArtifact: null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: 'resolved',
         unresolvedReason: null,
@@ -165,7 +177,7 @@ function mediaResources(
     );
   }
   for (let i = 0; i < diagnostic.videoCount; i += 1) {
-    const id = `video:${diagnostic.path}:${i}`;
+    const id = videoResourceId(diagnostic.path, i);
     upsertResource(
       resources,
       id,
@@ -175,6 +187,7 @@ function mediaResources(
         resourceName: null,
         sourceArtifact: null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: 'resolved',
         unresolvedReason: null,
@@ -191,7 +204,7 @@ function unknownResources(
   route: string | undefined
 ): void {
   diagnostic.unknownResourceTypes.forEach((resourceType: string, index: number) => {
-    const id = `unknown-resource:${diagnostic.path}:${index}`;
+    const id = unknownResourceId(diagnostic.path, index);
     upsertResource(
       resources,
       id,
@@ -201,6 +214,7 @@ function unknownResources(
         resourceName: resourceType,
         sourceArtifact: null,
         routes: [],
+        pageIds: [],
         chunkIds: [],
         status: 'unresolved',
         unresolvedReason: `unknown-resource-type:${resourceType}`,

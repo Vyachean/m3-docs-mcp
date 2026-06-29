@@ -168,7 +168,8 @@ describe('serveMcp', () => {
       'get_route_artifacts',
       'get_raw_artifact',
       'explain_route_coverage',
-      'explain_resource_resolution'
+      'explain_resource_resolution',
+      'search_structured_docs'
     ]);
     expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
   });

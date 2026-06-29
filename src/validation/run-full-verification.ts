@@ -7,7 +7,7 @@ import { validateStructuredGraph } from './validate-structured-graph.js';
 import { validateRenderedOutput } from './validate-rendered-output.js';
 import { validateSearchIndex } from './validate-search-index.js';
 import { validateCoverageSummary, type CoverageMode } from './validate-coverage-summary.js';
-import type { CheckResult } from './types.js';
+import { failedCheck, type CheckResult } from './types.js';
 
 /**
  * Orchestrates the documented stage 1-7 `verify:cache:full` / `verify:cache:smoke` check pipeline
@@ -78,17 +78,24 @@ export async function runFullVerification(options: RunFullVerificationOptions = 
   if (!stage2.passed) return finish(results);
 
   if (options.skipBrowserOracle) {
+    if (mode === 'full') {
+      results.push(failedCheck('browser-oracle', [
+        'Browser oracle was explicitly skipped while running in full mode — full verification requires a real browser-oracle pass, not a skip-as-pass.',
+      ], { skipped: true, skipReason: 'explicitly-skipped', strict: true }));
+      return finish(results);
+    }
     results.push({
       stage: 'browser-oracle',
       passed: true,
       reasons: ['Browser oracle explicitly skipped via skipBrowserOracle option.'],
-      details: { skipped: true, skipReason: 'explicitly-skipped' },
+      details: { skipped: true, skipReason: 'explicitly-skipped', strict: false },
     });
   } else {
     const stage3 = await validateBrowserOracle({
       cacheDir,
       captureOptions: options.browserOracleCaptureOptions,
       captureRequiredRoutesFn: options.browserOracleCaptureFn,
+      strict: mode === 'full',
     });
     results.push(stage3);
     if (!stage3.passed) return finish(results);

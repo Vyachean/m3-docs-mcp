@@ -22,6 +22,17 @@ afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
 });
 
+/** A browser-oracle capture with zero routes — trivially passes `compareCaptureToSnapshot`
+ *  (nothing to compare) without launching a real browser. Used by tests that want stage 3 to pass
+ *  so they can exercise later stages, without depending on the explicit-skip behavior (which now
+ *  fails in full mode — see the dedicated test for that). */
+const EMPTY_BROWSER_ORACLE_CAPTURE_FN = async () => ({
+  schemaVersion: 1 as const,
+  generatedAt: '2026-06-01T00:00:00.000Z',
+  baseUrl: 'https://m3.material.io',
+  routes: [],
+});
+
 const REQUIRED_ROUTES = [
   '/components/switch/overview',
   '/components/switch/specs',
@@ -107,12 +118,12 @@ async function writePassingFixtures(): Promise<void> {
 }
 
 describe('runFullVerification', () => {
-  it('runs all stages in order and passes when every stage is healthy (browser oracle skipped explicitly)', async () => {
+  it('runs all stages in order and passes when every stage is healthy', async () => {
     await writePassingFixtures();
     const verification = await runFullVerification({
       cacheDir,
       mode: 'full',
-      skipBrowserOracle: true,
+      browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN,
       // The real MaterialDocsStore-backed search path is exercised in validate-search-index.test.ts;
       // here we inject a fake store so this orchestration test only depends on stage ordering, not
       // on building a real search index from fixture pages.
@@ -128,12 +139,35 @@ describe('runFullVerification', () => {
       'search-index',
       'coverage-summary',
     ]);
+    expect(verification.results.find((r) => r.stage === 'browser-oracle')?.details?.skipped).toBe(false);
+    expect(verification.allPassed).toBe(true);
+  });
+
+  it('fails at the browser-oracle stage when explicitly skipped in full mode (a skip must never be reported as a normal pass in full verification)', async () => {
+    await writePassingFixtures();
+    const verification = await runFullVerification({ cacheDir, mode: 'full', skipBrowserOracle: true });
+    expect(verification.allPassed).toBe(false);
+    expect(verification.firstFailedStage).toBe('browser-oracle');
+    expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph', 'browser-oracle']);
     expect(verification.results.find((r) => r.stage === 'browser-oracle')?.details?.skipped).toBe(true);
+  });
+
+  it('allows skipping the browser oracle in smoke mode, clearly reported as skipped', async () => {
+    await writePassingFixtures();
+    const verification = await runFullVerification({
+      cacheDir,
+      mode: 'smoke',
+      skipBrowserOracle: true,
+      searchIndexStore: { searchDocs: async () => [{}] },
+    });
+    const oracleResult = verification.results.find((r) => r.stage === 'browser-oracle');
+    expect(oracleResult?.passed).toBe(true);
+    expect(oracleResult?.details?.skipped).toBe(true);
   });
 
   it('stops after stage 1 (raw-snapshot) when it fails, never reaching later stages', async () => {
     // No fixtures written at all -> manifest.json missing -> stage 1 fails immediately.
-    const verification = await runFullVerification({ cacheDir, mode: 'full', skipBrowserOracle: true });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('raw-snapshot');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot']);
@@ -143,7 +177,7 @@ describe('runFullVerification', () => {
     await writePassingFixtures();
     // Remove the route graph file so stage 2 fails after stage 1 passes.
     await rm(path.join(cacheDir, 'graph', 'routes.json'), { force: true });
-    const verification = await runFullVerification({ cacheDir, mode: 'full', skipBrowserOracle: true });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('route-graph');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph']);
@@ -160,13 +194,14 @@ describe('runFullVerification', () => {
         resourceName: 'broken',
         sourceArtifact: null,
         routes: ['/components/switch/overview'],
+        pageIds: [],
         chunkIds: [],
         status: 'unresolved',
         unresolvedReason: 'missing-requested-token-sets',
       }],
     }, cacheDir);
 
-    const verification = await runFullVerification({ cacheDir, mode: 'full', skipBrowserOracle: true });
+    const verification = await runFullVerification({ cacheDir, mode: 'full', browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN });
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('structured-graph');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph', 'browser-oracle', 'structured-graph']);

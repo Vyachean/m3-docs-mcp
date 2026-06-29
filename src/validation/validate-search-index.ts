@@ -1,4 +1,6 @@
 import { getDefaultCacheDir } from '../cache.js';
+import { loadGraphToolContext } from '../mcp-tools/context.js';
+import { searchStructuredDocs } from '../mcp-tools/search-structured-docs.js';
 import { MaterialDocsStore } from '../store.js';
 import { failedCheck, passedCheck, type CheckResult } from './types.js';
 
@@ -48,9 +50,24 @@ export async function validateSearchIndex(input: ValidateSearchIndexInput = {}):
     }
   }
 
-  if (reasons.length > 0) {
-    return failedCheck(stage, reasons, { resultCounts });
+  // Structured search (spec: "structured search / search index" is part of full verification,
+  // not just the Markdown-search smoke proxy above) — only checked against the real cache dir
+  // (callers injecting a fake `store` are testing stage orchestration, not this cache's graph).
+  let structuredSearchResultCount: number | null = null;
+  if (!input.store) {
+    const context = await loadGraphToolContext(cacheDir);
+    const structuredResult = searchStructuredDocs(context, queries[0] ?? 'button', 5);
+    if (structuredResult.available) {
+      structuredSearchResultCount = structuredResult.results.length;
+      if (structuredResult.results.length === 0) {
+        reasons.push(`Structured search query "${queries[0] ?? 'button'}" returned zero results against the documentation graph.`);
+      }
+    }
   }
 
-  return passedCheck(stage, { resultCounts });
+  if (reasons.length > 0) {
+    return failedCheck(stage, reasons, { resultCounts, structuredSearchResultCount });
+  }
+
+  return passedCheck(stage, { resultCounts, structuredSearchResultCount });
 }

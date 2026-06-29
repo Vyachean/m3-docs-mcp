@@ -36,7 +36,11 @@ import { upsertArtifactRecord } from './raw-artifacts/artifact-index.js';
 import { createFetchDiagnostic, type FetchDiagnostic } from './raw-artifacts/fetch-diagnostics.js';
 import { writeFetchReport } from './raw-artifacts/fetch-report.js';
 import { sha256Hex } from './raw-artifacts/hash.js';
-import { createCacheManifest, writeManifest } from './manifest.js';
+import { createCacheManifest, writeManifest, type ManifestHealthSummary } from './manifest.js';
+import { validateRawSnapshot } from './validation/validate-raw-snapshot.js';
+import { validateStructuredGraph } from './validation/validate-structured-graph.js';
+import { validateRenderedOutput } from './validation/validate-rendered-output.js';
+import { validateCoverageSummary } from './validation/validate-coverage-summary.js';
 import type { ArtifactRecord, ArtifactSourceMethod } from './raw-artifacts/artifact-types.js';
 import { buildRendererRouteReport, collectRequiredRouteFailures } from './rendered/build-renderer-report.js';
 import { writeRendererReport, type RendererRouteReport } from './rendered/renderer-report.js';
@@ -1803,6 +1807,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     virtualRoute,
     tabName,
     tabSlug,
+    tabMatchedBy,
+    tabMatchedSectionIndex,
     pageDataFetchedOnce,
     pageDataUrl,
     pageDataStatus,
@@ -1872,6 +1878,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     virtualRoute?: string;
     tabName?: string;
     tabSlug?: string;
+    tabMatchedBy?: ExtractionRouteDiagnostic['tabMatchedBy'];
+    tabMatchedSectionIndex?: number;
     pageDataFetchedOnce?: boolean;
     pageDataUrl?: string;
     pageDataStatus?: number | string;
@@ -1945,6 +1953,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     ...(virtualRoute ? { virtualRoute } : {}),
     ...(tabName ? { tabName } : {}),
     ...(tabSlug ? { tabSlug } : {}),
+    ...(tabMatchedBy ? { tabMatchedBy } : {}),
+    ...(tabMatchedSectionIndex !== undefined ? { tabMatchedSectionIndex } : {}),
     ...(pageDataFetchedOnce !== undefined ? { pageDataFetchedOnce } : {}),
     ...(pageDataUrl ? { pageDataUrl } : {}),
     ...(pageDataStatus !== undefined ? { pageDataStatus } : {}),
@@ -2866,25 +2876,33 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
   await writeIndex(index, cacheDir);
 
-  // Cache schema v2 additions: artifact index, fetch diagnostics report, and manifest.json. All
-  // additive and non-fatal to cache promotion — failures here are logged, never thrown, mirroring
-  // the existing buildAndWriteGraph error-handling convention below.
-  try {
-    for (const record of artifactRecords) await upsertArtifactRecord(record, cacheDir);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    logError(`Failed to write raw artifact index (non-fatal, cache promotion continues): ${reason}`);
-    logger?.log('warn', 'raw-artifact-index:write-failed', { phase: 'promoting', reason });
-  }
-  try {
-    await writeFetchReport(fetchDiagnostics, cacheDir);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    logError(`Failed to write fetch diagnostics report (non-fatal, cache promotion continues): ${reason}`);
-    logger?.log('warn', 'fetch-report:write-failed', { phase: 'promoting', reason });
-  }
+  // Cache schema v2 additions: artifact index, fetch diagnostics report, graph, and manifest.json.
+  // By default these are additive and non-fatal to cache promotion (failures are logged, never
+  // thrown) — but when `options.strictGraph` is set (the `update` CLI's `--strict-graph` flag,
+  // used by `verify:cache:full`), any failure here — or a failure of the always-on (no-network)
+  // raw-snapshot/structured-graph/rendered-output/coverage-summary validation stages run against
+  // the result below — throws instead, aborting promotion (the caller's existing failed-staging
+  // preservation logic then keeps the staging dir for inspection instead of promoting it).
+  const strictGraph = options.strictGraph ?? false;
+  const runPromotionStep = async (stage: string, label: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const suffix = strictGraph ? 'fatal in strict mode, aborting promotion' : 'non-fatal, cache promotion continues';
+      logError(`Failed to ${label} (${suffix}): ${reason}`);
+      logger?.log('warn', `${stage}:write-failed`, { phase: 'promoting', reason, strict: strictGraph });
+      if (strictGraph) throw err instanceof Error ? err : new Error(reason);
+    }
+  };
 
-  try {
+  await runPromotionStep('raw-artifact-index', 'write raw artifact index', async () => {
+    for (const record of artifactRecords) await upsertArtifactRecord(record, cacheDir);
+  });
+  await runPromotionStep('fetch-report', 'write fetch diagnostics report', async () => {
+    await writeFetchReport(fetchDiagnostics, cacheDir);
+  });
+  await runPromotionStep('renderer-report', 'write renderer diagnostics report', async () => {
     const requiredRouteFailures = collectRequiredRouteFailures(rendererRouteReports);
     await writeRendererReport({
       schemaVersion: 1,
@@ -2892,55 +2910,66 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       routes: rendererRouteReports,
       requiredRouteFailures
     }, cacheDir);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    logError(`Failed to write renderer diagnostics report (non-fatal, cache promotion continues): ${reason}`);
-    logger?.log('warn', 'renderer-report:write-failed', { phase: 'promoting', reason });
-  }
-
-  try {
+  });
+  await runPromotionStep('graph', 'build documentation graph', async () => {
     const collectedTokenTables = Array.from(collectedTokenTablesByPagePath.values()).flat();
     await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables);
-  } catch (err) {
-    // The documentation graph is an additive projection of `index` (stage 3/4 of the
-    // raw-snapshot-first cache architecture) — it must never block cache promotion. A failure
-    // here (e.g. an unexpected shape in coverageDiagnostics on an older previousIndex carried
-    // forward) is logged and surfaced via logger diagnostics, not thrown.
-    const reason = err instanceof Error ? err.message : String(err);
-    logError(`Failed to build documentation graph (non-fatal, cache promotion continues): ${reason}`);
-    logger?.log('warn', 'graph:build-failed', { phase: 'promoting', reason });
-  }
+  });
 
-  try {
-    const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
-    const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
-    const manifest = createCacheManifest({
-      baseUrl,
-      carbonVersion: carbonVersionForManifest,
-      siteMetaHash: siteMetaHashForManifest,
-      angularBundleHash: angularBundleHashForManifest,
-      sitemapHash: sitemapHashForManifest,
-      generatedAt: capturedAt,
-      counts: {
-        rawArtifacts: artifactRecords.length,
-        routes: routeCoverageBySourceRoute.size,
-        pages: pages.length,
-        markdownPages: pages.length,
-        dsdbResources: dsdbResourceArtifactCount,
-        tokenTables: tokenTableCount
-      },
-      health: {
-        rawSnapshot: artifactRecords.length > 0 ? 'verified' : 'unverified',
-        graph: 'unverified',
-        markdown: coverageDiagnostics.coverageHealth === 'verified' ? 'verified' : 'partial',
-        coverage: coverageDiagnostics.coverageHealth === 'broken' ? 'degraded' : coverageDiagnostics.coverageHealth
-      }
-    });
-    await writeManifest(manifest, cacheDir);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    logError(`Failed to write cache manifest (non-fatal, cache promotion continues): ${reason}`);
-    logger?.log('warn', 'manifest:write-failed', { phase: 'promoting', reason });
+  // Manifest health: a first pass with the cheap, always-available approximation (so
+  // validateRawSnapshot — which itself requires manifest.json to already exist — has something
+  // to read), then, in strict mode, a second pass replacing it with real validation results from
+  // the same no-network stages `verify:cache:full` uses (raw-snapshot/structured-graph/
+  // rendered-output/coverage-summary) against what was just written. Non-strict callers keep only
+  // the first-pass approximation (cheap, no extra validation pass, not required to be accurate
+  // for smoke/dev runs).
+  const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
+  const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
+  const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
+    baseUrl,
+    carbonVersion: carbonVersionForManifest,
+    siteMetaHash: siteMetaHashForManifest,
+    angularBundleHash: angularBundleHashForManifest,
+    sitemapHash: sitemapHashForManifest,
+    generatedAt: capturedAt,
+    counts: {
+      rawArtifacts: artifactRecords.length,
+      routes: routeCoverageBySourceRoute.size,
+      pages: pages.length,
+      markdownPages: pages.length,
+      dsdbResources: dsdbResourceArtifactCount,
+      tokenTables: tokenTableCount
+    },
+    health
+  });
+
+  await runPromotionStep('manifest', 'write cache manifest', async () => {
+    await writeManifest(buildManifest({
+      rawSnapshot: artifactRecords.length > 0 ? 'verified' : 'unverified',
+      graph: 'unverified',
+      markdown: coverageDiagnostics.coverageHealth === 'verified' ? 'verified' : 'partial',
+      coverage: coverageDiagnostics.coverageHealth === 'broken' ? 'degraded' : coverageDiagnostics.coverageHealth ?? 'unverified'
+    }), cacheDir);
+  });
+
+  if (strictGraph) {
+    const [rawSnapshotCheck, structuredGraphCheck, renderedOutputCheck, coverageSummaryCheck] = await Promise.all([
+      validateRawSnapshot({ cacheDir }),
+      validateStructuredGraph({ cacheDir }),
+      validateRenderedOutput({ cacheDir, mode: 'full' }),
+      validateCoverageSummary({ cacheDir, mode: 'full' })
+    ]);
+    await writeManifest(buildManifest({
+      rawSnapshot: rawSnapshotCheck.passed ? 'verified' : 'failed',
+      graph: structuredGraphCheck.passed ? 'verified' : 'failed',
+      markdown: renderedOutputCheck.passed ? 'verified' : 'failed',
+      coverage: coverageSummaryCheck.passed ? 'verified' : 'failed'
+    }), cacheDir);
+    const failed = [rawSnapshotCheck, structuredGraphCheck, renderedOutputCheck, coverageSummaryCheck].filter((c) => !c.passed);
+    if (failed.length > 0) {
+      const detail = failed.map((c) => `${c.stage}: ${c.reasons.join('; ')}`).join(' | ');
+      throw new Error(`Strict cache validation failed, aborting promotion: ${detail}`);
+    }
   }
 
   crawlPhase = 'promoting';
@@ -3212,7 +3241,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             fallbackReasons: ['json-no-sections'],
             ...sharedDiagnosticFields,
             virtualSource: 'tab',
-            virtualRoute: tabUrl,
+            virtualRoute: new URL(tabUrl).pathname,
             tabName: tab.label,
             tabSlug: slug
           }));
@@ -3234,7 +3263,14 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             exportedCarbonFileId: route.exportedCarbonFileId ?? null
           }
         });
-        await savePage(tabUrl, extraction, { virtualSource: 'tab', virtualRoute: tabUrl, tabName: tab.label, tabSlug: slug });
+        await savePage(tabUrl, extraction, {
+          virtualSource: 'tab',
+          virtualRoute: new URL(tabUrl).pathname,
+          tabName: tab.label,
+          tabSlug: slug,
+          tabMatchedBy: matchResult.matchedBy,
+          tabMatchedSectionIndex: matchResult.sectionIndex
+        });
       }
       return;
     }

@@ -12,7 +12,7 @@ import {
   writeSectionGraph,
   writeTokenTableGraph,
 } from './graph-store.js';
-import { buildRouteGraph } from './route-graph.js';
+import { backfillRouteTabMatches, buildRouteGraph } from './route-graph.js';
 import { buildTokenTableGraph, buildTokenTableNode } from './token-table-graph.js';
 import type { PageGraph, ProvenanceGraph, ResourceGraph, RouteGraph, SectionGraph, TokenTableGraph } from './graph-types.js';
 
@@ -38,9 +38,9 @@ export type CollectedTokenTableInput = {
  * extract-content-page.ts's `JsonExtractionResult.collectedTokenTables` and collected per saved
  * page by crawler.ts's `crawlIntoCache`. When the caller has no collected systems (e.g. an older
  * `MaterialIndex` built before this wiring), `tokenTables` is simply empty, matching the previous
- * behavior. One caveat remains for stage 5: chunk-level identity (tying a specific token table to
- * a specific page chunk) is still not threaded into PageNode.tokenTableIds — see page-graph.ts's
- * module doc.
+ * behavior. `PageNode.tokenTableIds`/`resourceIds` are populated directly by page-graph.ts (shared
+ * id scheme with resource-graph.ts, see resource-identity.ts) — `ResourceNode.pageIds` is then
+ * backfilled here (`backfillResourcePageIds`) once both graphs exist.
  *
  * Provenance: `artifactRecords` (optional, defaults to `[]`) is the list of raw artifacts
  * persisted during the crawl (src/raw-artifacts/artifact-store.ts's `persistArtifact`, collected
@@ -58,6 +58,24 @@ export type BuiltGraph = {
   sectionGraph: SectionGraph;
   provenanceGraph: ProvenanceGraph;
 };
+
+/** Backfills `ResourceNode.pageIds` from `PageNode.chunks[].resourceId` now that both graphs share
+ *  the same resource-id scheme (`./resource-identity.ts`) — mechanical once both sides have real
+ *  ids, no new data needed. Mutates `resourceGraph.resources` in place. */
+export function backfillResourcePageIdsForTest(resourceGraph: ResourceGraph, pageGraph: PageGraph): void {
+  backfillResourcePageIds(resourceGraph, pageGraph);
+}
+
+function backfillResourcePageIds(resourceGraph: ResourceGraph, pageGraph: PageGraph): void {
+  const resourceById = new Map(resourceGraph.resources.map((resource) => [resource.resourceId, resource]));
+  for (const page of pageGraph.pages) {
+    for (const chunk of page.chunks) {
+      if (!chunk.resourceId) continue;
+      const resource = resourceById.get(chunk.resourceId);
+      if (resource && !resource.pageIds.includes(page.pageId)) resource.pageIds.push(page.pageId);
+    }
+  }
+}
 
 export function buildGraphFromIndex(
   index: MaterialIndex,
@@ -89,6 +107,7 @@ export function buildGraphFromIndex(
     routeDiagnostics: index.extractionDiagnostics?.routeDiagnostics ?? [],
     artifactRecords,
   });
+  backfillRouteTabMatches(routeGraph.routes, index.extractionDiagnostics?.routeDiagnostics ?? [], pageGraph);
 
   const resourceGraph = buildResourceGraph({
     generatedAt,
@@ -96,6 +115,7 @@ export function buildGraphFromIndex(
     routeDiagnostics: index.extractionDiagnostics?.routeDiagnostics ?? [],
     artifactRecords,
   });
+  backfillResourcePageIds(resourceGraph, pageGraph);
 
   // Part C closure: build real token-table graph nodes from the decoded systems captured at
   // render time (CollectedTokenTable, threaded from extract-dsdb-resource.ts through

@@ -1,7 +1,8 @@
-import type { RouteCoverageEntry, RouteCoverageStatus, RoutePlanEntry } from '../types.js';
+import type { ExtractionRouteDiagnostic, RouteCoverageEntry, RouteCoverageStatus, RoutePlanEntry } from '../types.js';
 import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import {
   RouteGraphSchema,
+  type PageGraph,
   type RouteCoverageInfo,
   type RouteGraph,
   type RouteGraphCoverageStatus,
@@ -218,6 +219,47 @@ function buildRouteNode(
     generatedOutputPaths: coverageEntry?.savedOutputPaths ?? [],
     coverage: buildCoverageInfo(planEntry, coverageEntry),
   };
+}
+
+/**
+ * Backfills `RouteNode.tabs[].matchedSectionId`/`matchReason` from the real tab/section match
+ * decision already made at crawl time (`matchTabToSection` in page-reference-resolver.ts, called
+ * from crawler.ts's tab-splitting loop and recorded on the resulting tab page's
+ * `ExtractionRouteDiagnostic` as `tabMatchedBy`/`tabMatchedSectionIndex`), instead of leaving every
+ * tab hardcoded to `null`/`'unmatched'`. Mutates `routes` in place; called from build-graph.ts once
+ * `PageGraph` exists, since `matchedSectionId` refers to a `PageSectionNode.sectionId` on the tab's
+ * own page (each tab becomes a single-section virtual page — see page-graph.ts — so the matched
+ * section is always `section-1` when present: `section-0` is the page title heading).
+ */
+export function backfillRouteTabMatches(
+  routes: RouteNode[],
+  routeDiagnostics: ExtractionRouteDiagnostic[],
+  pageGraph: PageGraph
+): void {
+  const tabDiagnosticByVirtualRoute = new Map<string, ExtractionRouteDiagnostic>();
+  for (const diagnostic of routeDiagnostics) {
+    if (diagnostic.virtualSource === 'tab' && diagnostic.virtualRoute) {
+      tabDiagnosticByVirtualRoute.set(diagnostic.virtualRoute, diagnostic);
+    }
+  }
+  const pageByRoute = new Map(pageGraph.pages.map((page) => [page.route, page]));
+
+  for (const route of routes) {
+    for (const tab of route.tabs) {
+      const diagnostic = tabDiagnosticByVirtualRoute.get(tab.route);
+      if (!diagnostic?.tabMatchedBy) continue;
+      tab.matchReason = diagnostic.tabMatchedBy;
+      const page = pageByRoute.get(tab.route);
+      // Each tab page has exactly one matched content section, rendered as section-1 (section-0
+      // is always the page-title heading) — see resourceChunksFromDiagnostic/sectionsFromHeadings
+      // in page-graph.ts. When the matched section's own title was empty, the page ends up with
+      // only the title heading and no section-1 to point at; matchedSectionId stays null in that
+      // case (the match still happened — matchReason reflects that — there's just no titled
+      // section node to reference).
+      const matchedSection = page?.sections[1] ?? null;
+      tab.matchedSectionId = matchedSection?.sectionId ?? null;
+    }
+  }
 }
 
 export type BuildRouteGraphInput = {

@@ -163,6 +163,11 @@ export type PageSectionNode = z.infer<typeof PageSectionNodeSchema>;
 export const PageTabRefSchema = z.object({
   label: z.string(),
   route: z.string(),
+  /** Index of the matched section within the decoded content page this tab was split from (see
+   *  ExtractionRouteDiagnostic.tabMatchedSectionIndex) — lets an offline renderer (markdown-renderer.ts)
+   *  reconstruct exactly this tab's Markdown from the shared raw page-data/carbon-content artifact
+   *  without live route resolution. Null when not recorded (e.g. an older graph). */
+  sectionIndex: z.number().int().nonnegative().nullable(),
 });
 export type PageTabRef = z.infer<typeof PageTabRefSchema>;
 
@@ -241,6 +246,9 @@ export const ResourceNodeSchema = z.object({
   resourceName: z.string().nullable(),
   sourceArtifact: SourceArtifactRefSchema.nullable(),
   routes: z.array(z.string()),
+  /** PageNode.pageId values for pages whose chunks reference this resource (backfilled in
+   *  build-graph.ts once both PageGraph and ResourceGraph are built — see buildAndWriteGraph). */
+  pageIds: z.array(z.string()),
   chunkIds: z.array(z.string()),
   status: ResourceStatusSchema,
   unresolvedReason: z.string().nullable(),

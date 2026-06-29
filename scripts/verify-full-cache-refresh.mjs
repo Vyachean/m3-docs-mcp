@@ -102,7 +102,7 @@ function runBuiltCli(tempCacheDir, mode) {
   if (mode === 'smoke') {
     args.push('--max-pages', '40', '--min-pages', '20');
   } else {
-    args.push('--min-pages', '150');
+    args.push('--min-pages', '150', '--strict-graph');
   }
 
   console.error(`[verify:cache:${mode}] Running: node ${args.join(' ')}`);

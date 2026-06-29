@@ -178,6 +178,14 @@ export type ExtractionRouteDiagnostic = {
   canonicalRoute?: string;
   tabName?: string;
   tabSlug?: string;
+  /** How this tab was matched to a decoded content-page section (page-reference-resolver.ts's
+   *  matchTabToSection) — 'slug' | 'label' | 'position'. Absent/undefined for non-tab pages. */
+  tabMatchedBy?: 'slug' | 'label' | 'position';
+  /** Index of the matched section within the *decoded* content page (before any tab splitting) —
+   *  used by graph/route-graph.ts to backfill RouteNode.tabs[].matchedSectionId with the section
+   *  id of the resulting tab PageNode (see buildPageGraph: each tab page has exactly one matched
+   *  section, always reported at PageNode.sections[1] since sections[0] is the page title). */
+  tabMatchedSectionIndex?: number;
   pageDataFetchedOnce?: boolean;
   pageDataUrl?: string;
   pageDataStatus?: number | string;
@@ -703,6 +711,12 @@ export type CrawlOptions = {
   onLoggerReady?: (logFile: string, diagnosticsFile: string) => void;
   logDir?: string;
   verbose?: boolean;
+  /** When true, a failure to build/write the documentation graph, renderer report, or manifest —
+   *  or a failure of the always-on (no-network) raw-snapshot/structured-graph/rendered-output/
+   *  coverage-summary validation stages — aborts promotion instead of being logged as non-fatal.
+   *  Off by default (existing lenient behavior, used by most smoke/dev/test runs); the `update`
+   *  CLI's `--strict-graph` flag and `verify:cache:full` turn this on for production promotion. */
+  strictGraph?: boolean;
 };
 
 export type RefreshOptions = {

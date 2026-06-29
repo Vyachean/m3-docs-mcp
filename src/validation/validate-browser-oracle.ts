@@ -10,12 +10,17 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
  * Unlike stages 1/2/4/5/7 (which only read already-persisted JSON from the cache dir and are
  * always enforced), this check genuinely requires a live browser + live network access against
  * the real site — it launches Playwright (`captureRequiredRoutes`) and navigates the 8 required
- * routes. Per the dispatch, this stays best-effort/skippable in environments with no live browser
- * available, but that must be *clearly logged*, never silently skipped: when the capture itself
- * throws (no Chromium binary, no network), this returns a passing-shaped result with
- * `skipped: true` in `details` and a reason recorded in `reasons`, rather than either hard-failing
- * the whole pipeline or silently reporting success. Callers (the verify script) must check
- * `details.skipped` and log it distinctly from a genuine pass.
+ * routes.
+ *
+ * `strict` controls what happens when the capture itself throws (no Chromium binary, no network):
+ * - `strict: false` (smoke / explicit degraded mode): returns a passing-shaped result with
+ *   `skipped: true` in `details` and a reason recorded in `reasons` — never silently skipped,
+ *   but not a hard failure either. Callers must check `details.skipped` and log it distinctly
+ *   from a genuine pass.
+ * - `strict: true` (the default, and what `verify:cache:full` uses): a capture failure is a real
+ *   failure (`passed: false`) reported as external-blocked/not-ready, not a skip-as-pass. Browser
+ *   oracle is a validation oracle, not the production crawler, but full verification must not
+ *   silently downgrade "we couldn't check" into "it's fine."
  *
  * When the capture *does* succeed, `compareCaptureToSnapshot`'s `allPassed` is the unconditional
  * pass/fail signal — a captured browser resource missing from the raw snapshot, a rendered
@@ -29,23 +34,34 @@ export type ValidateBrowserOracleInput = {
   captureOptions?: CaptureRequiredRoutesLiveOptions;
   /** Injected for tests: bypasses the real captureRequiredRoutes (which launches a real browser). */
   captureRequiredRoutesFn?: typeof captureRequiredRoutes;
+  /** When true (the default), a capture failure (no Chromium/network) fails this stage instead of
+   *  being reported as a skipped pass. Set false only for smoke/explicit degraded runs. */
+  strict?: boolean;
 };
 
 export async function validateBrowserOracle(input: ValidateBrowserOracleInput = {}): Promise<CheckResult> {
   const cacheDir = input.cacheDir ?? getDefaultCacheDir();
   const stage = 'browser-oracle';
   const captureFn = input.captureRequiredRoutesFn ?? captureRequiredRoutes;
+  const strict = input.strict ?? true;
 
   let capture;
   try {
     capture = await captureFn(input.captureOptions);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (strict) {
+      return failedCheck(
+        stage,
+        [`Browser oracle is external-blocked/not-ready: no live browser/network available (${reason}). Full verification requires a real browser-oracle pass.`],
+        { skipped: true, skipReason: reason, strict: true }
+      );
+    }
     return {
       stage,
       passed: true,
       reasons: [`Browser oracle capture skipped: no live browser/network available (${reason}).`],
-      details: { skipped: true, skipReason: reason },
+      details: { skipped: true, skipReason: reason, strict: false },
     };
   }
 

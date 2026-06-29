@@ -197,13 +197,21 @@ The cache directory now has three layers, written in this order during a crawl:
      artifacts, expected/generated output paths, and a `RouteCoverageInfo` (status, reasons,
      `originalStatus` before any shared-alias-group reconciliation, `sharedCoverageGroup`). Coverage
      status is one of `covered`, `partial`, `failed`, `skipped`, `unresolved`, `nonContent`,
-     `policySkipped`, `aliasOnly`, `ambiguous`, `stale`.
+     `policySkipped`, `aliasOnly`, `ambiguous`, `stale`. Each `tabs[]` entry carries a real
+     `matchedSectionId`/`matchReason` (`slug` / `label` / `position` / `unmatched`) backfilled from
+     the same tab/section match decision made at crawl time (`matchTabToSection`), not a hardcoded
+     placeholder — `get_route` on a tab route (e.g. `/components/switch/specs`) explains it as a
+     virtual/tab route backed by its parent source route's artifacts.
    - `graph/pages.json` — one `PageNode` per page: headings, `sections` (with `chunkIds`), `chunks`
-     (typed `text` / `image` / `video` / `resource` / `unsupported`), referenced `resourceIds` and
-     `tokenTableIds`, and provenance (source artifacts, source/canonical/virtual route).
+     (typed `text` / `image` / `video` / `resource` / `unsupported`, each `resource` chunk carrying
+     a real `resourceId` that resolves in `graph/resources.json`), real `resourceIds`/`tokenTableIds`
+     cross-references (not empty placeholders — see `src/graph/resource-identity.ts`, the shared
+     id scheme `page-graph.ts`/`resource-graph.ts` both use), and provenance (source artifacts,
+     source/canonical/virtual route). Tab pages (e.g. `/components/switch/specs`) carry a
+     `tabs[0].sectionIndex` pointing at the matched section in the shared decoded content page.
    - `graph/resources.json` — one `ResourceNode` per referenced resource (token table, status
-     table, image, video, or unknown): resolution `status` (`resolved`/`unresolved`), the routes
-     and chunks that reference it, and an `unresolvedReason` when applicable.
+     table, image, video, or unknown): resolution `status` (`resolved`/`unresolved`), the routes,
+     `pageIds`, and chunks that reference it, and an `unresolvedReason` when applicable.
    - `graph/token-tables.json` — one `TokenTableNode` per token-table resource: real token sets,
      token names, display names, alias chains, and resolved/unresolved values per role (`light`,
      `dark`, `light-high-contrast`, `dark-high-contrast`).
@@ -216,11 +224,17 @@ The cache directory now has three layers, written in this order during a crawl:
    `rebuildMarkdownFromRaw`, which re-invokes the same `extractContentPageToMaterialPage` renderer
    the live crawl uses, but fed with page-data/carbon-content/dsdb-resource JSON read back from
    `raw/**` — no network access, no Playwright. This proves Markdown can be regenerated from the
-   raw snapshot alone. Routes that were only ever extracted via DOM/browser fallback (no persisted
-   page-data/carbon-content artifact) are skipped during a from-raw rebuild and reported as
-   `renderedMarkdownPath: null` rather than silently dropped. **`index.json`/`pages/**` remain the
-   primary compatibility surface**: `MaterialDocsStore` (`src/store.ts`) and all seven original
-   Markdown-oriented MCP tools read only from this layer, unchanged.
+   raw snapshot alone, **including tab-split virtual pages**: when a source route's `PageGraph`
+   group contains more than one tabbed page (e.g. `/components/switch/{overview,specs}`,
+   `/components/buttons/{overview,specs}`, `/components/lists/{overview,specs}`), the rebuild
+   renders one Markdown page per tab from the single shared raw artifact, using each
+   `PageTabRef.sectionIndex` to pick the matched section — the same mechanism the live crawler's
+   tab-splitting loop uses, just driven from the graph instead of a live bundle lookup. Routes that
+   were only ever extracted via DOM/browser fallback (no persisted page-data/carbon-content
+   artifact) are skipped during a from-raw rebuild and reported as `renderedMarkdownPath: null`
+   rather than silently dropped. **`index.json`/`pages/**` remain the primary compatibility
+   surface**: `MaterialDocsStore` (`src/store.ts`) and all seven original Markdown-oriented MCP
+   tools read only from this layer, unchanged.
 
 `manifest.json` (cache schema v2, `schemaVersion: 2`) is the small top-level entry point describing
 what exists: `generatedAt`, `baseUrl`, `carbonVersion`, `siteMetaHash`, `angularBundleHash`,
@@ -250,6 +264,7 @@ Markdown text:
 - `get_raw_artifact` — debug/provenance tool: metadata plus a truncated content preview for one raw artifact; never dumps large raw JSON by default.
 - `explain_route_coverage` — explains why a route has its current coverage status (reasons, shared coverage group, policy-skip reason).
 - `explain_resource_resolution` — explains a resource's resolved/unresolved status and which routes/chunks reference it.
+- `search_structured_docs` — searches the graph (route paths/titles, section headings, chunk text, token names/display names/aliases, resource names) by query text, without parsing Markdown or raw JSON. Complements `search_material_docs` (Markdown full-text) with structured-fact search — e.g. a query like `switch selected track color` or a token alias finds the owning token table and route directly.
 
 The original Markdown-oriented tools (`search_material_docs`, `get_material_page`,
 `get_component_docs`, `list_material_components`, `material_docs_cache_status`,
@@ -281,9 +296,16 @@ The browser oracle compares, per route, captured network resources against `raw/
 missing), and captured visible token/status table labels against `graph/token-tables.json`
 (flagging any unresolved). Its capture report is persisted as a `network-capture` raw artifact at
 `raw/network/required-routes.capture.json`; the comparison result is written to
-`diagnostics/browser-oracle-comparison.json`. The browser oracle can legitimately report a
-`passed: true, skipped: true` result when no live browser/network is available — it is a
-best-effort cross-check, not a hard requirement for every environment.
+`diagnostics/browser-oracle-comparison.json`.
+
+`validateBrowserOracle`'s `strict` option controls what a capture failure (no Chromium binary, no
+network) means: **`strict: true` (the default, and what `verify:cache:full` uses) fails the stage**
+— browser oracle is a required validation oracle in full mode, not an optional cross-check, so "we
+couldn't check" must not be reported as a pass. **`strict: false`** (smoke mode, or explicitly
+passing `skipBrowserOracle`) reports a `passed: true, details.skipped: true` result instead — clearly
+labeled as skipped, never confused with a genuine pass. `verify:cache:full` explicitly skipping the
+browser oracle (`--skip-browser-oracle`) is itself treated as a stage failure in full mode, for the
+same reason.
 
 ## The `verify:cache:full` / `verify:cache:smoke` pipeline
 
@@ -298,20 +320,45 @@ first-cache partial-promotion safeguard), then run a strict superset of 7 ordere
 2. **route-graph** (`validate-route-graph.ts`) — no missing artifacts, no ambiguous/unresolved
    required routes (full mode only for the fixed-required-route check).
 3. **browser-oracle** (`validate-browser-oracle.ts`) — live Playwright capture vs. raw
-   snapshot/graph; best-effort, may report a skipped pass.
+   snapshot/graph; **strict in full mode** (a capture failure fails this stage, not a skipped pass —
+   see "Browser oracle" above).
 4. **structured-graph** (`validate-structured-graph.ts`) — no unresolved required DSDB/token/status
    resources, no unknown chunk types (full mode only for the fixed-required-route check).
 5. **rendered-output** (`validate-rendered-output.ts`) — renderer report's `requiredRouteFailures`
    empty, no unresolved token placeholders, required generated pages present on disk.
-6. **search-index** (`validate-search-index.ts`) — `MaterialDocsStore.searchDocs` smoke proxy.
+6. **search-index** (`validate-search-index.ts`) — `MaterialDocsStore.searchDocs` smoke proxy, plus
+   a `search_structured_docs` structured-search check against the documentation graph.
 7. **coverage-summary** (`validate-coverage-summary.ts`) — `coverageHealth` plus zero
    problematic/unresolved/failed route counts.
 
-`verify:cache:smoke` runs the same 7 stages with a small `--max-pages` budget and skips the
+`verify:cache:smoke` runs the same 7 stages with a small `--max-pages` budget, skips the
 fixed-required-route checks in stages 2 and 4 (a small page budget is not guaranteed to include
-every required route); every other check in every stage still runs unconditionally. Treat smoke as
-a fast sanity check, not the quality gate — `verify:cache:full` is the stricter superset and the
-one that must pass before finishing crawler/cache/graph/renderer/MCP-tool work (see AGENTS.md).
+every required route), and runs the browser oracle non-strictly (a capture failure is reported as a
+skipped pass, not a failure); every other check in every stage still runs unconditionally. Treat
+smoke as a fast sanity check, not the quality gate — `verify:cache:full` is the stricter superset and
+the one that must pass before finishing crawler/cache/graph/renderer/MCP-tool work (see AGENTS.md).
+
+### Cache promotion strictness and manifest health
+
+The `update` CLI (and `crawlMaterialDocs`/`crawlIntoCache` programmatically) accept a
+`--strict-graph` flag (`strictGraph` option), which `verify:cache:full` always passes for its
+underlying full crawl. With `--strict-graph`:
+
+- A failure to write the raw artifact index, fetch report, renderer report, documentation graph, or
+  manifest aborts promotion (throws) instead of being logged as non-fatal.
+- After those writes, the same no-network validation stages used by `verify:cache:full`
+  (raw-snapshot, structured-graph, rendered-output, coverage-summary) run against the result; any
+  failure aborts promotion with a detailed error.
+- `manifest.json`'s `health` summary (`rawSnapshot`, `graph`, `markdown`, `coverage`) is set from
+  those real validation results (`verified`/`failed`), not a loose approximation.
+
+Without `--strict-graph` (the default — used by smoke/dev runs and most existing tests), these
+failures are logged and promotion continues, and `health` falls back to the cheaper approximation
+(`rawSnapshot: verified` once at least one artifact exists, `graph` always `unverified`, `markdown`
+derived from `coverageHealth`). `unverified` always means "this validation stage hasn't run" — never
+treated as a substitute for `verified`. A promotion aborted by `--strict-graph` leaves the staging
+directory in place for inspection (same failed-staging mechanism as other promotion safety checks),
+never promotes a cache where raw/graph/manifest generation failed.
 
 On failure, `scripts/verify-full-cache-refresh.mjs` preserves the temp cache directory (it is never
 deleted on failure) and prints: the CLI exit code, the temp cache directory path, the last 100

@@ -15,6 +15,7 @@ import { DEFAULT_PREVIEW_CHARS, getRawArtifact } from './mcp-tools/get-raw-artif
 import { getRoute } from './mcp-tools/get-route.js';
 import { getRouteArtifacts } from './mcp-tools/get-route-artifacts.js';
 import { listRoutes } from './mcp-tools/list-routes.js';
+import { searchStructuredDocs } from './mcp-tools/search-structured-docs.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 import type { CacheDiagnostics, CacheStatus, CrawlProgress, SearchResult } from './types.js';
@@ -204,6 +205,14 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   }, async ({ resourceId }) => {
     const context = await loadGraphToolContext(cacheDir);
     return jsonText(explainResourceResolution(context, resourceId));
+  });
+
+  server.tool('search_structured_docs', 'Search the Material 3 documentation graph (routes, page sections/chunks, token names/display names/aliases, resource names) by query text, without parsing Markdown or raw JSON. Complements search_material_docs (Markdown full-text) with structured-fact search.', {
+    query: z.string().trim().min(1),
+    limit: z.number().int().min(1).max(100).default(20)
+  }, async ({ query, limit }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(searchStructuredDocs(context, query, limit));
   });
 
   const transport = new StdioServerTransport();

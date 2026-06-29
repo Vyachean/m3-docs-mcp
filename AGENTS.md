@@ -16,21 +16,45 @@ The official source is always `https://m3.material.io/`. Google implementation r
 
 The MCP server is considered useful only when core documentation pages expose real token names, resolved values, and status/spec data — not placeholder-only output. If `get_material_page` for a spec page returns only `Material resource placeholder:` lines, the cache is degraded and should be refreshed.
 
-When the task concerns specific components, routes, or design tokens, prefer the graph-oriented tools (`list_routes`, `get_route`, `get_page`, `get_component_tokens`, `get_component_tabs`, `get_component_resources`, `get_route_artifacts`, `get_raw_artifact`, `explain_route_coverage`, `explain_resource_resolution`) over the Markdown-oriented tools — they read the structured documentation graph (`graph/*.json`) and return decoded token names/values/roles and coverage facts directly, instead of requiring re-parsing of rendered Markdown. The original Markdown-oriented tools (`search_material_docs`, `get_material_page`, `get_component_docs`, `list_material_components`, `material_docs_cache_status`, `material_docs_cache_diagnostics`, `refresh_material_docs`) remain the right choice for full-text search and stay unchanged for compatibility.
+When the task concerns specific components, routes, or design tokens, prefer the graph-oriented tools (`list_routes`, `get_route`, `get_page`, `get_component_tokens`, `get_component_tabs`, `get_component_resources`, `get_route_artifacts`, `get_raw_artifact`, `explain_route_coverage`, `explain_resource_resolution`, `search_structured_docs`) over the Markdown-oriented tools — they read the structured documentation graph (`graph/*.json`) and return decoded token names/values/roles, real resource cross-references, and coverage facts directly, instead of requiring re-parsing of rendered Markdown or raw JSON. The original Markdown-oriented tools (`search_material_docs`, `get_material_page`, `get_component_docs`, `list_material_components`, `material_docs_cache_status`, `material_docs_cache_diagnostics`, `refresh_material_docs`) remain the right choice for full-text search and stay unchanged for compatibility — they are a derived, secondary view, not the source of truth for the graph-oriented tools.
 
 ## Cache architecture (schema v2)
 
-The cache directory has three layers: a raw snapshot (`raw/**`, indexed in `raw/artifact-index.json`,
-described by `manifest.json`), a structured documentation graph built from it (`graph/routes.json`,
-`graph/pages.json`, `graph/resources.json`, `graph/token-tables.json`, `graph/sections.json`,
-`graph/provenance.json`), and Markdown (`index.json` / `pages/**`) which is now a *derived* output —
-rebuildable from the raw snapshot and graph via `rebuildMarkdownFromRaw` (`src/rendered/markdown-renderer.ts`)
-without any network access or Playwright. Markdown remains the primary compatibility surface: it is
-what `MaterialDocsStore` (`src/store.ts`) and the original seven MCP tools read. A browser oracle
-(`src/browser-oracle/`) cross-checks a fixed set of 8 required routes by live Playwright capture against
-the raw snapshot/graph; it is a validation layer, not a crawl path, and may report a best-effort skipped
-pass when no live browser is available. See README.md for full structure, field-level detail, and the
-7-stage `verify:cache:full` pipeline.
+The cache directory has three layers, raw snapshot first:
+
+1. **Raw snapshot** (`raw/**`, indexed in `raw/artifact-index.json`, described by `manifest.json`) —
+   the source of truth: byte/text captures of `site_meta.js`, the Angular bundle, page-data,
+   Carbon content, and DSDB resources, persisted as `ArtifactRecord`s.
+2. **Structured documentation graph** (`graph/routes.json`, `graph/pages.json`, `graph/resources.json`,
+   `graph/token-tables.json`, `graph/sections.json`, `graph/provenance.json`) — the primary MCP data
+   model. `PageNode.chunks[].resourceId`/`resourceIds`/`tokenTableIds` are real cross-references
+   (shared id scheme in `src/graph/resource-identity.ts` between `page-graph.ts` and
+   `resource-graph.ts`, backfilled into `ResourceNode.pageIds` in `build-graph.ts`) — not synthetic
+   counters. `RouteNode.tabs[].matchedSectionId`/`matchReason` are backfilled from the real
+   crawl-time tab/section match decision (`matchTabToSection`), not a hardcoded placeholder.
+3. **Markdown** (`index.json` / `pages/**`) — a *derived compatibility output*, rebuildable from the
+   raw snapshot and graph via `rebuildMarkdownFromRaw` (`src/rendered/markdown-renderer.ts`) without
+   any network access or Playwright, including tab-split virtual pages (e.g.
+   `/components/switch/{overview,specs}`). Markdown remains the compatibility surface read by
+   `MaterialDocsStore` (`src/store.ts`) and the original seven MCP tools — it is not the source of
+   truth for the graph-oriented tools.
+
+A browser oracle (`src/browser-oracle/`) cross-checks a fixed set of 8 required routes by live
+Playwright capture against the raw snapshot/graph; it is a validation layer, not a crawl path. It is
+**strict in full verification** (`verify:cache:full`): a capture failure (no Chromium/network) fails
+the stage instead of being reported as a skipped pass. Only smoke/explicit-degraded runs allow a
+clearly-labeled skipped result.
+
+Cache promotion is strict when the `update` CLI's `--strict-graph` flag (or `strictGraph` option) is
+set — used by `verify:cache:full`'s underlying crawl. In that mode, a graph/manifest/renderer-report
+build failure, or a failure of the no-network raw-snapshot/structured-graph/rendered-output/
+coverage-summary validation stages, aborts promotion instead of being logged as non-fatal, and
+`manifest.json`'s `health` summary reflects those real validation results (`verified`/`failed`), not
+a loose approximation. Without `--strict-graph` (the default, used by most dev/smoke runs), these
+failures stay non-fatal and `health` falls back to a cheaper approximation — `unverified` always
+means "validation hasn't run," never a stand-in for `verified`.
+
+See README.md for full structure, field-level detail, and the 7-stage `verify:cache:full` pipeline.
 
 **When changing crawler, cache store, route planning, route coverage, JSON extraction, renderer, token
 tables, browser oracle, or MCP tools, you must run `npm run check`, `npm test`, `npm run build`, and

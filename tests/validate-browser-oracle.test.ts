@@ -59,9 +59,23 @@ async function writeMatchingPageGraph(): Promise<void> {
 }
 
 describe('validateBrowserOracle', () => {
-  it('reports a skipped pass (not a hard failure) when the capture function throws', async () => {
+  it('fails (strict by default) when the capture function throws, reporting external-blocked/not-ready', async () => {
     const result = await validateBrowserOracle({
       cacheDir,
+      captureRequiredRoutesFn: async () => {
+        throw new Error('No Chromium binary available');
+      },
+    });
+    expect(result.passed).toBe(false);
+    expect(result.details?.skipped).toBe(true);
+    expect(result.details?.strict).toBe(true);
+    expect(result.reasons[0]).toMatch(/external-blocked|not-ready/i);
+  });
+
+  it('reports a skipped pass (not a hard failure) when strict:false and the capture function throws', async () => {
+    const result = await validateBrowserOracle({
+      cacheDir,
+      strict: false,
       captureRequiredRoutesFn: async () => {
         throw new Error('No Chromium binary available');
       },
