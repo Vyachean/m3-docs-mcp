@@ -39,6 +39,7 @@ program.command('update')
   .option('--min-pages <number>', 'Minimum accepted page count before replacing the existing cache', '10')
   .option('--concurrency <number>', `Maximum concurrent Playwright pages, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
+  .option('--promote-partial', 'Promote a limited/partial crawl (e.g. with --max-pages) even when no previous cache exists or the previous cache was a full verified run. Off by default to avoid silently replacing a complete cache with a smoke-sized one.')
   .option('--headed', 'Run browser in headed mode')
   .option('--include-blog', 'Include blog, news, and article routes in the crawl (excluded by default)')
   .option('--log-dir <path>', 'Directory for update log files (default: <cache-dir>/logs)')
@@ -64,6 +65,7 @@ program.command('update')
         concurrency,
         headless: !options.headed,
         force: options.force,
+        promotePartial: options.promotePartial ?? false,
         includeBlog: options.includeBlog ?? false,
         signal: abortController.signal,
         onProgress,

@@ -12,6 +12,7 @@ import { materialPagePath, normalizeMaterialPublicDocPath, normalizeMaterialUrl 
 import { buildBundleFromCapturedResponses, createNetworkJsonCapture } from './json-extraction/capture-network-json.js';
 import { computeSourceAndVirtualPageCounters, createEmptyExtractionDiagnostics, pushPageDiagnostic, pushRouteDiagnostic } from './json-extraction/diagnostics.js';
 import { extractContentPageToMaterialPage } from './json-extraction/extract-content-page.js';
+import { buildAndWriteGraph } from './graph/build-graph.js';
 import { extractPageDataMetadata } from './json-extraction/extract-page-data.js';
 import { createDsdbResourceFetcher, fetchCarbonContentByReference, fetchJsonPageBundle, fetchPageDataByReference } from './json-extraction/fetch-json-page.js';
 import { SiteMetaParseError, fetchSiteMeta, type SiteMeta } from './json-extraction/fetch-site-meta.js';
@@ -30,6 +31,15 @@ import {
 } from './json-extraction/page-reference-resolver.js';
 import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
+import { persistArtifact } from './raw-artifacts/artifact-store.js';
+import { upsertArtifactRecord } from './raw-artifacts/artifact-index.js';
+import { createFetchDiagnostic, type FetchDiagnostic } from './raw-artifacts/fetch-diagnostics.js';
+import { writeFetchReport } from './raw-artifacts/fetch-report.js';
+import { sha256Hex } from './raw-artifacts/hash.js';
+import { createCacheManifest, writeManifest } from './manifest.js';
+import type { ArtifactRecord, ArtifactSourceMethod } from './raw-artifacts/artifact-types.js';
+import { buildRendererRouteReport, collectRequiredRouteFailures } from './rendered/build-renderer-report.js';
+import { writeRendererReport, type RendererRouteReport } from './rendered/renderer-report.js';
 import {
   addRouteCoverageFailureReason,
   applySharedRouteCoverage,
@@ -42,7 +52,7 @@ import {
   uniqueSorted
 } from './route-coverage.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
-import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
+import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionPageDiagnostic, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
 const execFileAsync = promisify(execFile);
@@ -53,6 +63,42 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 function appendUnique(list: string[], value: string): void {
   if (!list.includes(value)) list.push(value);
+}
+
+/** Sanitizes a free-form string (route path, resource name, URL) into a safe artifact path segment. */
+function sanitizeArtifactSegment(value: string): string {
+  return value.replace(/^\/+/, '').replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || 'resource';
+}
+
+/**
+ * Wraps a DSDB resource fetcher (token tables, status tables, component specs) so every resolved
+ * resource is persisted as a `dsdb-resource` raw artifact and indexed, in addition to the
+ * FetchDiagnostic recording already performed inside fetch-json-page.ts's
+ * createDsdbResourceFetcher/buildDsdbResourceCandidateUrls. The returned closure is otherwise
+ * behaviorally identical to the wrapped fetcher (same signature, same resolved value).
+ */
+function withArtifactPersistence(
+  baseFetcher: (resourceName: string, resourceType?: string) => Promise<unknown | null>,
+  carbonVersion: string,
+  sourceRoute: string | null,
+  persistRawArtifact: (input: Parameters<typeof persistArtifact>[0]) => Promise<ArtifactRecord | null>
+): (resourceName: string, resourceType?: string) => Promise<unknown | null> {
+  return async (resourceName: string, resourceType?: string): Promise<unknown | null> => {
+    const resource = await baseFetcher(resourceName, resourceType);
+    if (resource !== null && resource !== undefined) {
+      const trailingSegment = resourceName.split('/').filter(Boolean).at(-1) ?? resourceName;
+      await persistRawArtifact({
+        kind: 'dsdb-resource',
+        pathParts: [carbonVersion, trailingSegment],
+        sourceUrl: `dsdb-resource:${resourceName}`,
+        content: JSON.stringify(resource),
+        contentType: 'application/json',
+        sourceRoute,
+        sourceMethod: 'static-plan'
+      });
+    }
+    return resource;
+  };
 }
 const DEFAULT_BASE_URL = 'https://m3.material.io';
 const DEFAULT_MIN_PAGE_COUNT = 10;
@@ -198,7 +244,17 @@ export function resolvePlaywrightCliPath(): string {
   return path.join(path.dirname(playwrightPackageJson), relativeCliPath);
 }
 
-async function launchChromium(headless: boolean): Promise<Browser> {
+/**
+ * Launches a headless (by default) Chromium browser via Playwright. Exported so other modules
+ * that need an actual browser instance for a *separate, non-primary* purpose (e.g.
+ * src/browser-oracle/capture-required-routes.ts's live-navigation wrapper) can reuse the same
+ * "missing/broken Chromium executable" error messaging instead of duplicating it. This does not
+ * change crawler.ts's own usage: the primary crawl path remains direct-JSON extraction, with this
+ * browser launch reserved for the opt-in DOM fallback (see crawlIntoCache's
+ * options.allowBrowserFallback handling below) and now also for the browser-oracle validation
+ * layer, which is unrelated to cache promotion.
+ */
+export async function launchChromium(headless: boolean): Promise<Browser> {
   try {
     return await chromium.launch({ headless });
   } catch (error) {
@@ -560,19 +616,40 @@ async function discoverSitemapLinks(baseUrl: string): Promise<string[]> {
   return (await discoverSitemapDocPaths(baseUrl)).map((docPath) => new URL(docPath, baseUrl).toString().replace(/\/$/, ''));
 }
 
-async function discoverSitemapDocPaths(baseUrl: string): Promise<string[]> {
+async function discoverSitemapDocPaths(
+  baseUrl: string,
+  diagnostics: FetchDiagnostic[] = [],
+  onFetched?: (sitemapUrl: string, body: string, response: Response) => void
+): Promise<string[]> {
   if (typeof fetch !== 'function') return [];
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SITEMAP_FETCH_TIMEOUT_MS);
+  const sitemapUrl = new URL('/sitemap.xml', baseUrl).toString();
   try {
-    const sitemapUrl = new URL('/sitemap.xml', baseUrl).toString();
     const response = await fetch(sitemapUrl, { signal: controller.signal });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      diagnostics.push(createFetchDiagnostic({
+        url: sitemapUrl, expectedKind: 'sitemap', httpStatus: response.status, outcome: 'http-error',
+        reason: `rejected: sitemap.xml fetch returned HTTP ${response.status}`
+      }));
+      return [];
+    }
     const body = await response.text();
+    onFetched?.(sitemapUrl, body, response);
+    diagnostics.push(createFetchDiagnostic({
+      url: sitemapUrl, expectedKind: 'sitemap', httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'success',
+      reason: 'accepted: sitemap.xml fetched'
+    }));
     const locUrls = Array.from(body.matchAll(/<loc>(https?:\/\/[^<]+)<\/loc>/g)).map((match) => match[1]).filter((url): url is string => Boolean(url));
     const urls = locUrls.length > 0 ? locUrls : Array.from(body.matchAll(/https?:\/\/[^\s<]+/g)).map((match) => match[0]);
     return discoverPublicDocPathsFromHrefs(urls, baseUrl);
-  } catch {
+  } catch (err) {
+    diagnostics.push(createFetchDiagnostic({
+      url: sitemapUrl, expectedKind: 'sitemap', outcome: 'network-error',
+      networkError: err instanceof Error ? err.message : String(err),
+      reason: 'rejected: sitemap.xml fetch threw a network/abort error'
+    }));
     return [];
   } finally {
     clearTimeout(timer);
@@ -1453,6 +1530,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
   // DSDB discovery lifecycle state
   let dsdbConfigSource: 'site-meta' | 'bundle' | 'browser-network' | null = null;
+  let carbonVersionForManifest: string | null = null;
   let directJsonEnabled = false;
   let directJsonDisabledReason: string | null = null;
   let siteMetaFetched = false;
@@ -1470,6 +1548,67 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
   const extractionDiagnostics = createEmptyExtractionDiagnostics();
   const coverageDiagnostics = createEmptyCoverageDiagnostics();
+  // Cache schema v2 raw-snapshot-first additions: every fetch attempt against the live site
+  // (or browser-captured network traffic) accumulates a FetchDiagnostic here, persisted to
+  // diagnostics/fetch-report.json at the end of the crawl. Successful fetches additionally
+  // persist a raw artifact under raw/** and an ArtifactRecord into artifactRecords, indexed and
+  // written to raw/artifact-index.json. These are additive — neither blocks cache promotion.
+  const fetchDiagnostics: FetchDiagnostic[] = [];
+  const artifactRecords: ArtifactRecord[] = [];
+  // Part C (stage 3/4 closure): decoded token-table systems captured at render time (see
+  // CollectedTokenTable in extract-dsdb-resource.ts), keyed by the saved page's path so
+  // buildAndWriteGraph can call buildTokenTableNode with real token name/value/role data instead
+  // of leaving graph/token-tables.json empty.
+  const collectedTokenTablesByPagePath = new Map<string, { resourceName: string; requestedTokenSets: string[]; system: TokenTableSystem; route: string | null }[]>();
+  const recordCollectedTokenTables = (
+    pagePath: string,
+    route: string | null,
+    tables: { resourceName: string; requestedTokenSets: string[]; system: TokenTableSystem }[]
+  ): void => {
+    if (tables.length === 0) return;
+    const existing = collectedTokenTablesByPagePath.get(pagePath) ?? [];
+    collectedTokenTablesByPagePath.set(pagePath, [...existing, ...tables.map((t) => ({ ...t, route }))]);
+  };
+  // Stage 5: renderer diagnostics, one RendererRouteReport per saved/failed route, built by the
+  // same pure buildRendererRouteReport() the from-raw rebuild path (src/rendered/markdown-renderer.ts)
+  // uses — so "rendered during a live crawl" and "rendered from raw/** later" produce identically
+  // shaped diagnostics. Written to diagnostics/renderer-report.json alongside fetch-report.json.
+  const rendererRouteReports: RendererRouteReport[] = [];
+  const recordRendererRouteReport = (
+    route: string,
+    extraction: { page: MaterialPage; pageDiagnostic: ExtractionPageDiagnostic; fallbackReason: ExtractionFallbackReason | null },
+    contentPage: unknown | null,
+    sourceArtifactIds: string[]
+  ): void => {
+    rendererRouteReports.push(
+      buildRendererRouteReport({
+        route,
+        page: extraction.fallbackReason ? null : extraction.page,
+        pageDiagnostic: extraction.pageDiagnostic,
+        contentPage,
+        sourceArtifactIds
+      })
+    );
+  };
+  let siteMetaHashForManifest: string | null = null;
+  let angularBundleHashForManifest: string | null = null;
+  let sitemapHashForManifest: string | null = null;
+  const persistRawArtifact = async (
+    input: Parameters<typeof persistArtifact>[0]
+  ): Promise<ArtifactRecord | null> => {
+    try {
+      const record = await persistArtifact(input, cacheDir);
+      artifactRecords.push(record);
+      return record;
+    } catch (err) {
+      logger?.log('warn', 'raw-artifact:persist-failed', {
+        kind: input.kind,
+        sourceUrl: input.sourceUrl,
+        reason: err instanceof Error ? err.message : String(err)
+      });
+      return null;
+    }
+  };
   const queue: string[] = [];
   const queued = new Set<string>();
   const seen = new Set<string>();
@@ -1835,13 +1974,56 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     if (typeof fetch === 'function') {
       try {
         const shellResponse = await fetch(baseUrl, { signal });
-        if (shellResponse.ok) addDiscoveredPaths(discoverPublicDocPathsFromHtml(await shellResponse.text(), baseUrl), renderedNavPublicDocPaths);
+        if (shellResponse.ok) {
+          const shellHtml = await shellResponse.text();
+          addDiscoveredPaths(discoverPublicDocPathsFromHtml(shellHtml, baseUrl), renderedNavPublicDocPaths);
+          fetchDiagnostics.push(createFetchDiagnostic({
+            url: baseUrl, expectedKind: 'site-shell', httpStatus: shellResponse.status,
+            contentType: shellResponse.headers?.get?.('content-type') ?? null, outcome: 'success',
+            reason: 'accepted: site shell HTML fetched for link discovery'
+          }));
+          await persistRawArtifact({
+            kind: 'site-shell',
+            pathParts: [],
+            sourceUrl: baseUrl,
+            content: shellHtml,
+            httpStatus: shellResponse.status,
+            contentType: shellResponse.headers?.get?.('content-type') ?? null,
+            sourceRoute: null,
+            sourceMethod: 'static-plan'
+          });
+        } else {
+          fetchDiagnostics.push(createFetchDiagnostic({
+            url: baseUrl, expectedKind: 'site-shell', httpStatus: shellResponse.status, outcome: 'http-error',
+            reason: `rejected: site shell HTML fetch returned HTTP ${shellResponse.status}`
+          }));
+        }
       } catch (err) {
         if (signal?.aborted) throw err;
+        fetchDiagnostics.push(createFetchDiagnostic({
+          url: baseUrl, expectedKind: 'site-shell', outcome: 'network-error',
+          networkError: err instanceof Error ? err.message : String(err),
+          reason: 'rejected: site shell HTML fetch threw a network error'
+        }));
       }
     }
 
-    addDiscoveredPaths(await discoverSitemapDocPaths(baseUrl), sitemapPublicDocPaths);
+    let sitemapBodyForManifest: string | null = null;
+    addDiscoveredPaths(
+      await discoverSitemapDocPaths(baseUrl, fetchDiagnostics, (_url, body) => { sitemapBodyForManifest = body; }),
+      sitemapPublicDocPaths
+    );
+    if (sitemapBodyForManifest !== null) {
+      sitemapHashForManifest = sha256Hex(sitemapBodyForManifest);
+      await persistRawArtifact({
+        kind: 'sitemap',
+        pathParts: [],
+        sourceUrl: new URL('/sitemap.xml', baseUrl).toString(),
+        content: sitemapBodyForManifest,
+        sourceRoute: null,
+        sourceMethod: 'static-plan'
+      });
+    }
 
     // fetch-site-meta: primary route source. site_meta.routes drives the route LIST (public/
     // private/redirect/blog/aliases). It does NOT carry a usable collectionId/documentId for
@@ -1858,9 +2040,27 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       try {
         throwIfAborted(signal);
         logger?.log('info', 'site-meta:fetch-started', { phase: 'fetch-site-meta', baseUrl });
-        const siteMeta = await fetchSiteMeta(baseUrl, signal);
+        const siteMetaRawTextHolder: { text: string | null; status: number | null; contentType: string | null } = { text: null, status: null, contentType: null };
+        const siteMeta = await fetchSiteMeta(baseUrl, signal, fetch, fetchDiagnostics, (text, response) => {
+          siteMetaRawTextHolder.text = text;
+          siteMetaRawTextHolder.status = response.status;
+          siteMetaRawTextHolder.contentType = response.headers?.get?.('content-type') ?? null;
+        });
         fetchedSiteMeta = siteMeta;
         siteMetaFetched = true;
+        if (siteMetaRawTextHolder.text !== null) {
+          siteMetaHashForManifest = sha256Hex(siteMetaRawTextHolder.text);
+          await persistRawArtifact({
+            kind: 'site-meta',
+            pathParts: [],
+            sourceUrl: new URL('/site_meta.js', baseUrl).toString(),
+            content: siteMetaRawTextHolder.text,
+            httpStatus: siteMetaRawTextHolder.status,
+            contentType: siteMetaRawTextHolder.contentType,
+            sourceRoute: null,
+            sourceMethod: 'static-plan'
+          });
+        }
 
         // normalize-routes
         crawlPhase = 'normalize-routes';
@@ -1955,8 +2155,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       try {
         throwIfAborted(signal);
         logger?.log('info', 'dsdb-config:bundle-started', { phase: 'fetch-site-meta', baseUrl });
-        const bundleText = await fetchAngularBundleText(baseUrl, signal);
+        const bundleText = await fetchAngularBundleText(baseUrl, signal, fetch, fetchDiagnostics);
+        angularBundleHashForManifest = sha256Hex(bundleText);
+        await persistRawArtifact({
+          kind: 'angular-bundle',
+          pathParts: [`main.${crypto.createHash('sha1').update(bundleText).digest('hex').slice(0, 12)}.js`],
+          sourceUrl: baseUrl,
+          content: bundleText,
+          sourceRoute: null,
+          sourceMethod: 'static-plan'
+        });
         carbonVersion = extractCarbonVersionFromBundleText(bundleText);
+        carbonVersionForManifest = carbonVersion;
         bundleRoutes = extractBundleRouteTable(bundleText);
         bundleRoutesForCoverage = bundleRoutes;
         if (!carbonVersion) throw new Error('carbonVersion not found in Angular bundle');
@@ -2655,6 +2865,84 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     pages: pages.map(({ text: _text, markdown: _markdown, ...meta }) => meta)
   };
   await writeIndex(index, cacheDir);
+
+  // Cache schema v2 additions: artifact index, fetch diagnostics report, and manifest.json. All
+  // additive and non-fatal to cache promotion — failures here are logged, never thrown, mirroring
+  // the existing buildAndWriteGraph error-handling convention below.
+  try {
+    for (const record of artifactRecords) await upsertArtifactRecord(record, cacheDir);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logError(`Failed to write raw artifact index (non-fatal, cache promotion continues): ${reason}`);
+    logger?.log('warn', 'raw-artifact-index:write-failed', { phase: 'promoting', reason });
+  }
+  try {
+    await writeFetchReport(fetchDiagnostics, cacheDir);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logError(`Failed to write fetch diagnostics report (non-fatal, cache promotion continues): ${reason}`);
+    logger?.log('warn', 'fetch-report:write-failed', { phase: 'promoting', reason });
+  }
+
+  try {
+    const requiredRouteFailures = collectRequiredRouteFailures(rendererRouteReports);
+    await writeRendererReport({
+      schemaVersion: 1,
+      generatedAt: capturedAt,
+      routes: rendererRouteReports,
+      requiredRouteFailures
+    }, cacheDir);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logError(`Failed to write renderer diagnostics report (non-fatal, cache promotion continues): ${reason}`);
+    logger?.log('warn', 'renderer-report:write-failed', { phase: 'promoting', reason });
+  }
+
+  try {
+    const collectedTokenTables = Array.from(collectedTokenTablesByPagePath.values()).flat();
+    await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables);
+  } catch (err) {
+    // The documentation graph is an additive projection of `index` (stage 3/4 of the
+    // raw-snapshot-first cache architecture) — it must never block cache promotion. A failure
+    // here (e.g. an unexpected shape in coverageDiagnostics on an older previousIndex carried
+    // forward) is logged and surfaced via logger diagnostics, not thrown.
+    const reason = err instanceof Error ? err.message : String(err);
+    logError(`Failed to build documentation graph (non-fatal, cache promotion continues): ${reason}`);
+    logger?.log('warn', 'graph:build-failed', { phase: 'promoting', reason });
+  }
+
+  try {
+    const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
+    const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
+    const manifest = createCacheManifest({
+      baseUrl,
+      carbonVersion: carbonVersionForManifest,
+      siteMetaHash: siteMetaHashForManifest,
+      angularBundleHash: angularBundleHashForManifest,
+      sitemapHash: sitemapHashForManifest,
+      generatedAt: capturedAt,
+      counts: {
+        rawArtifacts: artifactRecords.length,
+        routes: routeCoverageBySourceRoute.size,
+        pages: pages.length,
+        markdownPages: pages.length,
+        dsdbResources: dsdbResourceArtifactCount,
+        tokenTables: tokenTableCount
+      },
+      health: {
+        rawSnapshot: artifactRecords.length > 0 ? 'verified' : 'unverified',
+        graph: 'unverified',
+        markdown: coverageDiagnostics.coverageHealth === 'verified' ? 'verified' : 'partial',
+        coverage: coverageDiagnostics.coverageHealth === 'broken' ? 'degraded' : coverageDiagnostics.coverageHealth
+      }
+    });
+    await writeManifest(manifest, cacheDir);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logError(`Failed to write cache manifest (non-fatal, cache promotion continues): ${reason}`);
+    logger?.log('warn', 'manifest:write-failed', { phase: 'promoting', reason });
+  }
+
   crawlPhase = 'promoting';
   emitProgress(true);
   emitProgress(false);
@@ -2686,9 +2974,34 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const documentId = route.documentId!;
 
     const [pageDataResult, carbonResult] = await Promise.all([
-      fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal),
-      fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal)
+      fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute),
+      fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal, fetch, fetchDiagnostics, sourceCoverageRoute)
     ]);
+
+    if (pageDataResult.status === 'ok') {
+      await persistRawArtifact({
+        kind: 'page-data',
+        pathParts: [collectionId, documentId],
+        sourceUrl: pageDataResult.url,
+        content: JSON.stringify(pageDataResult.data),
+        httpStatus: pageDataResult.httpStatus,
+        contentType: 'application/json',
+        sourceRoute: sourceCoverageRoute,
+        sourceMethod: 'static-plan'
+      });
+    }
+    if (carbonResult.status === 'ok' && route.exportedCarbonFileId) {
+      await persistRawArtifact({
+        kind: 'carbon-content',
+        pathParts: [carbonVersion, route.exportedCarbonFileId.replace(/\.json$/i, '')],
+        sourceUrl: carbonResult.url,
+        content: JSON.stringify(carbonResult.data),
+        httpStatus: carbonResult.httpStatus,
+        contentType: 'application/json',
+        sourceRoute: sourceCoverageRoute,
+        sourceMethod: 'static-plan'
+      });
+    }
 
     const pageDataOk = pageDataResult.status === 'ok';
     const carbonOk = carbonResult.status === 'ok';
@@ -2742,7 +3055,12 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
     const pageDataJson = pageDataOk ? pageDataResult.data : null;
     const contentJson = carbonOk ? carbonResult.data : null;
-    const fetchResource = createDsdbResourceFetcher(baseUrl, carbonVersion, [], signal);
+    const fetchResource = withArtifactPersistence(
+      createDsdbResourceFetcher(baseUrl, carbonVersion, [], signal, fetch, sourceCoverageRoute, fetchDiagnostics),
+      carbonVersion,
+      sourceCoverageRoute,
+      persistRawArtifact
+    );
 
     const savePage = async (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): Promise<void> => {
       if (extraction.fallbackReason) {
@@ -2799,6 +3117,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           ...sharedDiagnosticFields,
           ...extra
         }));
+        recordRendererRouteReport(sourceCoverageRoute, extraction, contentJson, []);
         return;
       }
       const materialPage = extraction.page;
@@ -2812,6 +3131,13 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         appendUnique(entry.savedOutputPaths, materialPage.path);
       });
       pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
+      recordCollectedTokenTables(materialPage.path, sourceCoverageRoute, extraction.collectedTokenTables);
+      recordRendererRouteReport(
+        sourceCoverageRoute,
+        extraction,
+        contentJson,
+        artifactRecords.filter((a) => a.sourceRoute === sourceCoverageRoute).map((a) => a.id)
+      );
       recordRouteDiagnostic(createRouteDiagnostic({
         url: materialPage.url,
         path: materialPage.path,
@@ -2983,8 +3309,41 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             collectionName: route.collectionName,
             exportedCarbonFileId: route.exportedCarbonFileId,
             pageCanonId: route.pageCanonId
-          }, signal);
+          }, signal, fetch, fetchDiagnostics);
           const routePath = routePathFromSlug(route.slug);
+          await Promise.all(bundle.responses.map(async (response) => {
+            if (response.type === 'page-metadata') {
+              await persistRawArtifact({
+                kind: 'page-data',
+                pathParts: [route.collectionId ?? 'unknown-collection', route.documentId ?? sanitizeArtifactSegment(routePath)],
+                sourceUrl: response.url,
+                content: JSON.stringify(response.payload),
+                contentType: 'application/json',
+                sourceRoute: `/${route.slug}`,
+                sourceMethod: 'static-plan'
+              });
+            } else if (response.type === 'content-page') {
+              await persistRawArtifact({
+                kind: 'carbon-content',
+                pathParts: [config.carbonVersion, (route.exportedCarbonFileId ?? sanitizeArtifactSegment(routePath)).replace(/\.json$/i, '')],
+                sourceUrl: response.url,
+                content: JSON.stringify(response.payload),
+                contentType: 'application/json',
+                sourceRoute: `/${route.slug}`,
+                sourceMethod: 'static-plan'
+              });
+            } else {
+              await persistRawArtifact({
+                kind: 'dsdb-resource',
+                pathParts: [config.carbonVersion, sanitizeArtifactSegment(response.resourceName ?? response.url)],
+                sourceUrl: response.url,
+                content: JSON.stringify(response.payload),
+                contentType: 'application/json',
+                sourceRoute: `/${route.slug}`,
+                sourceMethod: 'static-plan'
+              });
+            }
+          }));
           if (!bundle.pageData && !bundle.contentPage) {
             jsonFallbackRoutes.set(route.slug, 'json-fetch-failed');
             recordRouteDiagnostic(createRouteDiagnostic({
@@ -3057,6 +3416,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
               pageCanonId: extraction.pageDiagnostic.pageCanonId,
               routeMetadataWarnings: route.metadataWarnings ?? []
             }));
+            recordRendererRouteReport(`/${route.slug}`, extraction, bundle.contentPage, []);
             return;
           }
           const materialPage = extraction.page;
@@ -3065,6 +3425,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             pages.push(materialPage);
             markAcceptedPage(materialPage.path);
             pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
+            recordCollectedTokenTables(materialPage.path, `/${route.slug}`, extraction.collectedTokenTables);
+            recordRendererRouteReport(`/${route.slug}`, extraction, bundle.contentPage, []);
             recordRouteDiagnostic(createRouteDiagnostic({
               url: materialPage.url,
               path: materialPage.path,
@@ -3309,6 +3671,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         pages.push(networkExtraction.page);
         markAcceptedPage(networkExtraction.page.path);
         pushPageDiagnostic(extractionDiagnostics, { ...networkExtraction.pageDiagnostic, source: 'network-json' });
+        recordCollectedTokenTables(networkExtraction.page.path, materialPagePath(finalUrl), networkExtraction.collectedTokenTables);
+        recordRendererRouteReport(materialPagePath(finalUrl), networkExtraction, capturedBundle.contentPage, []);
         recordRouteDiagnostic(createRouteDiagnostic({
           url: networkExtraction.page.url,
           path: networkExtraction.page.path,

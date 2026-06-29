@@ -94,6 +94,7 @@ npx -y github:Vyachean/m3-docs-mcp update --max-pages 500
 npx -y github:Vyachean/m3-docs-mcp update --min-pages 25
 npx -y github:Vyachean/m3-docs-mcp update --concurrency 2
 npx -y github:Vyachean/m3-docs-mcp update --force
+npx -y github:Vyachean/m3-docs-mcp update --promote-partial
 npx -y github:Vyachean/m3-docs-mcp update --headed
 npx -y github:Vyachean/m3-docs-mcp update --include-blog
 npx -y github:Vyachean/m3-docs-mcp serve
@@ -153,6 +154,8 @@ ETA is calculated from the elapsed average rate and is only shown after at least
 
 `update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
+`--promote-partial` is a separate, narrower override: by default, a limited/partial crawl (e.g. with `--max-pages`) is never promoted when there is no previous cache yet, or when the previous cache was a full verified run — this prevents a smoke-sized crawl from silently becoming the only cache on disk, or silently replacing a complete one. Pass `--promote-partial` only when you intentionally want a limited crawl's results promoted anyway (this is what `scripts/verify-full-cache-refresh.mjs` does against its disposable temp cache directory, since that directory never has a previous cache to compare against).
+
 By default, `update` excludes blog, news, and article routes (`/blog/**`, `/articles/**`, `/news/**`) from the crawl. The MCP server is primarily intended for Material 3 component specifications, guidelines, design tokens, styles, foundations, and implementation documentation. Blog content is secondary and is excluded by default so it does not consume crawl capacity ahead of core documentation routes. Pass `--include-blog` to include blog routes in the crawl for full-site archival.
 
 The crawler uses a fixed priority order when queuing discovered routes:
@@ -172,6 +175,152 @@ npm install -g github:Vyachean/m3-docs-mcp
 ```
 
 After a global install, the binary can be used as `m3-docs-mcp`, but the supported distribution source is still this Git repository.
+
+## Cache schema v2: raw snapshot, structured graph, and derived Markdown
+
+The cache directory now has three layers, written in this order during a crawl:
+
+1. **Raw snapshot (`raw/**`)** — byte-for-byte/text-for-text captures of what was fetched from the
+   live site, persisted as artifact records (`src/raw-artifacts/`). Artifact kinds: `site-shell`,
+   `site-meta`, `angular-bundle`, `sitemap`, `page-data`, `carbon-content`, `dsdb-resource`, and
+   `network-capture` (browser oracle captures). Each artifact record stores `id`, `kind`,
+   `sourceUrl`, `localPath` (relative to the cache dir, e.g.
+   `raw/page-data/<collectionId>/<documentId>.json`), `httpStatus`, `contentType`, a SHA-256
+   `sha256` of the persisted bytes, `fetchedAt`, the `sourceRoute` it served, `sourceMethod`
+   (`static-plan` / `browser-capture` / `manual-required-route`), and any `error`/`diagnostics`.
+   All artifact records are indexed in `raw/artifact-index.json` (a flat JSON array of artifact
+   records). This is the provenance layer everything else is built from.
+2. **Structured documentation graph (`graph/*.json`)** — built from the raw snapshot by
+   `src/graph/build-graph.ts`, validated with zod, never hand-cast:
+   - `graph/routes.json` — one `RouteNode` per discovered route: canonical route, aliases, title,
+     section, tabs, route origin(s) (`site_meta`, `bundle`, `sitemap`, `nav_drawer`, etc.), source
+     artifacts, expected/generated output paths, and a `RouteCoverageInfo` (status, reasons,
+     `originalStatus` before any shared-alias-group reconciliation, `sharedCoverageGroup`). Coverage
+     status is one of `covered`, `partial`, `failed`, `skipped`, `unresolved`, `nonContent`,
+     `policySkipped`, `aliasOnly`, `ambiguous`, `stale`.
+   - `graph/pages.json` — one `PageNode` per page: headings, `sections` (with `chunkIds`), `chunks`
+     (typed `text` / `image` / `video` / `resource` / `unsupported`), referenced `resourceIds` and
+     `tokenTableIds`, and provenance (source artifacts, source/canonical/virtual route).
+   - `graph/resources.json` — one `ResourceNode` per referenced resource (token table, status
+     table, image, video, or unknown): resolution `status` (`resolved`/`unresolved`), the routes
+     and chunks that reference it, and an `unresolvedReason` when applicable.
+   - `graph/token-tables.json` — one `TokenTableNode` per token-table resource: real token sets,
+     token names, display names, alias chains, and resolved/unresolved values per role (`light`,
+     `dark`, `light-high-contrast`, `dark-high-contrast`).
+   - `graph/sections.json` — a flat per-section projection of `graph/pages.json` (one entry per
+     heading/section across all pages), useful for section-level lookups without walking page chunks.
+   - `graph/provenance.json` — maps each `route:`/`page:`/`resource:` subject to the raw artifact
+     ids it was built from, so any graph fact can be traced back to the exact raw capture.
+3. **Markdown (`pages/**/*.md`, `index.json`)** — now a *derived* output, rebuilt from the route
+   graph + page graph + raw snapshot by `src/rendered/markdown-renderer.ts`'s
+   `rebuildMarkdownFromRaw`, which re-invokes the same `extractContentPageToMaterialPage` renderer
+   the live crawl uses, but fed with page-data/carbon-content/dsdb-resource JSON read back from
+   `raw/**` — no network access, no Playwright. This proves Markdown can be regenerated from the
+   raw snapshot alone. Routes that were only ever extracted via DOM/browser fallback (no persisted
+   page-data/carbon-content artifact) are skipped during a from-raw rebuild and reported as
+   `renderedMarkdownPath: null` rather than silently dropped. **`index.json`/`pages/**` remain the
+   primary compatibility surface**: `MaterialDocsStore` (`src/store.ts`) and all seven original
+   Markdown-oriented MCP tools read only from this layer, unchanged.
+
+`manifest.json` (cache schema v2, `schemaVersion: 2`) is the small top-level entry point describing
+what exists: `generatedAt`, `baseUrl`, `carbonVersion`, `siteMetaHash`, `angularBundleHash`,
+`sitemapHash`, `counts` (`rawArtifacts`, `routes`, `pages`, `markdownPages`, `dsdbResources`,
+`tokenTables`), and a `health` summary (`rawSnapshot`, `graph`, `markdown`, `coverage`, each one of
+`unverified` / `verified` / `partial` / `degraded` / `failed`). It sits alongside, not instead of,
+`index.json`.
+
+A renderer diagnostics report (`diagnostics/renderer-report.json`) records, per route, unsupported
+chunk types, unresolved resources/token/status tables, section/heading coverage, and whether the
+route is one of the fixed required routes (see below) — any error-severity finding on a required
+route is surfaced in `requiredRouteFailures`.
+
+## Graph-oriented MCP tools
+
+Prefer these tools for component, route, or token questions — they read the structured
+documentation graph directly and return decoded data (real token names/values/roles), not just
+Markdown text:
+
+- `list_routes` — list the route catalog from `graph/routes.json`, with section/coverage/search filters.
+- `get_route` — route metadata (canonical route, aliases, references, tabs, source artifacts, coverage status) for one route.
+- `get_page` — one page in a chosen view: `structured` (sections/chunks/resources/tokens from `graph/pages.json`), `markdown` (the existing Markdown-compatible view), or `raw-summary` (artifact/provenance metadata only).
+- `get_component_tokens` — token/status tables (real token names, values, roles, source artifacts) for a component, from `graph/token-tables.json`.
+- `get_component_tabs` — tabs per route for a component, from `graph/routes.json`.
+- `get_component_resources` — resources (images, videos, token tables, status tables) referenced by a component's routes, from `graph/resources.json`.
+- `get_route_artifacts` — raw artifact ids/kinds/source URLs/hashes associated with a route (metadata only, not content).
+- `get_raw_artifact` — debug/provenance tool: metadata plus a truncated content preview for one raw artifact; never dumps large raw JSON by default.
+- `explain_route_coverage` — explains why a route has its current coverage status (reasons, shared coverage group, policy-skip reason).
+- `explain_resource_resolution` — explains a resource's resolved/unresolved status and which routes/chunks reference it.
+
+The original Markdown-oriented tools (`search_material_docs`, `get_material_page`,
+`get_component_docs`, `list_material_components`, `material_docs_cache_status`,
+`material_docs_cache_diagnostics`, `refresh_material_docs`) are unchanged and remain the tools to
+use for full-text search and for compatibility with existing agent prompts.
+
+## Browser oracle (validation only, not the crawler)
+
+The browser oracle (`src/browser-oracle/`) is a Playwright-driven *validation* layer, not a primary
+crawl path. It loads a fixed set of 8 required routes in a real browser, captures network JSON and
+a DOM text snapshot, and compares that capture against the persisted raw snapshot
+(`raw/artifact-index.json`) and documentation graph (`graph/*.json`) to catch resources or headings
+the deterministic direct-JSON crawl silently missed. The 8 required routes
+(`REQUIRED_BROWSER_ORACLE_ROUTES`, also used by the renderer report as `REQUIRED_RENDERER_ROUTES`):
+
+```
+/components/switch/overview
+/components/switch/specs
+/components/buttons/overview
+/components/buttons/specs
+/components/lists/overview
+/components/lists/specs
+/styles/color/roles
+/foundations/design-tokens/overview
+```
+
+The browser oracle compares, per route, captured network resources against `raw/artifact-index.json`
+(flagging any with no match), captured DOM headings against `graph/pages.json` (flagging any
+missing), and captured visible token/status table labels against `graph/token-tables.json`
+(flagging any unresolved). Its capture report is persisted as a `network-capture` raw artifact at
+`raw/network/required-routes.capture.json`; the comparison result is written to
+`diagnostics/browser-oracle-comparison.json`. The browser oracle can legitimately report a
+`passed: true, skipped: true` result when no live browser/network is available — it is a
+best-effort cross-check, not a hard requirement for every environment.
+
+## The `verify:cache:full` / `verify:cache:smoke` pipeline
+
+`npm run verify:cache:full` (and the lighter `npm run verify:cache:smoke`) build the project, run
+the built CLI's `update` command into an isolated temporary cache directory with `--promote-partial`
+(so the verify run's first-ever crawl actually promotes instead of being skipped by the
+first-cache partial-promotion safeguard), then run a strict superset of 7 ordered validation stages
+(`src/validation/run-full-verification.ts`) against the resulting cache:
+
+1. **raw-snapshot** (`validate-raw-snapshot.ts`) — site shell / site_meta / Angular bundle /
+   carbon version present and hashed.
+2. **route-graph** (`validate-route-graph.ts`) — no missing artifacts, no ambiguous/unresolved
+   required routes (full mode only for the fixed-required-route check).
+3. **browser-oracle** (`validate-browser-oracle.ts`) — live Playwright capture vs. raw
+   snapshot/graph; best-effort, may report a skipped pass.
+4. **structured-graph** (`validate-structured-graph.ts`) — no unresolved required DSDB/token/status
+   resources, no unknown chunk types (full mode only for the fixed-required-route check).
+5. **rendered-output** (`validate-rendered-output.ts`) — renderer report's `requiredRouteFailures`
+   empty, no unresolved token placeholders, required generated pages present on disk.
+6. **search-index** (`validate-search-index.ts`) — `MaterialDocsStore.searchDocs` smoke proxy.
+7. **coverage-summary** (`validate-coverage-summary.ts`) — `coverageHealth` plus zero
+   problematic/unresolved/failed route counts.
+
+`verify:cache:smoke` runs the same 7 stages with a small `--max-pages` budget and skips the
+fixed-required-route checks in stages 2 and 4 (a small page budget is not guaranteed to include
+every required route); every other check in every stage still runs unconditionally. Treat smoke as
+a fast sanity check, not the quality gate — `verify:cache:full` is the stricter superset and the
+one that must pass before finishing crawler/cache/graph/renderer/MCP-tool work (see AGENTS.md).
+
+On failure, `scripts/verify-full-cache-refresh.mjs` preserves the temp cache directory (it is never
+deleted on failure) and prints: the CLI exit code, the temp cache directory path, the last 100
+lines of `logs/latest.jsonl`, a summary of `diagnostics/latest-update.json`, and
+`coverageDiagnostics.routeCoverageSummary` (plus problematic route examples and failure reasons
+grouped by cause) from both the temp cache's `index.json` and, if present, a sibling
+`<tempCacheDir>.failed-staging/index.json` — the staging directory `update` itself preserves when a
+crawl fails safety checks before being promoted. Inspect both to distinguish "the crawl itself
+failed validation" from "the verification pipeline found a problem in an otherwise-promoted cache."
 
 ## Environment variables
 

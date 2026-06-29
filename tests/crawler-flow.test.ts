@@ -3,6 +3,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { indexPath, pagesDir, writePage, writeIndex } from '../src/cache.js';
+import { readPageGraph, readProvenanceGraph, readRouteGraph } from '../src/graph/graph-store.js';
+import { readArtifactIndex } from '../src/raw-artifacts/artifact-index.js';
+import { readManifest } from '../src/manifest.js';
+import { readFetchReport } from '../src/raw-artifacts/fetch-report.js';
+import { readRendererReport } from '../src/rendered/renderer-report.js';
 import type { MaterialIndex, MaterialPage } from '../src/types.js';
 
 /** Builds a minimal site_meta.js body declaring the given paths as public routes. */
@@ -283,6 +288,32 @@ describe('crawlMaterialDocs', () => {
     const persistedIndex = JSON.parse(await readFile(indexPath(cacheDir), 'utf8')) as MaterialIndex;
     expect(persistedIndex.pageCount).toBe(2);
     await expect(readFile(path.join(pagesDir(cacheDir), 'components/dialogs/overview.md'), 'utf8')).resolves.toContain('# Dialogs');
+
+    // The documentation graph (stage 3/4 of the raw-snapshot-first cache architecture) is built
+    // and persisted alongside index.json/pages/ during the real crawl loop, not just available
+    // as a standalone pure function. This particular test exercises the legacy browser-fallback
+    // crawl path (no site_meta/Angular bundle), so the route plan never runs and the route graph
+    // is legitimately empty here — the page graph (built from the persisted MaterialIndex pages,
+    // independent of the route plan) is the meaningful assertion for this path.
+    const routeGraph = await readRouteGraph(cacheDir);
+    expect(routeGraph).not.toBeNull();
+    const pageGraph = await readPageGraph(cacheDir);
+    // index.json on disk is the public manifest (no `id` field — see cache.ts's toPublicIndex);
+    // compare against the in-memory MaterialIndex returned by crawlMaterialDocs instead, which
+    // is the same object the graph builder ran on.
+    expect(pageGraph?.pages.map((page) => page.pageId).sort()).toEqual(
+      [...index.pages.map((page) => page.id)].sort()
+    );
+
+    // Stage 5: diagnostics/renderer-report.json is written at the end of every crawl, alongside
+    // fetch-report.json — even on this DOM-fallback-only path (no reference-based JSON route, so
+    // no per-route renderer findings are recorded here), the report file itself must exist and be
+    // well-formed so downstream tooling can always read it.
+    const rendererReport = await readRendererReport(cacheDir);
+    expect(rendererReport).not.toBeNull();
+    expect(rendererReport?.schemaVersion).toBe(1);
+    expect(Array.isArray(rendererReport?.routes)).toBe(true);
+    expect(Array.isArray(rendererReport?.requiredRouteFailures)).toBe(true);
   }, 15_000);
 
   it('uses sitemap loc URLs as discovery seeds before crawling unrelated links', async () => {
@@ -1027,6 +1058,84 @@ describe('crawlMaterialDocs', () => {
       expect(['site-meta', 'bundle-supplement']).toContain(diagnostic.navigationSource);
       expect(diagnostic.pageReferenceSource).toBe('bundle-table');
     }
+
+    // The deterministic direct-JSON path runs buildRoutePlan, so the route graph (graph/routes.json)
+    // is populated with the real accepted route and its reference/coverage info.
+    const routeGraph = await readRouteGraph(cacheDir);
+    const listsRoute = routeGraph?.routes.find((route) => route.route === '/components/lists/overview');
+    expect(listsRoute).toBeTruthy();
+    expect(listsRoute?.reference.documentId).toBe('doc-lists');
+    expect(listsRoute?.coverage.status).toBe('covered');
+    expect(listsRoute?.coverage.savedOutputPaths).toEqual(['components/lists/overview.md']);
+  }, 10_000);
+
+  it('persists raw artifacts (site shell, site_meta, bundle, page-data, carbon-content) to raw/**, indexes them, writes a fetch-report, and writes a cache schema v2 manifest with real counts/hashes', async () => {
+    const html = '<html><body><script src="/static/angular/main.abcdef12.js"></script></body></html>';
+    const mainJs = '"carbonVersion":"cv-123","slug":"components/lists/overview","documentId":"doc-lists","collectionId":"20543ce18892f7d9","collectionName":"ComponentsM3","pageCanonId":"page-canon-lists","exportedCarbonFileId":"page-canon-lists.json"';
+    const pageData = { result: { pageContext: { title: 'Lists', documentId: 'doc-lists', pageCanonId: 'page-canon-lists', slug: 'components/lists/overview' } } };
+    const contentPage = {
+      title: 'Lists',
+      sections: [{ name: 'Overview', contentBlocks: [{ title: 'Usage', contentChunks: [{ contentChunkType: 'TEXT', htmlValue: '<p>Lists present multiple line items in a compact column with enough text for validation.</p>' }] }] }]
+    };
+
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, text: async () => html, status: 200, headers: { get: () => 'text/html' } } as unknown as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: true, text: async () => siteMetaJsText(['components/lists/overview']), status: 200, headers: { get: () => 'text/javascript' } } as unknown as Response;
+      if (url === 'https://m3.material.io/static/angular/main.abcdef12.js') return { ok: true, text: async () => mainJs, status: 200, headers: { get: () => 'text/javascript' } } as unknown as Response;
+      if (url === 'https://m3.material.io/page-data/20543ce18892f7d9/doc-lists.json') return { ok: true, json: async () => pageData, status: 200, headers: { get: () => 'application/json' } } as unknown as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/cv-123/page-canon-lists.json') return { ok: true, json: async () => contentPage, status: 200, headers: { get: () => 'application/json' } } as unknown as Response;
+      return { ok: false, status: 404, text: async () => '', json: async () => ({}), headers: { get: () => null } } as unknown as Response;
+    }));
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 5, minPageCount: 1, force: true });
+    expect(index.pages.map((page) => page.path)).toEqual(['components/lists/overview.md']);
+
+    // raw/** artifacts actually exist on disk for the static-site fetches and the page-data /
+    // carbon-content fetches resolved via the dedicated reference-based pipeline.
+    const shellHtml = await readFile(path.join(cacheDir, 'raw', 'site', 'shell.html'), 'utf8');
+    expect(shellHtml).toBe(html);
+    const siteMetaJs = await readFile(path.join(cacheDir, 'raw', 'site', 'site_meta.js'), 'utf8');
+    expect(siteMetaJs).toBe(siteMetaJsText(['components/lists/overview']));
+    const pageDataOnDisk = JSON.parse(
+      await readFile(path.join(cacheDir, 'raw', 'page-data', '20543ce18892f7d9', 'doc-lists.json'), 'utf8')
+    );
+    expect(pageDataOnDisk).toEqual(pageData);
+    const carbonContentOnDisk = JSON.parse(
+      await readFile(path.join(cacheDir, 'raw', 'carbon-content', 'cv-123', 'page-canon-lists.json'), 'utf8')
+    );
+    expect(carbonContentOnDisk).toEqual(contentPage);
+
+    // raw/artifact-index.json indexes every persisted artifact with the expected kinds.
+    const artifactIndex = await readArtifactIndex(cacheDir);
+    const kinds = artifactIndex.artifacts.map((artifact) => artifact.kind).sort();
+    expect(kinds).toEqual(['angular-bundle', 'carbon-content', 'page-data', 'site-meta', 'site-shell'].sort());
+    const pageDataArtifact = artifactIndex.artifacts.find((artifact) => artifact.kind === 'page-data');
+    expect(pageDataArtifact?.sourceRoute).toBe('/components/lists/overview');
+    expect(pageDataArtifact?.httpStatus).toBe(200);
+    expect(pageDataArtifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    // diagnostics/fetch-report.json records every fetch attempt, including the successful ones.
+    const fetchReport = await readFetchReport(cacheDir);
+    expect(fetchReport.length).toBeGreaterThan(0);
+    expect(fetchReport.some((entry) => entry.outcome === 'success')).toBe(true);
+    expect(fetchReport.some((entry) => entry.expectedKind === 'page-data' && entry.outcome === 'success')).toBe(true);
+    expect(fetchReport.some((entry) => entry.expectedKind === 'carbon-content' && entry.outcome === 'success')).toBe(true);
+
+    // manifest.json (cache schema v2) has real counts and hashes, not placeholders.
+    const manifest = await readManifest(cacheDir);
+    expect(manifest?.schemaVersion).toBe(2);
+    expect(manifest?.carbonVersion).toBe('cv-123');
+    expect(manifest?.siteMetaHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest?.angularBundleHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(manifest?.counts.rawArtifacts).toBe(artifactIndex.artifacts.length);
+    expect(manifest?.counts.pages).toBe(1);
+    expect(manifest?.health.rawSnapshot).toBe('verified');
+
+    // graph/provenance.json links the route back to the raw artifacts it was built from.
+    const provenanceGraph = await readProvenanceGraph(cacheDir);
+    const routeEntry = provenanceGraph?.entries.find((entry) => entry.subject === 'route:/components/lists/overview');
+    expect(routeEntry?.sourceArtifacts.map((ref) => ref.kind).sort()).toEqual(['carbon-content', 'page-data']);
   }, 10_000);
 
   it('classifies a selected site_meta route absent from the bundle table as skipped, not failed', async () => {

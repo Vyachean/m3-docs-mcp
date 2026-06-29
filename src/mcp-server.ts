@@ -3,6 +3,18 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { getDefaultCacheDir } from './cache.js';
 import { DEFAULT_CACHE_MAX_AGE_HOURS, MAX_CRAWL_CONCURRENCY } from './constants.js';
+import { RouteCoverageStatusSchema } from './graph/graph-types.js';
+import { loadGraphToolContext } from './mcp-tools/context.js';
+import { explainResourceResolution } from './mcp-tools/explain-resource-resolution.js';
+import { explainRouteCoverage } from './mcp-tools/explain-route-coverage.js';
+import { getComponentResources } from './mcp-tools/get-component-resources.js';
+import { getComponentTabs } from './mcp-tools/get-component-tabs.js';
+import { getComponentTokens } from './mcp-tools/get-component-tokens.js';
+import { getPage } from './mcp-tools/get-page.js';
+import { DEFAULT_PREVIEW_CHARS, getRawArtifact } from './mcp-tools/get-raw-artifact.js';
+import { getRoute } from './mcp-tools/get-route.js';
+import { getRouteArtifacts } from './mcp-tools/get-route-artifacts.js';
+import { listRoutes } from './mcp-tools/list-routes.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 import type { CacheDiagnostics, CacheStatus, CrawlProgress, SearchResult } from './types.js';
@@ -115,6 +127,83 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
       promotePartial: promotePartial ?? false,
       force: force ?? false
     }));
+  });
+
+  server.tool('list_routes', 'List the Material 3 documentation route catalog from the documentation graph (graph/routes.json), with optional section/coverage/search filters. Compact by default; does not dump raw page content.', {
+    section: z.string().trim().min(1).optional(),
+    coverageStatus: RouteCoverageStatusSchema.optional(),
+    search: z.string().trim().min(1).optional(),
+    limit: z.number().int().min(1).max(500).default(100)
+  }, async ({ section, coverageStatus, search, limit }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(listRoutes(context, { section, coverageStatus, search, limit }));
+  });
+
+  server.tool('get_route', 'Return route metadata (canonicalRoute, aliases, references, tabs, source artifacts, coverage status/originalStatus/sharedCoverageGroup) from the documentation graph (graph/routes.json) for a single route.', {
+    route: z.string().trim().min(1)
+  }, async ({ route }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(getRoute(context, route));
+  });
+
+  server.tool('get_page', 'Return one documentation page in a chosen view: "structured" (sections/chunks/resources/tokens from graph/pages.json), "markdown" (the existing Markdown-compatible view), or "raw-summary" (artifact/provenance metadata, no raw content).', {
+    route: z.string().trim().min(1),
+    view: z.union([z.literal('structured'), z.literal('markdown'), z.literal('raw-summary')]).default('structured'),
+    maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
+  }, async ({ route, view, maxMarkdownChars }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(await getPage(context, store, { route, view, maxMarkdownChars }));
+  });
+
+  server.tool('get_component_tokens', 'Return token/status tables (real token names, values, roles, source artifacts) for a Material 3 component from the documentation graph (graph/token-tables.json).', {
+    componentName: z.string().trim().min(1)
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(getComponentTokens(context, componentName));
+  });
+
+  server.tool('get_component_tabs', 'Return tabs per route for a Material 3 component from the documentation graph (graph/routes.json).', {
+    componentName: z.string().trim().min(1)
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(getComponentTabs(context, componentName));
+  });
+
+  server.tool('get_component_resources', 'Return resources (images, videos, token tables, status tables) referenced by a Material 3 component\'s routes from the documentation graph (graph/resources.json).', {
+    componentName: z.string().trim().min(1)
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(getComponentResources(context, componentName));
+  });
+
+  server.tool('get_route_artifacts', 'Return the list of raw artifact ids/kinds/source URLs/hashes associated with a route (metadata only, not content).', {
+    route: z.string().trim().min(1)
+  }, async ({ route }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(getRouteArtifacts(context, route));
+  });
+
+  server.tool('get_raw_artifact', `Debug/provenance tool. Returns metadata for one raw artifact plus a truncated content preview (default ${DEFAULT_PREVIEW_CHARS} chars) with truncated:true, unless fullContent:true is passed and the artifact is below the size cap. Never dumps large raw JSON by default — use get_page/get_component_tokens for normal documentation tasks.`, {
+    artifactId: z.string().trim().min(1),
+    fullContent: z.boolean().default(false),
+    previewChars: z.number().int().min(100).max(20_000).default(DEFAULT_PREVIEW_CHARS)
+  }, async ({ artifactId, fullContent, previewChars }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(await getRawArtifact(context, { artifactId, fullContent, previewChars }));
+  });
+
+  server.tool('explain_route_coverage', 'Explain why a route has its current coverage status: reasons, shared coverage group members, original per-route status, and any policy-skip reason, from the documentation graph (graph/routes.json).', {
+    route: z.string().trim().min(1)
+  }, async ({ route }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(explainRouteCoverage(context, route));
+  });
+
+  server.tool('explain_resource_resolution', 'Explain a resource\'s resolved/unresolved status and which routes/chunks reference it, from the documentation graph (graph/resources.json).', {
+    resourceId: z.string().trim().min(1)
+  }, async ({ resourceId }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonText(explainResourceResolution(context, resourceId));
   });
 
   const transport = new StdioServerTransport();

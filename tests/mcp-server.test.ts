@@ -158,7 +158,17 @@ describe('serveMcp', () => {
       'list_material_components',
       'material_docs_cache_status',
       'material_docs_cache_diagnostics',
-      'refresh_material_docs'
+      'refresh_material_docs',
+      'list_routes',
+      'get_route',
+      'get_page',
+      'get_component_tokens',
+      'get_component_tabs',
+      'get_component_resources',
+      'get_route_artifacts',
+      'get_raw_artifact',
+      'explain_route_coverage',
+      'explain_resource_resolution'
     ]);
     expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
   });

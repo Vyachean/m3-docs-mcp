@@ -16,6 +16,29 @@ The official source is always `https://m3.material.io/`. Google implementation r
 
 The MCP server is considered useful only when core documentation pages expose real token names, resolved values, and status/spec data — not placeholder-only output. If `get_material_page` for a spec page returns only `Material resource placeholder:` lines, the cache is degraded and should be refreshed.
 
+When the task concerns specific components, routes, or design tokens, prefer the graph-oriented tools (`list_routes`, `get_route`, `get_page`, `get_component_tokens`, `get_component_tabs`, `get_component_resources`, `get_route_artifacts`, `get_raw_artifact`, `explain_route_coverage`, `explain_resource_resolution`) over the Markdown-oriented tools — they read the structured documentation graph (`graph/*.json`) and return decoded token names/values/roles and coverage facts directly, instead of requiring re-parsing of rendered Markdown. The original Markdown-oriented tools (`search_material_docs`, `get_material_page`, `get_component_docs`, `list_material_components`, `material_docs_cache_status`, `material_docs_cache_diagnostics`, `refresh_material_docs`) remain the right choice for full-text search and stay unchanged for compatibility.
+
+## Cache architecture (schema v2)
+
+The cache directory has three layers: a raw snapshot (`raw/**`, indexed in `raw/artifact-index.json`,
+described by `manifest.json`), a structured documentation graph built from it (`graph/routes.json`,
+`graph/pages.json`, `graph/resources.json`, `graph/token-tables.json`, `graph/sections.json`,
+`graph/provenance.json`), and Markdown (`index.json` / `pages/**`) which is now a *derived* output —
+rebuildable from the raw snapshot and graph via `rebuildMarkdownFromRaw` (`src/rendered/markdown-renderer.ts`)
+without any network access or Playwright. Markdown remains the primary compatibility surface: it is
+what `MaterialDocsStore` (`src/store.ts`) and the original seven MCP tools read. A browser oracle
+(`src/browser-oracle/`) cross-checks a fixed set of 8 required routes by live Playwright capture against
+the raw snapshot/graph; it is a validation layer, not a crawl path, and may report a best-effort skipped
+pass when no live browser is available. See README.md for full structure, field-level detail, and the
+7-stage `verify:cache:full` pipeline.
+
+**When changing crawler, cache store, route planning, route coverage, JSON extraction, renderer, token
+tables, browser oracle, or MCP tools, you must run `npm run check`, `npm test`, `npm run build`, and
+`npm run verify:cache:full` — and you must not finish this kind of architecture work with only smoke
+verification (`verify:cache:smoke`).** Smoke mode skips the fixed-required-route checks and uses a small
+page budget; it is a fast sanity check during iteration, not a substitute for the full gate before
+finishing.
+
 ## Timeout-sensitive clients
 
 Codex and similar stdio MCP clients can time out if package installation performs slow side effects before the MCP handshake. Keep the server startup path lightweight:
@@ -98,9 +121,16 @@ When changing any of these areas, run this expanded gate before finishing:
 - `src/store.ts`
 - `src/route-coverage.ts`
 - `src/json-extraction/**`
+- `src/raw-artifacts/**`
+- `src/manifest.ts`
+- `src/graph/**`
+- `src/rendered/**`
+- `src/mcp-tools/**`
+- `src/browser-oracle/**`
+- `src/validation/**`
 - route planning / page reference resolution
 - token table rendering
-- MCP cache tools
+- MCP cache tools (both the original Markdown-oriented tools and the graph-oriented tools)
 
 Required commands:
 
@@ -111,7 +141,7 @@ npm run build
 npm run verify:cache:full
 ```
 
-For any change touching crawler, cache promotion, route coverage, JSON extraction, page reference resolution, token table rendering, or MCP cache tools, do not finish the task until all four commands above pass.
+For any change touching crawler, cache promotion, route coverage, JSON extraction, page reference resolution, token table rendering, raw artifacts, the documentation graph, the renderer, the browser oracle, the validation pipeline, or MCP cache tools, do not finish the task until all four commands above pass.
 
 If `verify:cache:full` fails because of a real live-site extraction issue, continue debugging and fixing it; do not stop after adding diagnostics. You may stop only when the failure is clearly external and transient, such as a network outage or `m3.material.io` being unavailable, and in that case you must preserve diagnostics, summarize them, and state clearly that the PR is not ready.
 

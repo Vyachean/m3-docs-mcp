@@ -496,6 +496,7 @@ export type RouteCoverageSummary = {
   partialRoutes: number;
   failedRoutes: number;
   unresolvedRoutes: number;
+  skippedRoutes: number;
   policySkippedRoutes: number;
   nonContentRoutes: number;
   expectedOutputCount: number;
