@@ -1141,7 +1141,7 @@ describe('crawlMaterialDocs', () => {
     expect(manifest?.angularBundleHash).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest?.counts.rawArtifacts).toBe(artifactIndex.artifacts.length);
     expect(manifest?.counts.pages).toBe(1);
-    expect(manifest?.health.rawSnapshot).toBe('verified');
+    expect(manifest?.health.rawSnapshot).toBe('unverified');
 
     // graph/provenance.json links the route back to the raw artifacts it was built from.
     const provenanceGraph = await readProvenanceGraph(cacheDir);

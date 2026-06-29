@@ -92,7 +92,7 @@ describe('validateStructuredGraph', () => {
     expect(result.passed).toBe(true);
   });
 
-  it('fails when a token table has unresolved tokens on a required route', async () => {
+  it('does not fail only because a token table reports unresolved token variants on a required route', async () => {
     await writeResourceGraph(makeResourceGraph(), cacheDir);
     await writeTokenTableGraph(makeTokenTableGraph({
       tokenTables: [{
@@ -105,8 +105,8 @@ describe('validateStructuredGraph', () => {
       }],
     }), cacheDir);
     const result = await validateStructuredGraph({ cacheDir, requiredRoutes: REQUIRED_ROUTES });
-    expect(result.passed).toBe(false);
-    expect(result.reasons.some((r) => r.includes('unresolved token'))).toBe(true);
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
   });
 
   it('fails when a required page has an unknown chunk/resource type', async () => {

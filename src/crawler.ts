@@ -32,7 +32,7 @@ import {
 import { parseContentPage } from './json-extraction/schemas.js';
 import { computeEta, formatDurationMs } from './progress.js';
 import { persistArtifact } from './raw-artifacts/artifact-store.js';
-import { upsertArtifactRecord } from './raw-artifacts/artifact-index.js';
+import { upsertArtifactRecords } from './raw-artifacts/artifact-index.js';
 import { createFetchDiagnostic, type FetchDiagnostic } from './raw-artifacts/fetch-diagnostics.js';
 import { writeFetchReport } from './raw-artifacts/fetch-report.js';
 import { sha256Hex } from './raw-artifacts/hash.js';
@@ -2897,7 +2897,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
 
   await runPromotionStep('raw-artifact-index', 'write raw artifact index', async () => {
-    for (const record of artifactRecords) await upsertArtifactRecord(record, cacheDir);
+    await upsertArtifactRecords(artifactRecords, cacheDir);
   });
   await runPromotionStep('fetch-report', 'write fetch diagnostics report', async () => {
     await writeFetchReport(fetchDiagnostics, cacheDir);
@@ -2945,7 +2945,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
 
   await runPromotionStep('manifest', 'write cache manifest', async () => {
     await writeManifest(buildManifest({
-      rawSnapshot: artifactRecords.length > 0 ? 'verified' : 'unverified',
+      rawSnapshot: 'unverified',
       graph: 'unverified',
       markdown: coverageDiagnostics.coverageHealth === 'verified' ? 'verified' : 'partial',
       coverage: coverageDiagnostics.coverageHealth === 'broken' ? 'degraded' : coverageDiagnostics.coverageHealth ?? 'unverified'
@@ -3092,6 +3092,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     );
 
     const savePage = async (url: string, extraction: Awaited<ReturnType<typeof extractContentPageToMaterialPage>>, extra: Partial<Parameters<typeof createRouteDiagnostic>[0]>): Promise<void> => {
+      const graphRoute = extra.virtualRoute ?? sourceCoverageRoute;
       if (extraction.fallbackReason) {
         const fallbackReason = extraction.fallbackReason;
         jsonFallbackRoutes.set(route.slug, fallbackReason);
@@ -3146,7 +3147,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           ...sharedDiagnosticFields,
           ...extra
         }));
-        recordRendererRouteReport(sourceCoverageRoute, extraction, contentJson, []);
+        recordRendererRouteReport(graphRoute, extraction, contentJson, []);
         return;
       }
       const materialPage = extraction.page;
@@ -3160,9 +3161,9 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         appendUnique(entry.savedOutputPaths, materialPage.path);
       });
       pushPageDiagnostic(extractionDiagnostics, { ...extraction.pageDiagnostic, source: 'direct-json' });
-      recordCollectedTokenTables(materialPage.path, sourceCoverageRoute, extraction.collectedTokenTables);
+      recordCollectedTokenTables(materialPage.path, graphRoute, extraction.collectedTokenTables);
       recordRendererRouteReport(
-        sourceCoverageRoute,
+        graphRoute,
         extraction,
         contentJson,
         artifactRecords.filter((a) => a.sourceRoute === sourceCoverageRoute).map((a) => a.id)

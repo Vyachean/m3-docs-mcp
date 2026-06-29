@@ -56,6 +56,21 @@ export async function upsertArtifactRecord(
   return next;
 }
 
+export async function upsertArtifactRecords(
+  records: ArtifactRecord[],
+  cacheDir = getDefaultCacheDir()
+): Promise<ArtifactIndex> {
+  if (records.length === 0) {
+    return readArtifactIndex(cacheDir);
+  }
+  const current = await readArtifactIndex(cacheDir);
+  const byId = new Map(current.artifacts.map((artifact) => [artifact.id, artifact]));
+  for (const record of records) byId.set(record.id, record);
+  const next: ArtifactIndex = { artifacts: Array.from(byId.values()) };
+  await writeArtifactIndex(next, cacheDir);
+  return next;
+}
+
 export function findArtifactById(index: ArtifactIndex, id: string): ArtifactRecord | null {
   return index.artifacts.find((artifact) => artifact.id === id) ?? null;
 }

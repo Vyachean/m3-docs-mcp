@@ -18,6 +18,11 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
  * graph directly rather than rendered Markdown text, so it can catch unresolved resources even on
  * required routes whose Markdown rendering pipeline papered over the gap with a placeholder that
  * happens not to match the renderer-report's tracked patterns.
+ *
+ * TokenTableNode.unresolvedTokenCount is informational and intentionally does not fail this stage.
+ * Live Material token systems can omit some role/context variants while still resolving the
+ * underlying DSDB token-table resource correctly; strict verification should fail on unresolved
+ * resources, not on every missing token variant.
  */
 
 function normalizeRouteKey(route: string): string {
@@ -60,14 +65,6 @@ export async function validateStructuredGraph(input: ValidateStructuredGraphInpu
     if (!resourceRoutedToRequired(resource, requiredNormalized)) continue;
     reasons.push(
       `Unresolved ${resource.kind} resource "${resource.resourceName ?? resource.resourceId}" on required route(s) ${resource.routes.join(', ')}: ${resource.unresolvedReason ?? 'unknown reason'}.`
-    );
-  }
-
-  for (const tokenTable of tokenTableGraph.tokenTables) {
-    if (tokenTable.unresolvedTokenCount === 0) continue;
-    if (!tokenTable.routes.some((route) => requiredNormalized.has(normalizeRouteKey(route)))) continue;
-    reasons.push(
-      `Token table "${tokenTable.resourceName ?? tokenTable.resourceId}" has ${tokenTable.unresolvedTokenCount} unresolved token(s) on required route(s) ${tokenTable.routes.join(', ')}.`
     );
   }
 

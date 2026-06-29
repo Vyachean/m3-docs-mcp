@@ -104,19 +104,20 @@ function formatValueNode(value: unknown): string {
   if (!isRecord(value)) return '';
 
   if ('red' in value && 'green' in value && 'blue' in value) {
-    const red = Number(value.red);
-    const green = Number(value.green);
-    const blue = Number(value.blue);
-    const alpha = value.alpha != null ? Number(value.alpha) : 1;
+    const red = Number(value['red']);
+    const green = Number(value['green']);
+    const blue = Number(value['blue']);
+    const alpha = value['alpha'] != null ? Number(value['alpha']) : 1;
     if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
     if (Number.isFinite(alpha) && alpha < 0.9999) {
       return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
     }
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
-  if (typeof value.unit === 'string' && typeof value.value === 'number') {
-    const unit = value.unit === 'DIPS' ? 'dp' : value.unit === 'POINTS' || value.unit === 'SP' ? 'sp' : value.unit.toLowerCase();
-    return `${value.value}${unit}`;
+  if (typeof value['unit'] === 'string' && typeof value['value'] === 'number') {
+    const unitName = value['unit'];
+    const unit = unitName === 'DIPS' ? 'dp' : unitName === 'POINTS' || unitName === 'SP' ? 'sp' : unitName.toLowerCase();
+    return `${value['value']}${unit}`;
   }
   return '';
 }

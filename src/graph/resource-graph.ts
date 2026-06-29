@@ -73,7 +73,6 @@ function tokenTableResources(
   diagnostic.tokenContextDiagnostics.forEach((tokenDiagnostic: TokenContextDiagnostic, index: number) => {
     const resourceName = tokenDiagnostic.resourceName;
     const id = tokenTableResourceId(diagnostic.path, index, resourceName ?? null);
-    const unresolved = tokenDiagnostic.unresolvedTokenCount > 0 || tokenDiagnostic.missingRequestedTokenSetCount > 0;
     const matchedArtifact = resourceName ? findArtifactForResourceName(artifactsByTrailingSegment, resourceName) : null;
     upsertResource(
       resources,
@@ -86,8 +85,11 @@ function tokenTableResources(
         routes: [],
         pageIds: [],
         chunkIds: [],
-        status: unresolved ? 'unresolved' : 'resolved',
-        unresolvedReason: unresolved ? 'unresolved-or-missing-token-sets' : null,
+        // A token table resource is resolved once the DSDB artifact was fetched and decoded
+        // enough to emit tokenContextDiagnostics. Missing token variants remain visible on the
+        // token-table graph without turning the resource itself into an unresolved fetch.
+        status: 'resolved',
+        unresolvedReason: null,
       }),
       route,
       `chunk-token-table-${index}`
@@ -237,7 +239,13 @@ export type BuildResourceGraphInput = {
 export function buildResourceGraph(input: BuildResourceGraphInput): ResourceGraph {
   const routeByPath = new Map<string, string | undefined>();
   for (const routeDiagnostic of input.routeDiagnostics) {
-    routeByPath.set(routeDiagnostic.path, routeDiagnostic.sourceRoute ?? routeDiagnostic.normalizedRoute);
+    routeByPath.set(
+      routeDiagnostic.path,
+      routeDiagnostic.virtualRoute
+        ?? routeDiagnostic.canonicalRoute
+        ?? routeDiagnostic.sourceRoute
+        ?? routeDiagnostic.normalizedRoute
+    );
   }
 
   const artifactsByTrailingSegment = new Map<string, ArtifactRecord[]>();

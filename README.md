@@ -354,7 +354,7 @@ underlying full crawl. With `--strict-graph`:
 
 Without `--strict-graph` (the default — used by smoke/dev runs and most existing tests), these
 failures are logged and promotion continues, and `health` falls back to the cheaper approximation
-(`rawSnapshot: verified` once at least one artifact exists, `graph` always `unverified`, `markdown`
+(`rawSnapshot: unverified` until the explicit validation stage runs, `graph` always `unverified`, `markdown`
 derived from `coverageHealth`). `unverified` always means "this validation stage hasn't run" — never
 treated as a substitute for `verified`. A promotion aborted by `--strict-graph` leaves the staging
 directory in place for inspection (same failed-staging mechanism as other promotion safety checks),
