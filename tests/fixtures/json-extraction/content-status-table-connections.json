@@ -1,0 +1,25 @@
+{
+  "pageId": "lists-page-id",
+  "pageCanonId": "page-canon-lists",
+  "title": "Lists",
+  "slug": "lists",
+  "sections": [
+    {
+      "name": "Overview",
+      "isVisible": true,
+      "contentBlocks": [
+        {
+          "title": "Availability & resources",
+          "contentChunks": [
+            {
+              "contentChunkType": "RESOURCE",
+              "libraryModuleType": "STATUS_TABLE",
+              "resourceName": "designSystems/030656e0a1083ef1/components/11cb6b2ed0f6dee4",
+              "moduleConfigurationOverrides": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

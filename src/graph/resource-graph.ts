@@ -3,6 +3,7 @@ import type { ArtifactRecord } from '../raw-artifacts/artifact-types.js';
 import { ResourceGraphSchema, type ResourceGraph, type ResourceNode, type SourceArtifactRef } from './graph-types.js';
 import { normalizeGraphRoute } from './route-identity.js';
 import {
+  dsdbArtifactBaseName,
   imageResourceId,
   statusTableResourceId,
   tokenTablePlaceholderResourceId,
@@ -19,13 +20,12 @@ function toSourceArtifactRef(artifact: ArtifactRecord): SourceArtifactRef | null
   return null;
 }
 
-/** Finds a raw artifact whose sourceUrl ends with the given resourceName's last path segment —
- *  dsdb-resource artifacts are persisted with sourceUrl `dsdb-resource:<resourceName>` (see
- *  crawler.ts's withArtifactPersistence) or the live fetch URL, both of which carry the trailing
- *  resource segment. */
+/** Finds a raw artifact persisted under this resourceName's basename — dsdb-resource artifacts
+ *  are persisted by crawler.ts's withArtifactPersistence under `dsdbArtifactBaseName(resourceName)`
+ *  (design-system-id-qualified for `designSystems/<id>/components/<id>` resources, so two design
+ *  systems sharing a trailing component id don't collide), which this must match exactly. */
 function findArtifactForResourceName(artifactsByTrailingSegment: Map<string, ArtifactRecord[]>, resourceName: string): ArtifactRecord | null {
-  const trailingSegment = resourceName.split('/').filter(Boolean).at(-1) ?? resourceName;
-  return artifactsByTrailingSegment.get(trailingSegment)?.[0] ?? null;
+  return artifactsByTrailingSegment.get(dsdbArtifactBaseName(resourceName))?.[0] ?? null;
 }
 
 /**

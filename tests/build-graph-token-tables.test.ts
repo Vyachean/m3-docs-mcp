@@ -111,7 +111,7 @@ describe('buildGraphFromIndex / buildAndWriteGraph: token-table graph (Part C)',
     artifactRecords.push(carbonArtifact);
     const dsdbArtifact = await persistArtifact({
       kind: 'dsdb-resource',
-      pathParts: ['carbon-v1', '6c818a16475113bd'],
+      pathParts: ['carbon-v1', 'designSystems_20543ce18892f7d9_components_6c818a16475113bd'],
       sourceUrl: 'dsdb-resource:designSystems/20543ce18892f7d9/components/6c818a16475113bd',
       content: JSON.stringify(fixture('token-table-resource.json')),
       contentType: 'application/json',

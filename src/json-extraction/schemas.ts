@@ -242,6 +242,43 @@ function _statusRows(resource: unknown): string[][] {
   return [];
 }
 
+function _connectionStatusLabel(status: string): string {
+  if (!status) return status;
+  return status.charAt(0) + status.slice(1).toLowerCase().replace(/_/g, ' ');
+}
+
+/**
+ * The live DSDB "component" resource (e.g. `designSystems/<id>/components/<id>`) is a component
+ * availability matrix, not a generic headers/rows table: { connections: [{ displayName,
+ * resourceType, status, resourceUrl, orderInComponent }] }. Each connection becomes one
+ * Platform/Status row, sorted by `orderInComponent` (DSDB's own display order) and linked to
+ * `resourceUrl` when present — this is the real schema returned by m3.material.io's STATUS_TABLE
+ * chunks, distinct from the {headers, rows}/{columns, statuses} shapes handled above.
+ */
+function _connectionsToHeadersRows(resource: unknown): { headers: string[]; rows: string[][] } | null {
+  const o = asObject(resource);
+  if (!o) return null;
+  const connections = Array.isArray(o.connections) ? o.connections
+    : isRecord(o.payload) && Array.isArray(o.payload.connections) ? o.payload.connections
+    : null;
+  if (!connections) return null;
+
+  const ranked: { order: number; row: string[] }[] = [];
+  for (const entry of connections) {
+    if (!isRecord(entry)) continue;
+    const displayName = typeof entry.displayName === 'string' ? entry.displayName : null;
+    const status = typeof entry.status === 'string' ? entry.status : null;
+    if (!displayName || !status) continue;
+    const resourceUrl = typeof entry.resourceUrl === 'string' ? entry.resourceUrl : null;
+    const label = resourceUrl ? `[${displayName}](${resourceUrl})` : displayName;
+    const order = typeof entry.orderInComponent === 'number' ? entry.orderInComponent : Number.MAX_SAFE_INTEGER;
+    ranked.push({ order, row: [label, _connectionStatusLabel(status)] });
+  }
+  if (ranked.length === 0) return null;
+  ranked.sort((a, b) => a.order - b.order);
+  return { headers: ['Platform', 'Status'], rows: ranked.map((entry) => entry.row) };
+}
+
 function _stableStringify(value: unknown): string {
   if (value === null || value === undefined) return String(value);
   if (typeof value !== 'object') return JSON.stringify(value);
@@ -253,6 +290,11 @@ function _stableStringify(value: unknown): string {
 }
 
 export function parseStatusTable(resource: unknown): DecodedStatusTable | null {
+  const fromConnections = _connectionsToHeadersRows(resource);
+  if (fromConnections) {
+    const result = DecodedStatusTableSchema.safeParse(fromConnections);
+    if (result.success) return result.data;
+  }
   const headers = _statusHeaders(resource);
   const rows = _statusRows(resource);
   if (headers.length === 0 || rows.length === 0) return null;
@@ -414,12 +456,18 @@ export const ResourceChunkSchema = z
     resourceName: z.string().nullable().optional(),
     resourcePath: z.string().nullable().optional(),
     resourceUrl: z.string().nullable().optional(),
+    // Real DSDB RESOURCE chunks (e.g. STATUS_TABLE component-availability chunks on
+    // /components/buttons, /components/lists, /components/switch) carry an explicit JSON `null`
+    // here, not just an absent key — `.optional()` alone only accepts `undefined` and rejects
+    // `null`, which previously made the whole chunk fail validation and silently skip the DSDB
+    // fetch (decodeResourceChunk treated it as malformed, so fetchResource was never even called).
     moduleConfigurationOverrides: z
       .object({
         tokenSets: z.unknown().optional(),
         resourceName: z.string().nullable().optional(),
       })
       .passthrough()
+      .nullable()
       .optional(),
     moduleConfiguration: z
       .object({
@@ -427,6 +475,7 @@ export const ResourceChunkSchema = z
         resourceName: z.string().nullable().optional(),
       })
       .passthrough()
+      .nullable()
       .optional(),
     tokenSets: z.unknown().optional(),
   })

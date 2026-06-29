@@ -22,6 +22,7 @@ import {
 } from './graph-types.js';
 import { normalizeGraphRoute } from './route-identity.js';
 import {
+  dsdbArtifactBaseName,
   imageResourceId,
   statusTableResourceId,
   tokenTableResourceId,
@@ -207,8 +208,7 @@ function findDsdbArtifact(
   resourceName: string | null
 ): ArtifactRecord | null {
   if (!resourceName) return null;
-  const trailing = resourceName.split('/').filter(Boolean).at(-1) ?? resourceName;
-  return dsdbArtifactsByTrailingSegment.get(trailing)?.[0] ?? null;
+  return dsdbArtifactsByTrailingSegment.get(dsdbArtifactBaseName(resourceName))?.[0] ?? null;
 }
 
 function routeSectionFromPath(route: string): string {

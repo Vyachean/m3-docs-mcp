@@ -395,6 +395,35 @@ describe('decodeResourceChunk – malformed resource chunks', () => {
     }
   });
 
+  // Real-data regression: the live DSDB STATUS_TABLE chunks on /components/buttons,
+  // /components/lists, and /components/switch carry an explicit JSON `null` for
+  // moduleConfigurationOverrides (not just an absent key). Earlier `.optional()` (without
+  // `.nullable()`) rejected `null`, so these three pages' status-table chunk silently failed
+  // ResourceChunkSchema validation, was treated as a malformed/unsupported chunk, and never
+  // even attempted the DSDB fetch — producing "missing-status-table-resource" downstream.
+  it('decodes a STATUS_TABLE chunk whose moduleConfigurationOverrides is an explicit null', () => {
+    const result = decodeResourceChunk({
+      libraryModuleType: 'STATUS_TABLE',
+      resourceName: 'designSystems/030656e0a1083ef1/components/4c66f2c4b2f2cb18',
+      moduleConfigurationOverrides: null,
+      contentChunkType: 'RESOURCE'
+    });
+    expect('_unsupported' in result).toBe(false);
+    if (!('_unsupported' in result)) {
+      expect(result.libraryModuleType).toBe('STATUS_TABLE');
+      expect(result.resourceName).toBe('designSystems/030656e0a1083ef1/components/4c66f2c4b2f2cb18');
+    }
+  });
+
+  it('decodes a chunk whose moduleConfiguration is an explicit null', () => {
+    const result = decodeResourceChunk({
+      libraryModuleType: 'TOKEN_TABLE',
+      resourceName: 'some/resource',
+      moduleConfiguration: null
+    });
+    expect('_unsupported' in result).toBe(false);
+  });
+
   it('renderer cannot be called with raw unknown – decodeResourceChunk is the boundary', () => {
     // This test documents the boundary: callers must decode first, then render.
     // The type system enforces this; renderDsdbResourceChunk no longer accepts unknown.
@@ -962,6 +991,88 @@ describe('parseStatusTable – zod boundary', () => {
       expect(h).toBeDefined();
       expect(r).toBeDefined();
     }
+  });
+});
+
+// ─── parseStatusTable – real DSDB "component" availability-matrix shape ──────
+//
+// The live m3.material.io DSDB status-table resource for a component (e.g.
+// designSystems/<id>/components/<id>) is NOT {headers, rows} — it's a component-availability
+// matrix: { connections: [{ displayName, resourceType, status, resourceUrl, orderInComponent }] }.
+// This is the real shape seen on /components/buttons, /components/lists, /components/switch
+// overview pages and must decode to a Platform/Status table, ordered by orderInComponent.
+
+describe('parseStatusTable – real DSDB component connections shape', () => {
+  it('decodes a connections array into Platform/Status rows ordered by orderInComponent', () => {
+    const decoded = parseStatusTable({
+      name: 'designSystems/030656e0a1083ef1/components/11cb6b2ed0f6dee4',
+      displayName: 'Lists',
+      connections: [
+        {
+          resourceType: 'WIZ_IMPLEMENTATION',
+          resourceUrl: 'https://github.com/material-components/material-web/blob/main/docs/components/list.md',
+          status: 'AVAILABLE',
+          displayName: 'Web',
+          orderInComponent: 2
+        },
+        {
+          resourceType: 'FIGMA',
+          resourceUrl: 'https://www.figma.com/community/file/123',
+          status: 'AVAILABLE',
+          displayName: 'Design Kit (Figma)',
+          orderInComponent: 1
+        }
+      ]
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.headers).toEqual(['Platform', 'Status']);
+    expect(decoded!.rows).toEqual([
+      ['[Design Kit (Figma)](https://www.figma.com/community/file/123)', 'Available'],
+      ['[Web](https://github.com/material-components/material-web/blob/main/docs/components/list.md)', 'Available']
+    ]);
+  });
+
+  it('omits the markdown link when resourceUrl is absent', () => {
+    const decoded = parseStatusTable({
+      connections: [{ status: 'UNAVAILABLE', displayName: 'Web: Expressive', orderInComponent: 1 }]
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.rows).toEqual([['Web: Expressive', 'Unavailable']]);
+  });
+
+  it('skips connections missing displayName or status, still decoding the rest', () => {
+    const decoded = parseStatusTable({
+      connections: [
+        { status: 'AVAILABLE', orderInComponent: 1 },
+        { displayName: 'Flutter', orderInComponent: 2 },
+        { displayName: 'Android', status: 'AVAILABLE', orderInComponent: 3 }
+      ]
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.rows).toEqual([['Android', 'Available']]);
+  });
+
+  it('returns null when connections is present but empty or has no usable entries', () => {
+    expect(parseStatusTable({ connections: [] })).toBeNull();
+    expect(parseStatusTable({ connections: [{ orderInComponent: 1 }] })).toBeNull();
+  });
+
+  it('reads connections from payload when missing at top level', () => {
+    const decoded = parseStatusTable({
+      payload: { connections: [{ displayName: 'iOS', status: 'AVAILABLE', orderInComponent: 1 }] }
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.rows).toEqual([['iOS', 'Available']]);
+  });
+
+  it('prefers the connections shape over a legacy headers/rows shape when both are present', () => {
+    const decoded = parseStatusTable({
+      headers: ['Should', 'Not', 'Win'],
+      rows: [['x', 'y', 'z']],
+      connections: [{ displayName: 'Web', status: 'AVAILABLE', orderInComponent: 1 }]
+    });
+    expect(decoded).not.toBeNull();
+    expect(decoded!.headers).toEqual(['Platform', 'Status']);
   });
 });
 
