@@ -2913,7 +2913,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   });
   await runPromotionStep('graph', 'build documentation graph', async () => {
     const collectedTokenTables = Array.from(collectedTokenTablesByPagePath.values()).flat();
-    await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables);
+    await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables, { strict: strictGraph });
   });
 
   // Manifest health: a first pass with the cheap, always-available approximation (so

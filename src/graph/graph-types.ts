@@ -4,16 +4,24 @@ import { z } from 'zod';
  * Graph schema (stage 3/4 of the raw-snapshot-first cache architecture).
  *
  * These types describe the persisted `graph/*.json` files written alongside
- * `manifest.json` and `raw/**`. They are built from the existing extraction
- * pipeline's *output* structures (`RoutePlanEntry`, `RouteCoverageEntry`,
- * `MaterialPageMeta`, `ExtractionPageDiagnostic`, `ExtractionRouteDiagnostic`
- * — see src/types.ts) rather than from raw JSON payloads, so every field
- * here is produced by a typed decoder (`route-graph.ts`, `page-graph.ts`,
- * `resource-graph.ts`, `token-table-graph.ts`) and validated with the zod
+ * `manifest.json` and `raw/**`. In production (raw artifacts available), every
+ * field here is decoded directly from the persisted raw snapshot (`raw/**`,
+ * see `raw-graph-build.ts`'s `buildRawBackedGraph`): page-data, Carbon
+ * content, and DSDB resource JSON read back via `readArtifactText` and
+ * decoded into `RouteNode`/`PageNode`/`ResourceNode`/`TokenTableNode` facts.
+ * A legacy builder (`build-graph.ts`'s `buildGraphFromIndex`) reconstructs
+ * the same shapes from the extraction pipeline's *output* structures
+ * (`RoutePlanEntry`, `RouteCoverageEntry`, `MaterialPageMeta`,
+ * `ExtractionPageDiagnostic`, `ExtractionRouteDiagnostic` — see
+ * src/types.ts) instead of raw JSON; it remains as compatibility/fallback
+ * support for callers (and historical fixtures) that have no raw artifacts,
+ * see `buildAndWriteGraph`. Either way, every field is produced by a typed
+ * decoder (`route-graph.ts`, `page-graph.ts`, `resource-graph.ts`,
+ * `token-table-graph.ts`, `raw-graph-build.ts`) and validated with the zod
  * schemas below before being persisted. No `as any` / `as Record<string,
  * unknown>` casts on externally-sourced data — only structurally-typed
- * intermediate values produced by this codebase's own pipeline feed these
- * builders.
+ * intermediate values, or values narrowed via local type predicates, feed
+ * these builders.
  */
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
