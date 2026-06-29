@@ -7,6 +7,7 @@ import { serveMcp } from './mcp-server.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { formatDurationMs } from './progress.js';
 import type { CrawlProgress } from './types.js';
+import { validateCacheV2 } from './validation/validate-cache-v2.js';
 
 const program = new Command();
 
@@ -116,6 +117,32 @@ program.command('install-browser')
   .action(async (options) => {
     await installPlaywrightChromium(options.withDeps);
     console.log(options.withDeps ? 'Playwright Chromium browser and system dependencies installed.' : 'Playwright Chromium browser installed.');
+  });
+
+program.command('validate-cache')
+  .description('Validate a generated cache v2 snapshot (schema-aware; the only production validator m3-docs-cache should use)')
+  .option('--cache-dir <path>', 'Cache directory')
+  .action(async (options) => {
+    const cacheDir = options.cacheDir ?? getDefaultCacheDir();
+    const result = await validateCacheV2({ cacheDir });
+
+    if (!result.allPassed) {
+      console.error(`Cache validation FAILED for ${cacheDir}: ${result.failedStages.length} stage(s) failed (${result.failedStages.join(', ')}).`);
+      for (const stage of result.results) {
+        if (stage.passed) continue;
+        console.error(`\n[${stage.stage}]`);
+        for (const reason of stage.reasons) console.error(`  - ${reason}`);
+      }
+      console.log(JSON.stringify(result, null, 2));
+      process.exitCode = 1;
+      return;
+    }
+
+    console.error(`Cache validation PASSED for ${cacheDir}: pages=${result.counts.pages} routes=${result.counts.routes} resources=${result.counts.resources} tokenTables=${result.counts.tokenTables} rawArtifacts=${result.counts.rawArtifacts}`);
+    if (result.health) {
+      console.error(`Manifest health: rawSnapshot=${result.health.rawSnapshot} graph=${result.health.graph} markdown=${result.health.markdown} coverage=${result.health.coverage}`);
+    }
+    console.log(JSON.stringify(result, null, 2));
   });
 
 program.command('status')
