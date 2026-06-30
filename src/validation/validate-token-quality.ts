@@ -8,6 +8,10 @@ import type { UnresolvedByReason } from '../diagnostics/token-resolution-summary
 export const ALLOWED_UPSTREAM_EMPTY_TOKENS: readonly string[] = [
   'md.comp.search-bar.contained.motion.spring',
 ];
+export const ALLOWED_UPSTREAM_EMPTY_ROUTES: readonly string[] = [
+  '/components/search/specs',
+  '/components/app-bars/specs',
+];
 export const ALLOWED_UPSTREAM_EMPTY_CELLS = 2;
 export const ALLOWED_UNRESOLVED_TOKEN_ROWS = 1;
 export const ALLOWED_UNRESOLVED_CELL_COUNT = 2;
@@ -100,23 +104,62 @@ function tokenExamplesForReason(
   return Array.from(seen);
 }
 
-/** Reads the token-resolution-summary.json and evaluates strict quality gates. Returns a result
- *  with qualityPassed=true and tokenQuality=null when the diagnostics file is absent or invalid
- *  (non-blocking — strict quality requires the file to exist; absence is reported as a separate
- *  failure in that caller's context). */
+function isNotFoundError(err: unknown): boolean {
+  return err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/** Reads token-resolution-summary.json and evaluates strict quality gates.
+ *
+ * Missing file → qualityPassed=false, dimension `token-resolution-summary.missing`.
+ * Invalid JSON or failed schema → qualityPassed=false, dimension `token-resolution-summary.invalid`.
+ * This function is only called from validateCacheV2 when strictQuality=true, so missing/invalid
+ * diagnostics are always a hard failure in that context. */
 export async function checkTokenQuality(cacheDir: string): Promise<TokenQualityGateResult> {
   const filePath = tokenResolutionDiagnosticsPath(cacheDir);
 
   let raw: unknown;
+  let fileError: 'missing' | 'invalid' | null = null;
+
   try {
-    raw = JSON.parse(await readFile(filePath, 'utf8'));
-  } catch {
-    return { qualityPassed: true, tokenQuality: null, qualityFailures: [] };
+    const text = await readFile(filePath, 'utf8');
+    try {
+      raw = JSON.parse(text);
+    } catch {
+      fileError = 'invalid';
+    }
+  } catch (err) {
+    fileError = isNotFoundError(err) ? 'missing' : 'invalid';
+  }
+
+  if (fileError !== null) {
+    return {
+      qualityPassed: false,
+      tokenQuality: null,
+      qualityFailures: [{
+        dimension: `token-resolution-summary.${fileError}`,
+        current: 1,
+        allowed: 0,
+        affectedRoutes: [],
+        tokenExamples: [],
+        diagnosticsPath: filePath,
+      }],
+    };
   }
 
   const parsed = TokenResolutionSummarySchema.safeParse(raw);
   if (!parsed.success) {
-    return { qualityPassed: true, tokenQuality: null, qualityFailures: [] };
+    return {
+      qualityPassed: false,
+      tokenQuality: null,
+      qualityFailures: [{
+        dimension: 'token-resolution-summary.invalid',
+        current: 1,
+        allowed: 0,
+        affectedRoutes: [],
+        tokenExamples: [],
+        diagnosticsPath: filePath,
+      }],
+    };
   }
 
   const summary = parsed.data;
@@ -165,7 +208,7 @@ export async function checkTokenQuality(cacheDir: string): Promise<TokenQualityG
     }
   }
 
-  // upstream-empty count gate
+  // upstream-empty count gate (independent from evidence checks below)
   if (byReason['upstream-empty'] > ALLOWED_UPSTREAM_EMPTY_CELLS) {
     qualityFailures.push({
       dimension: 'unresolvedByReason.upstream-empty',
@@ -175,20 +218,64 @@ export async function checkTokenQuality(cacheDir: string): Promise<TokenQualityG
       tokenExamples: tokenExamplesForReason(byRoute, 'upstream-empty'),
       diagnosticsPath: filePath,
     });
-  } else if (byReason['upstream-empty'] > 0) {
-    // Count within limit — verify every token is in the known allowlist
-    const unknownTokens = upstreamEmptyTokens.filter(
-      (t) => !ALLOWED_UPSTREAM_EMPTY_TOKENS.includes(t),
+  }
+
+  // upstream-empty evidence checks: any upstream-empty count > 0 requires provable allowlist
+  if (byReason['upstream-empty'] > 0) {
+    type FlatExample = { token: string; route: string };
+    const upstreamEmptyFlat: FlatExample[] = byRoute.flatMap((r) =>
+      r.examples
+        .filter((e) => e.unresolvedReason === 'upstream-empty')
+        .map((e) => ({ token: e.token, route: r.route })),
     );
-    if (unknownTokens.length > 0) {
+
+    if (upstreamEmptyFlat.length === 0) {
+      // Count > 0 but no examples — cannot prove the allowlist
       qualityFailures.push({
-        dimension: 'unresolvedByReason.upstream-empty (unrecognized token)',
-        current: unknownTokens.length,
+        dimension: 'upstream-empty.no-evidence',
+        current: byReason['upstream-empty'],
         allowed: 0,
-        affectedRoutes: routesAffectedByReason(byRoute, 'upstream-empty'),
-        tokenExamples: unknownTokens.slice(0, 3),
+        affectedRoutes: [],
+        tokenExamples: [],
         diagnosticsPath: filePath,
       });
+    } else {
+      // Unknown tokens
+      const unknownTokens = upstreamEmptyTokens.filter(
+        (t) => !ALLOWED_UPSTREAM_EMPTY_TOKENS.includes(t),
+      );
+      if (unknownTokens.length > 0) {
+        qualityFailures.push({
+          dimension: 'unresolvedByReason.upstream-empty (unrecognized token)',
+          current: unknownTokens.length,
+          allowed: 0,
+          affectedRoutes: routesAffectedByReason(byRoute, 'upstream-empty'),
+          tokenExamples: unknownTokens.slice(0, 3),
+          diagnosticsPath: filePath,
+        });
+      }
+
+      // Unknown routes
+      const unknownRoutes = Array.from(
+        new Set(
+          upstreamEmptyFlat
+            .map((e) => e.route)
+            .filter((r) => !ALLOWED_UPSTREAM_EMPTY_ROUTES.includes(r)),
+        ),
+      );
+      if (unknownRoutes.length > 0) {
+        qualityFailures.push({
+          dimension: 'upstream-empty.unrecognized-route',
+          current: unknownRoutes.length,
+          allowed: 0,
+          affectedRoutes: unknownRoutes.slice(0, 5),
+          tokenExamples: upstreamEmptyFlat
+            .filter((e) => unknownRoutes.includes(e.route))
+            .map((e) => e.token)
+            .slice(0, 3),
+          diagnosticsPath: filePath,
+        });
+      }
     }
   }
 
