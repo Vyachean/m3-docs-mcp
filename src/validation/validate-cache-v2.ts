@@ -2,6 +2,7 @@ import { getDefaultCacheDir } from '../cache.js';
 import { readManifest, type ManifestHealthSummary } from '../manifest.js';
 import { readArtifactIndex } from '../raw-artifacts/artifact-index.js';
 import { readPageGraph, readResourceGraph, readRouteGraph, readTokenTableGraph } from '../graph/graph-store.js';
+import { readCacheDiagnosticsSummary, type CacheDiagnosticsSummary } from '../diagnostics/write-cache-diagnostics.js';
 import { validateCacheFiles } from './validate-cache-files.js';
 import { validateManifestHealth } from './validate-manifest-health.js';
 import { validateArtifactIndex } from './validate-artifact-index.js';
@@ -56,12 +57,21 @@ export type ValidateCacheV2Counts = {
   rawArtifacts: number;
 };
 
+export type ValidateCacheV2Quality = {
+  unresolvedTokenRows: number;
+  unresolvedTokenCells: number;
+  specPagesWithTokenTables: number;
+  specPagesWithoutTokenTables: number;
+  unclassifiedRejectedPublicDocsRoutes: number;
+};
+
 export type ValidateCacheV2Result = {
   results: CheckResult[];
   allPassed: boolean;
   failedStages: string[];
   counts: ValidateCacheV2Counts;
   health: ManifestHealthSummary | null;
+  quality?: ValidateCacheV2Quality;
 };
 
 export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise<ValidateCacheV2Result> {
@@ -80,13 +90,14 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
     validateMcpSmoke({ cacheDir, requiredRoutes }),
   ]);
 
-  const [manifest, artifactIndex, routeGraph, pageGraph, resourceGraph, tokenTableGraph] = await Promise.all([
+  const [manifest, artifactIndex, routeGraph, pageGraph, resourceGraph, tokenTableGraph, diagSummary] = await Promise.all([
     readManifest(cacheDir),
     readArtifactIndex(cacheDir),
     readRouteGraph(cacheDir),
     readPageGraph(cacheDir),
     readResourceGraph(cacheDir),
     readTokenTableGraph(cacheDir),
+    readCacheDiagnosticsSummary(cacheDir),
   ]);
 
   const failedStages = results.filter((result) => !result.passed).map((result) => result.stage);
@@ -103,5 +114,16 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
       rawArtifacts: artifactIndex.artifacts.length,
     },
     health: manifest?.health ?? null,
+    ...(diagSummary ? { quality: toQuality(diagSummary) } : {}),
+  };
+}
+
+function toQuality(s: CacheDiagnosticsSummary): ValidateCacheV2Quality {
+  return {
+    unresolvedTokenRows: s.unresolvedTokenRows,
+    unresolvedTokenCells: s.unresolvedTokenCells,
+    specPagesWithTokenTables: s.specPagesWithTokenTables,
+    specPagesWithoutTokenTables: s.specPagesWithoutTokenTables,
+    unclassifiedRejectedPublicDocsRoutes: s.stalePublicDocsRoutes,
   };
 }

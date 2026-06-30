@@ -57,6 +57,7 @@ import {
   uniqueSorted
 } from './route-coverage.js';
 import { extractMaterialPageFromHtml as extractMaterialPageFromHtmlFromModule, extractDisplayTokenSets, normalizeTokenTableSystem, stripMarkdown, tokenTableToMarkdown, type TokenTableSystem } from './json-extraction/render-markdown.js';
+import { writeCacheDiagnostics } from './diagnostics/write-cache-diagnostics.js';
 import type { CoverageDiagnostics, CrawlOptions, CrawlPhase, CrawlProgress, CrawlQualityReport, DuplicateContentGroup, DuplicateTitleGroup, ExtractionFallbackReason, ExtractionPageDiagnostic, ExtractionRouteDiagnostic, ExtractionSource, JsonResponseType, MaterialIndex, MaterialPage, RejectedCrawlRoute, RequiredRouteCoverageEntry, RouteCoverageEntry, RoutePlanSummary, RouteResolutionSummaryEntry, ShortCrawlPage, SuspiciousCrawlPage } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -2924,6 +2925,25 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   await runPromotionStep('graph', 'build documentation graph', async () => {
     const collectedTokenTables = Array.from(collectedTokenTablesByPagePath.values()).flat();
     await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables, { strict: strictGraph });
+  });
+  await runPromotionStep('quality-diagnostics', 'write cache quality diagnostics', async () => {
+    const markdownPagePaths = new Set(index.pages.map((p) => p.path));
+    const diagSummary = await writeCacheDiagnostics({
+      cacheDir,
+      markdownPagePaths,
+      routePlanSummary: routePlanSummary,
+      coverageDiagnostics: index.coverageDiagnostics ?? null,
+      generatedAt: capturedAt,
+    });
+    logger?.log('info', 'quality-diagnostics:written', {
+      unresolvedTokenRows: diagSummary.unresolvedTokenRows,
+      unresolvedTokenCells: diagSummary.unresolvedTokenCells,
+      specPagesWithTokenTables: diagSummary.specPagesWithTokenTables,
+      specPagesWithoutTokenTables: diagSummary.specPagesWithoutTokenTables,
+      stalePublicDocsRoutes: diagSummary.stalePublicDocsRoutes,
+      policySkippedRoutes: diagSummary.policySkippedRoutes,
+      nonContentRoutes: diagSummary.nonContentRoutes,
+    });
   });
 
   // Manifest health: a first pass with the cheap, always-available approximation (so
