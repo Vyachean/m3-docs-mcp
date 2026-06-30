@@ -104,6 +104,22 @@ function normalizeUnit(unit: string): string {
   return unit.toLowerCase();
 }
 
+// Returns the numeric value for `key` in `value`, applying DSDB zero-omission:
+// - key absent → fallback (zero-omission convention)
+// - key present and null/undefined → fallback (explicit null treated same as absent)
+// - key present and a finite number → that number
+// - key present and any other value (string, NaN, Infinity, object) → null (caller must reject)
+function readFiniteNumber(
+  value: Record<string, unknown>,
+  key: string,
+  fallback: number,
+): number | null {
+  if (!Object.prototype.hasOwnProperty.call(value, key)) return fallback;
+  const raw = value[key];
+  if (raw == null) return fallback;
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+}
+
 function formatValueNode(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value !== 'object') return String(value);
@@ -118,23 +134,26 @@ function formatValueNode(value: unknown): string {
     Object.keys(value).every((k) => COLOR_KEYS.includes(k)) &&
     COLOR_KEYS.some((k) => k in value)
   ) {
-    const red = Number(value['red'] ?? 0);
-    const green = Number(value['green'] ?? 0);
-    const blue = Number(value['blue'] ?? 0);
-    const alpha = value['alpha'] != null ? Number(value['alpha']) : 1;
-    if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
-    if (Number.isFinite(alpha) && alpha < 0.9999) {
+    const red = readFiniteNumber(value, 'red', 0);
+    const green = readFiniteNumber(value, 'green', 0);
+    const blue = readFiniteNumber(value, 'blue', 0);
+    const alpha = readFiniteNumber(value, 'alpha', 1);
+    if (red === null || green === null || blue === null || alpha === null) return '';
+    if (alpha < 0.9999) {
       return `rgba(${Math.round(red * 255)}, ${Math.round(green * 255)}, ${Math.round(blue * 255)}, ${alpha.toFixed(2)})`;
     }
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
-  // Dimension: { unit, value? } — missing value means zero (DSDB zero-omission convention).
+  // Dimension: { unit, value? } — missing/null value means zero (DSDB zero-omission convention).
   // Only matches objects whose keys are exclusively "unit" and/or "value".
   if (
     typeof value['unit'] === 'string' &&
     Object.keys(value).every((k) => k === 'unit' || k === 'value')
   ) {
-    const num = typeof value['value'] === 'number' ? value['value'] : 0;
+    const hasValue = value['value'] != null;
+    if (hasValue && (typeof value['value'] !== 'number' || !Number.isFinite(value['value'] as number)))
+      return '';
+    const num = hasValue ? (value['value'] as number) : 0;
     return `${num}${normalizeUnit(value['unit'])}`;
   }
   // Compound value wrapper (e.g. tracking, compound dimension types)

@@ -637,6 +637,79 @@ describe('buildTokenTableNode: newly decoded value shapes (fix/remaining-token-v
     expect(light.unresolvedReason).toBeUndefined();
   });
 
+  // ── Strict dimension value handling ───────────────────────────────────────
+
+  it('dimension { unit } with no value field resolves to 0dp', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS' } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(true);
+    expect(light.value).toBe('0dp');
+  });
+
+  it('dimension { unit, value: null } resolves to 0dp', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS', value: null } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(true);
+    expect(light.value).toBe('0dp');
+  });
+
+  it('dimension { unit, value: 0 } resolves to 0dp', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS', value: 0 } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(true);
+    expect(light.value).toBe('0dp');
+  });
+
+  it('dimension { unit, value: "0" } stays unresolved as unsupported-value-type', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS', value: '0' } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(false);
+    expect(light.value).toBeNull();
+    expect(light.unresolvedReason).toBe('unsupported-value-type');
+  });
+
+  it('dimension { unit, value: NaN } stays unresolved as unsupported-value-type', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS', value: NaN } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(false);
+    expect(light.value).toBeNull();
+    expect(light.unresolvedReason).toBe('unsupported-value-type');
+  });
+
+  it('dimension { unit, value: Infinity } stays unresolved as unsupported-value-type', () => {
+    const system = oneTokenSystem('md.comp.foo.dimension', { dim: { unit: 'DIPS', value: Infinity } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(false);
+    expect(light.value).toBeNull();
+    expect(light.unresolvedReason).toBe('unsupported-value-type');
+  });
+
+  // ── Strict color alpha handling ────────────────────────────────────────────
+
+  it('color with alpha present as string stays unresolved as unsupported-value-type', () => {
+    const system = oneTokenSystem('md.comp.foo.color', { color: { red: 0.5, green: 0.5, blue: 0.5, alpha: 'opaque' } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(false);
+    expect(light.value).toBeNull();
+    expect(light.unresolvedReason).toBe('unsupported-value-type');
+  });
+
+  it('color with alpha present as NaN stays unresolved as unsupported-value-type', () => {
+    const system = oneTokenSystem('md.comp.foo.color', { color: { red: 0.5, green: 0.5, blue: 0.5, alpha: NaN } });
+    const node = buildNode(system);
+    const light = node.tokenSets[0]?.tokens[0]?.values.find((v) => v.role === 'light')!;
+    expect(light.resolved).toBe(false);
+    expect(light.value).toBeNull();
+    expect(light.unresolvedReason).toBe('unsupported-value-type');
+  });
+
   // ── unresolvedByReason counts stay correct ─────────────────────────────────
 
   it('unresolvedByReason.unsupported-value-type reflects only truly unknown values', () => {
