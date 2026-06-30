@@ -6,7 +6,7 @@ import type { PageGraph, RouteGraph, TokenTableGraph } from '../graph/graph-type
 import type { CoverageDiagnostics, RoutePlanSummary } from '../types.js';
 import { buildRejectedRoutesSummary, type RejectedRoutesSummary, type StalePublicDocsRouteSource } from './rejected-routes-summary.js';
 import { buildSpecPagesSummary, type SpecPagesSummary } from './spec-pages-summary.js';
-import { buildTokenResolutionSummary, type TokenResolutionSummary } from './token-resolution-summary.js';
+import { buildTokenResolutionSummary, type TokenResolutionSummary, type UnresolvedByReason } from './token-resolution-summary.js';
 
 export type CacheDiagnosticsSummary = {
   unresolvedTokenRows: number;
@@ -20,6 +20,8 @@ export type CacheDiagnosticsSummary = {
   stalePublicDocsRouteSource: StalePublicDocsRouteSource;
   policySkippedRoutes: number;
   nonContentRoutes: number;
+  /** Breakdown of unresolved token cells by reason. */
+  unresolvedByReason?: UnresolvedByReason;
 };
 
 export type WriteCacheDiagnosticsInput = {
@@ -98,6 +100,7 @@ function buildCacheDiagnosticsSummary(
     stalePublicDocsRouteSource: rejectedSummary.stalePublicDocsRouteSource,
     policySkippedRoutes: rejectedSummary.policySkippedRouteCount,
     nonContentRoutes: rejectedSummary.nonContentRouteCount,
+    unresolvedByReason: tokenSummary.unresolvedByReason,
   };
 }
 
@@ -118,6 +121,18 @@ export async function readCacheDiagnosticsSummary(cacheDir: string): Promise<Cac
         ? rawSource
         : 'unavailable';
 
+    const rawByReason = tokenRaw['unresolvedByReason'];
+    const unresolvedByReason: UnresolvedByReason | undefined = isRecord(rawByReason)
+      ? {
+          'missing-alias-target': typeof rawByReason['missing-alias-target'] === 'number' ? rawByReason['missing-alias-target'] : 0,
+          'missing-context-entry': typeof rawByReason['missing-context-entry'] === 'number' ? rawByReason['missing-context-entry'] : 0,
+          'unsupported-value-type': typeof rawByReason['unsupported-value-type'] === 'number' ? rawByReason['unsupported-value-type'] : 0,
+          'upstream-empty': typeof rawByReason['upstream-empty'] === 'number' ? rawByReason['upstream-empty'] : 0,
+          'parser-bug': typeof rawByReason['parser-bug'] === 'number' ? rawByReason['parser-bug'] : 0,
+          unclassified: typeof rawByReason['unclassified'] === 'number' ? rawByReason['unclassified'] : 0,
+        }
+      : undefined;
+
     return {
       unresolvedTokenRows: typeof tokenRaw['unresolvedTokenRows'] === 'number' ? tokenRaw['unresolvedTokenRows'] : 0,
       unresolvedTokenCells: typeof tokenRaw['unresolvedCellCount'] === 'number' ? tokenRaw['unresolvedCellCount'] : 0,
@@ -130,6 +145,7 @@ export async function readCacheDiagnosticsSummary(cacheDir: string): Promise<Cac
       stalePublicDocsRouteSource,
       policySkippedRoutes: typeof rejectedRaw['policySkippedRouteCount'] === 'number' ? rejectedRaw['policySkippedRouteCount'] : 0,
       nonContentRoutes: typeof rejectedRaw['nonContentRouteCount'] === 'number' ? rejectedRaw['nonContentRouteCount'] : 0,
+      ...(unresolvedByReason ? { unresolvedByReason } : {}),
     };
   } catch {
     return null;

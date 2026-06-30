@@ -280,11 +280,33 @@ export const TokenValueRoleSchema = z.union([
 ]);
 export type TokenValueRole = z.infer<typeof TokenValueRoleSchema>;
 
+export const UnresolvedReasonSchema = z.union([
+  /** Alias chain points to a token name that has no matching entry anywhere in the DSDB system.
+   *  Reserved for when alias-target detection is implemented; currently not emitted by the classifier. */
+  z.literal('missing-alias-target'),
+  /** The resolved value object is non-empty but its structure is not handled by the value formatter. */
+  z.literal('unsupported-value-type'),
+  /** DSDB explicitly signals the value is absent (resolvedValue.undefined === true, or empty tree). */
+  z.literal('upstream-empty'),
+  /** Context entries exist in the system but none matches the requested selector (e.g. light/dark/high-contrast).
+   *  This is a normal gap in DSDB coverage, not an alias resolution failure. */
+  z.literal('missing-context-entry'),
+  /** The formatter should handle this value type but produced empty output — indicates a code gap.
+   *  Reserved for when a known-supported value family is detected but formatting still produces empty output;
+   *  currently not emitted by the classifier (unknown structures go to unsupported-value-type). */
+  z.literal('parser-bug'),
+  /** Reason cannot be determined from available data. */
+  z.literal('unclassified'),
+]);
+export type UnresolvedReason = z.infer<typeof UnresolvedReasonSchema>;
+
 export const TokenValueEntrySchema = z.object({
   role: TokenValueRoleSchema,
   /** Rendered/resolved value string (e.g. "#6750A4", "16dp"), or null when unresolved for this role. */
   value: z.string().nullable(),
   resolved: z.boolean(),
+  /** Present only when resolved is false; classifies why the value could not be resolved. */
+  unresolvedReason: UnresolvedReasonSchema.optional(),
 });
 export type TokenValueEntry = z.infer<typeof TokenValueEntrySchema>;
 

@@ -67,6 +67,8 @@ export type ValidateCacheV2Quality = {
   componentSpecPagesWithoutTokenTables: number;
   unclassifiedRejectedPublicDocsRoutes: number;
   stalePublicDocsRouteSource: import('../diagnostics/rejected-routes-summary.js').StalePublicDocsRouteSource;
+  /** Breakdown of unresolved token cells by reason. Present only when diagnostics files are available. */
+  unresolvedByReason?: import('../diagnostics/token-resolution-summary.js').UnresolvedByReason;
 };
 
 export type ValidateCacheV2Result = {
@@ -133,5 +135,6 @@ function toQuality(s: CacheDiagnosticsSummary): ValidateCacheV2Quality {
     componentSpecPagesWithoutTokenTables: s.componentSpecPagesWithoutTokenTables,
     unclassifiedRejectedPublicDocsRoutes: s.stalePublicDocsRoutes,
     stalePublicDocsRouteSource: s.stalePublicDocsRouteSource,
+    ...(s.unresolvedByReason ? { unresolvedByReason: s.unresolvedByReason } : {}),
   };
 }
