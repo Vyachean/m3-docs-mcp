@@ -280,11 +280,27 @@ export const TokenValueRoleSchema = z.union([
 ]);
 export type TokenValueRole = z.infer<typeof TokenValueRoleSchema>;
 
+export const UnresolvedReasonSchema = z.union([
+  /** Alias chain points to a token name that has no matching context tree entry in the system. */
+  z.literal('missing-alias-target'),
+  /** The resolved value object is non-empty but its structure is not handled by the value formatter. */
+  z.literal('unsupported-value-type'),
+  /** DSDB explicitly signals the value is absent (resolvedValue.undefined === true, or empty tree). */
+  z.literal('upstream-empty'),
+  /** The formatter should handle this value type but produced empty output — indicates a code gap. */
+  z.literal('parser-bug'),
+  /** Reason cannot be determined from available data. */
+  z.literal('unclassified'),
+]);
+export type UnresolvedReason = z.infer<typeof UnresolvedReasonSchema>;
+
 export const TokenValueEntrySchema = z.object({
   role: TokenValueRoleSchema,
   /** Rendered/resolved value string (e.g. "#6750A4", "16dp"), or null when unresolved for this role. */
   value: z.string().nullable(),
   resolved: z.boolean(),
+  /** Present only when resolved is false; classifies why the value could not be resolved. */
+  unresolvedReason: UnresolvedReasonSchema.optional(),
 });
 export type TokenValueEntry = z.infer<typeof TokenValueEntrySchema>;
 

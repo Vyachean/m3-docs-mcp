@@ -160,7 +160,8 @@ describe('buildTokenResolutionSummary', () => {
     expect(summary.totalTokenRows).toBe(2);
     expect(summary.unresolvedTokenRows).toBe(1);
     expect(summary.unresolvedCellCount).toBe(2);
-    expect(summary.unresolvedByReason.unclassified).toBe(1);
+    // unresolvedByReason counts cells (not rows); the fixture has 2 unresolved cells with no reason → unclassified
+    expect(summary.unresolvedByReason.unclassified).toBe(2);
 
     expect(summary.unresolvedByRoute).toHaveLength(1);
     const routeEntry = summary.unresolvedByRoute[0]!;
@@ -720,6 +721,30 @@ describe('writeCacheDiagnostics / readCacheDiagnosticsSummary', () => {
     expect(summary!.stalePublicDocsRouteSource).toBe('routePlanSummary');
     expect(summary!.stalePublicDocsRoutes).toBe(0);
   });
+
+  it('reads back unresolvedByReason from written token-resolution-summary.json', async () => {
+    const unresolvedTable = makeUnresolvedTokenTable();
+    // Inject a known unresolvedReason so the written file carries it
+    const token = unresolvedTable.tokenSets[0]!.tokens[0]!;
+    token.values = [
+      { role: 'light' as const, value: null, resolved: false, unresolvedReason: 'upstream-empty' as const },
+      { role: 'dark' as const, value: null, resolved: false, unresolvedReason: 'missing-alias-target' as const },
+    ];
+
+    await writeCacheDiagnostics({
+      cacheDir,
+      tokenTableGraph: makeTokenTableGraph({ tokenTables: [unresolvedTable] }),
+      pageGraph: makePageGraph([]),
+      generatedAt: GENERATED_AT,
+    });
+
+    const summary = await readCacheDiagnosticsSummary(cacheDir);
+    expect(summary).not.toBeNull();
+    expect(summary!.unresolvedByReason).toBeDefined();
+    expect(summary!.unresolvedByReason!['upstream-empty']).toBe(1);
+    expect(summary!.unresolvedByReason!['missing-alias-target']).toBe(1);
+    expect(summary!.unresolvedByReason!.unclassified).toBe(0);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -785,5 +810,53 @@ describe('validateCacheV2 quality field', () => {
     expect(result.allPassed).toBe(true);
     expect(result.quality!.unresolvedTokenRows).toBe(2);
     expect(result.quality!.specPagesWithoutTokenTables).toBe(1);
+  });
+
+  it('quality includes unresolvedByReason when diagnostics files carry it', async () => {
+    await writeValidCacheV2Fixture(cacheDir);
+
+    const unresolvedTable = makeUnresolvedTokenTable();
+    unresolvedTable.tokenSets[0]!.tokens[0]!.values = [
+      { role: 'light' as const, value: null, resolved: false, unresolvedReason: 'upstream-empty' as const },
+      { role: 'dark' as const, value: null, resolved: false, unresolvedReason: 'missing-alias-target' as const },
+    ];
+
+    await writeCacheDiagnostics({
+      cacheDir,
+      tokenTableGraph: makeTokenTableGraph({ tokenTables: [unresolvedTable] }),
+      pageGraph: makePageGraph([]),
+      generatedAt: GENERATED_AT,
+    });
+
+    const result = await validateCacheV2({ cacheDir, renderedOutputRebuildFn: stubRebuild });
+
+    expect(result.allPassed).toBe(true);
+    expect(result.quality!.unresolvedByReason).toBeDefined();
+    expect(result.quality!.unresolvedByReason!['upstream-empty']).toBe(1);
+    expect(result.quality!.unresolvedByReason!['missing-alias-target']).toBe(1);
+    expect(result.quality!.unresolvedByReason!.unclassified).toBe(0);
+  });
+
+  it('default validate-cache mode remains non-fatal regardless of unresolvedByReason values', async () => {
+    await writeValidCacheV2Fixture(cacheDir);
+
+    const unresolvedTable = makeUnresolvedTokenTable();
+    unresolvedTable.tokenSets[0]!.tokens[0]!.values = [
+      { role: 'light' as const, value: null, resolved: false, unresolvedReason: 'unsupported-value-type' as const },
+      { role: 'dark' as const, value: null, resolved: false, unresolvedReason: 'missing-alias-target' as const },
+    ];
+
+    await writeCacheDiagnostics({
+      cacheDir,
+      tokenTableGraph: makeTokenTableGraph({ tokenTables: [unresolvedTable] }),
+      pageGraph: makePageGraph([]),
+      generatedAt: GENERATED_AT,
+    });
+
+    const result = await validateCacheV2({ cacheDir, renderedOutputRebuildFn: stubRebuild });
+
+    // Quality diagnostics are observational — they must not cause allPassed to flip to false
+    expect(result.allPassed).toBe(true);
+    expect(result.failedStages).toHaveLength(0);
   });
 });

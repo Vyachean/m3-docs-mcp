@@ -6,6 +6,7 @@ import {
   type TokenTableNode,
   type TokenValueEntry,
   type TokenValueRole,
+  type UnresolvedReason,
 } from './graph-types.js';
 
 /**
@@ -97,6 +98,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function normalizeUnit(unit: string): string {
+  if (unit === 'DIPS') return 'dp';
+  if (unit === 'POINTS' || unit === 'SP') return 'sp';
+  return unit.toLowerCase();
+}
+
 function formatValueNode(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value !== 'object') return String(value);
@@ -115,9 +122,30 @@ function formatValueNode(value: unknown): string {
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
   if (typeof value['unit'] === 'string' && typeof value['value'] === 'number') {
-    const unitName = value['unit'];
-    const unit = unitName === 'DIPS' ? 'dp' : unitName === 'POINTS' || unitName === 'SP' ? 'sp' : unitName.toLowerCase();
-    return `${value['value']}${unit}`;
+    return `${value['value']}${normalizeUnit(value['unit'])}`;
+  }
+  // Compound value wrapper (e.g. tracking, compound dimension types)
+  if ('values' in value && Array.isArray(value['values'])) {
+    return value['values'].map(formatValueNode).filter(Boolean).join(', ');
+  }
+  // Shape tokens: family, defaultSize, corners
+  if ('family' in value || 'defaultSize' in value || 'corners' in value) {
+    const parts = [
+      typeof value['family'] === 'string' ? value['family'] : '',
+      value['defaultSize'] ? formatValueNode(value['defaultSize']) : '',
+      Array.isArray(value['corners']) ? value['corners'].map(formatValueNode).filter(Boolean).join(', ') : '',
+    ].filter(Boolean);
+    return parts.join(' ');
+  }
+  // Typography tokens: fontNames, fontWeight, fontSize, lineHeight
+  if ('fontNames' in value || 'fontWeight' in value || 'fontSize' in value || 'lineHeight' in value) {
+    const parts = [
+      value['fontNames'] ? formatValueNode(value['fontNames']) : '',
+      typeof value['fontWeight'] === 'number' ? String(value['fontWeight']) : '',
+      value['fontSize'] ? formatValueNode(value['fontSize']) : '',
+      value['lineHeight'] ? formatValueNode(value['lineHeight']) : '',
+    ].filter(Boolean);
+    return parts.join(' ');
   }
   return '';
 }
@@ -130,6 +158,23 @@ function formatResolvedValue(resolvedValue: Record<string, unknown>): string | n
     .filter(Boolean)
     .join(' ');
   return formatted || null;
+}
+
+function classifyUnresolvedReason(
+  entries: DecodedContextTreeEntry[],
+  entry: DecodedContextTreeEntry | undefined,
+): UnresolvedReason {
+  if (!entry) {
+    if (entries.length === 0) return 'upstream-empty';
+    // If every entry is explicitly marked undefined by DSDB, the value is intentionally absent
+    const hasAnyRealEntry = entries.some((e) => e.resolvedValue['undefined'] !== true);
+    if (!hasAnyRealEntry) return 'upstream-empty';
+    return 'missing-alias-target';
+  }
+  if (entry.resolvedValue['undefined'] === true) return 'upstream-empty';
+  const meaningfulKeys = Object.keys(entry.resolvedValue).filter((k) => k !== 'undefined');
+  if (meaningfulKeys.length === 0) return 'upstream-empty';
+  return 'unsupported-value-type';
 }
 
 function extractAliasChain(tree: DecodedReferenceNode, selfTokenName: string): string[] {
@@ -156,14 +201,20 @@ function buildTokenValues(
       ?? findContextEntry(entries, idx, selector);
     if (!entry) {
       if (selector.contrast === 'default') {
-        values.push({ role, value: null, resolved: false });
+        const reason = classifyUnresolvedReason(entries, undefined);
+        values.push({ role, value: null, resolved: false, unresolvedReason: reason });
         unresolved = true;
       }
       continue;
     }
     const value = formatResolvedValue(entry.resolvedValue);
-    values.push({ role, value, resolved: value !== null });
-    if (value === null && selector.contrast === 'default') unresolved = true;
+    if (value === null) {
+      const reason = classifyUnresolvedReason(entries, entry);
+      values.push({ role, value: null, resolved: false, unresolvedReason: reason });
+      if (selector.contrast === 'default') unresolved = true;
+    } else {
+      values.push({ role, value, resolved: true });
+    }
     if (aliases.length === 0) aliases = extractAliasChain(entry.referenceTree, '');
   }
 

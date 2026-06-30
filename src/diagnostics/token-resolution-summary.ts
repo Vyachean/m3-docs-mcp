@@ -1,11 +1,12 @@
 import type { TokenTableGraph } from '../graph/graph-types.js';
+import type { UnresolvedReason } from '../graph/graph-types.js';
 
 export type TokenResolutionUnresolvedExample = {
   token: string;
   tokenTableId: string;
   column: string;
   displayValue: '[unresolved]';
-  unresolvedReason: 'unclassified';
+  unresolvedReason: UnresolvedReason;
 };
 
 export type TokenResolutionByRoute = {
@@ -24,6 +25,14 @@ export type TokenResolutionByTokenTable = {
   unresolvedCellCount: number;
 };
 
+export type UnresolvedByReason = {
+  'missing-alias-target': number;
+  'unsupported-value-type': number;
+  'upstream-empty': number;
+  'parser-bug': number;
+  unclassified: number;
+};
+
 export type TokenResolutionSummary = {
   schemaVersion: 1;
   generatedAt: string;
@@ -33,7 +42,7 @@ export type TokenResolutionSummary = {
   unresolvedCellCount: number;
   unresolvedByRoute: TokenResolutionByRoute[];
   unresolvedByTokenTable: TokenResolutionByTokenTable[];
-  unresolvedByReason: { unclassified: number };
+  unresolvedByReason: UnresolvedByReason;
 };
 
 const ROLE_DISPLAY: Record<string, string> = {
@@ -45,6 +54,19 @@ const ROLE_DISPLAY: Record<string, string> = {
 
 const MAX_EXAMPLES_PER_ROUTE = 5;
 
+function makeEmptyByReason(): UnresolvedByReason {
+  return { 'missing-alias-target': 0, 'unsupported-value-type': 0, 'upstream-empty': 0, 'parser-bug': 0, unclassified: 0 };
+}
+
+function incrementReason(byReason: UnresolvedByReason, reason: UnresolvedReason | undefined): void {
+  const key = reason ?? 'unclassified';
+  if (key in byReason) {
+    (byReason as Record<string, number>)[key] += 1;
+  } else {
+    byReason.unclassified += 1;
+  }
+}
+
 export function buildTokenResolutionSummary(params: {
   tokenTableGraph: TokenTableGraph;
   generatedAt?: string;
@@ -54,6 +76,7 @@ export function buildTokenResolutionSummary(params: {
   let totalTokenRows = 0;
   let totalUnresolvedRows = 0;
   let totalUnresolvedCells = 0;
+  const unresolvedByReason = makeEmptyByReason();
 
   type RouteEntry = {
     tokenTableIds: Set<string>;
@@ -80,6 +103,11 @@ export function buildTokenResolutionSummary(params: {
         tableUnresolvedCells += unresolvedValues.length;
         totalUnresolvedCells += unresolvedValues.length;
 
+        // Count reasons at the cell (value) level
+        for (const uv of unresolvedValues) {
+          incrementReason(unresolvedByReason, uv.unresolvedReason);
+        }
+
         for (const route of table.routes ?? []) {
           let entry = routeMap.get(route);
           if (!entry) {
@@ -98,7 +126,7 @@ export function buildTokenResolutionSummary(params: {
                 tokenTableId: table.resourceId,
                 column: ROLE_DISPLAY[firstUnresolved.role] ?? firstUnresolved.role,
                 displayValue: '[unresolved]',
-                unresolvedReason: 'unclassified',
+                unresolvedReason: firstUnresolved.unresolvedReason ?? 'unclassified',
               });
             }
           }
@@ -136,6 +164,6 @@ export function buildTokenResolutionSummary(params: {
     unresolvedCellCount: totalUnresolvedCells,
     unresolvedByRoute,
     unresolvedByTokenTable,
-    unresolvedByReason: { unclassified: totalUnresolvedRows },
+    unresolvedByReason,
   };
 }
