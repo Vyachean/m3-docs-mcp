@@ -142,6 +142,10 @@ program.command('validate-cache')
     if (result.health) {
       console.error(`Manifest health: rawSnapshot=${result.health.rawSnapshot} graph=${result.health.graph} markdown=${result.health.markdown} coverage=${result.health.coverage}`);
     }
+    if (result.quality) {
+      const q = result.quality;
+      console.error(`Quality: unresolvedTokenRows=${q.unresolvedTokenRows} unresolvedTokenCells=${q.unresolvedTokenCells} specPagesWithTokenTables=${q.specPagesWithTokenTables} specPagesWithoutTokenTables=${q.specPagesWithoutTokenTables} stalePublicDocs=${q.unclassifiedRejectedPublicDocsRoutes}`);
+    }
     console.log(JSON.stringify(result, null, 2));
   });
 
