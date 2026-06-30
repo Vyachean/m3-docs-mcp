@@ -62,7 +62,11 @@ export type ValidateCacheV2Quality = {
   unresolvedTokenCells: number;
   specPagesWithTokenTables: number;
   specPagesWithoutTokenTables: number;
+  componentSpecPageCount: number;
+  componentSpecPagesWithTokenTables: number;
+  componentSpecPagesWithoutTokenTables: number;
   unclassifiedRejectedPublicDocsRoutes: number;
+  stalePublicDocsRouteSource: import('../diagnostics/rejected-routes-summary.js').StalePublicDocsRouteSource;
 };
 
 export type ValidateCacheV2Result = {
@@ -124,6 +128,10 @@ function toQuality(s: CacheDiagnosticsSummary): ValidateCacheV2Quality {
     unresolvedTokenCells: s.unresolvedTokenCells,
     specPagesWithTokenTables: s.specPagesWithTokenTables,
     specPagesWithoutTokenTables: s.specPagesWithoutTokenTables,
+    componentSpecPageCount: s.componentSpecPageCount,
+    componentSpecPagesWithTokenTables: s.componentSpecPagesWithTokenTables,
+    componentSpecPagesWithoutTokenTables: s.componentSpecPagesWithoutTokenTables,
     unclassifiedRejectedPublicDocsRoutes: s.stalePublicDocsRoutes,
+    stalePublicDocsRouteSource: s.stalePublicDocsRouteSource,
   };
 }

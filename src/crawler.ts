@@ -2907,6 +2907,18 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     }
   };
 
+  // Observational steps are always non-fatal — they must never abort promotion, even in
+  // --strict-graph mode. Quality diagnostics are visibility-only for this PR.
+  const runObservationalStep = async (stage: string, label: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logError(`Failed to ${label} (non-fatal, observational): ${reason}`);
+      logger?.log('warn', `${stage}:write-failed`, { phase: 'promoting', reason, strict: false, observational: true });
+    }
+  };
+
   await runPromotionStep('raw-artifact-index', 'write raw artifact index', async () => {
     await upsertArtifactRecords(artifactRecords, cacheDir);
   });
@@ -2926,7 +2938,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const collectedTokenTables = Array.from(collectedTokenTablesByPagePath.values()).flat();
     await buildAndWriteGraph(index, cacheDir, artifactRecords, collectedTokenTables, { strict: strictGraph });
   });
-  await runPromotionStep('quality-diagnostics', 'write cache quality diagnostics', async () => {
+  await runObservationalStep('quality-diagnostics', 'write cache quality diagnostics', async () => {
     const markdownPagePaths = new Set(index.pages.map((p) => p.path));
     const diagSummary = await writeCacheDiagnostics({
       cacheDir,

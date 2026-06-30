@@ -4,7 +4,7 @@ import { diagnosticsDir, getDefaultCacheDir } from '../cache.js';
 import { readPageGraph, readRouteGraph, readTokenTableGraph } from '../graph/graph-store.js';
 import type { PageGraph, RouteGraph, TokenTableGraph } from '../graph/graph-types.js';
 import type { CoverageDiagnostics, RoutePlanSummary } from '../types.js';
-import { buildRejectedRoutesSummary, type RejectedRoutesSummary } from './rejected-routes-summary.js';
+import { buildRejectedRoutesSummary, type RejectedRoutesSummary, type StalePublicDocsRouteSource } from './rejected-routes-summary.js';
 import { buildSpecPagesSummary, type SpecPagesSummary } from './spec-pages-summary.js';
 import { buildTokenResolutionSummary, type TokenResolutionSummary } from './token-resolution-summary.js';
 
@@ -13,7 +13,11 @@ export type CacheDiagnosticsSummary = {
   unresolvedTokenCells: number;
   specPagesWithTokenTables: number;
   specPagesWithoutTokenTables: number;
+  componentSpecPageCount: number;
+  componentSpecPagesWithTokenTables: number;
+  componentSpecPagesWithoutTokenTables: number;
   stalePublicDocsRoutes: number;
+  stalePublicDocsRouteSource: StalePublicDocsRouteSource;
   policySkippedRoutes: number;
   nonContentRoutes: number;
 };
@@ -87,7 +91,11 @@ function buildCacheDiagnosticsSummary(
     unresolvedTokenCells: tokenSummary.unresolvedCellCount,
     specPagesWithTokenTables: specSummary.specPagesWithTokenTables,
     specPagesWithoutTokenTables: specSummary.specPagesWithoutTokenTables.length,
+    componentSpecPageCount: specSummary.componentSpecPageCount,
+    componentSpecPagesWithTokenTables: specSummary.componentSpecPagesWithTokenTables,
+    componentSpecPagesWithoutTokenTables: specSummary.componentSpecPagesWithoutTokenTables.length,
     stalePublicDocsRoutes: rejectedSummary.stalePublicDocsRouteCount,
+    stalePublicDocsRouteSource: rejectedSummary.stalePublicDocsRouteSource,
     policySkippedRoutes: rejectedSummary.policySkippedRouteCount,
     nonContentRoutes: rejectedSummary.nonContentRouteCount,
   };
@@ -104,12 +112,22 @@ export async function readCacheDiagnosticsSummary(cacheDir: string): Promise<Cac
 
     if (!isRecord(tokenRaw) || !isRecord(specRaw) || !isRecord(rejectedRaw)) return null;
 
+    const rawSource = rejectedRaw['stalePublicDocsRouteSource'];
+    const stalePublicDocsRouteSource: StalePublicDocsRouteSource =
+      rawSource === 'routePlanSummary' || rawSource === 'coverageDiagnostics.fullRoutePlanSummary'
+        ? rawSource
+        : 'unavailable';
+
     return {
       unresolvedTokenRows: typeof tokenRaw['unresolvedTokenRows'] === 'number' ? tokenRaw['unresolvedTokenRows'] : 0,
       unresolvedTokenCells: typeof tokenRaw['unresolvedCellCount'] === 'number' ? tokenRaw['unresolvedCellCount'] : 0,
       specPagesWithTokenTables: typeof specRaw['specPagesWithTokenTables'] === 'number' ? specRaw['specPagesWithTokenTables'] : 0,
       specPagesWithoutTokenTables: Array.isArray(specRaw['specPagesWithoutTokenTables']) ? specRaw['specPagesWithoutTokenTables'].length : 0,
+      componentSpecPageCount: typeof specRaw['componentSpecPageCount'] === 'number' ? specRaw['componentSpecPageCount'] : 0,
+      componentSpecPagesWithTokenTables: typeof specRaw['componentSpecPagesWithTokenTables'] === 'number' ? specRaw['componentSpecPagesWithTokenTables'] : 0,
+      componentSpecPagesWithoutTokenTables: Array.isArray(specRaw['componentSpecPagesWithoutTokenTables']) ? specRaw['componentSpecPagesWithoutTokenTables'].length : 0,
       stalePublicDocsRoutes: typeof rejectedRaw['stalePublicDocsRouteCount'] === 'number' ? rejectedRaw['stalePublicDocsRouteCount'] : 0,
+      stalePublicDocsRouteSource,
       policySkippedRoutes: typeof rejectedRaw['policySkippedRouteCount'] === 'number' ? rejectedRaw['policySkippedRouteCount'] : 0,
       nonContentRoutes: typeof rejectedRaw['nonContentRouteCount'] === 'number' ? rejectedRaw['nonContentRouteCount'] : 0,
     };

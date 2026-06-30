@@ -202,6 +202,37 @@ describe('buildTokenResolutionSummary', () => {
     expect(example?.displayValue).not.toBe('');
     expect(example?.displayValue).not.toBeNull();
   });
+
+  it('does not throw and counts zero unresolved when token.values is missing (malformed graph entry)', () => {
+    const malformedTable: TokenTableGraph['tokenTables'][number] = {
+      resourceId: 'token-table:components/malformed',
+      resourceName: 'md.comp.malformed',
+      requestedTokenSets: [],
+      routes: ['/components/malformed/specs'],
+      unresolvedTokenCount: 0,
+      tokenSets: [
+        {
+          tokenSetName: 'md.comp.malformed',
+          displayName: 'Malformed',
+          tokens: [
+            {
+              tokenName: 'md.comp.malformed.color',
+              displayName: 'Malformed color',
+              aliases: [],
+              values: undefined as unknown as TokenTableGraph['tokenTables'][number]['tokenSets'][number]['tokens'][number]['values'],
+            },
+          ],
+        },
+      ],
+    };
+    const graph = makeTokenTableGraph({ tokenTables: [malformedTable] });
+
+    expect(() => buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT });
+    expect(summary.totalTokenRows).toBe(1);
+    expect(summary.unresolvedTokenRows).toBe(0);
+    expect(summary.unresolvedCellCount).toBe(0);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -299,6 +330,43 @@ describe('buildSpecPagesSummary', () => {
     const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
     expect(summary.specPagesWithEmptyResources).toContain('/components/switch/specs');
   });
+
+  it('counts component-specific spec pages with and without token tables', () => {
+    const pageGraph = makePageGraph([
+      makeSpecsPageNode('/components/switch/specs', { tokenTableIds: ['token-table:components/switch'] }),
+      makeSpecsPageNode('/components/buttons/specs', { tokenTableIds: [] }),
+      // Non-component specs page — should not count in component-specific fields
+      makeSpecsPageNode('/styles/motion/overview/specs', { tokenTableIds: [] }),
+    ]);
+    const summary = buildSpecPagesSummary({
+      pageGraph,
+      markdownPagePaths: [
+        'components/switch/specs.md',
+        'components/buttons/specs.md',
+        'styles/motion/overview/specs.md',
+      ],
+      generatedAt: GENERATED_AT,
+    });
+
+    expect(summary.specPageCount).toBe(3);
+    expect(summary.componentSpecPageCount).toBe(2);
+    expect(summary.componentSpecPagesWithTokenTables).toBe(1);
+    expect(summary.componentSpecPagesWithoutTokenTables).toContain('/components/buttons/specs');
+    expect(summary.componentSpecPagesWithoutTokenTables).not.toContain('/styles/motion/overview/specs');
+    // Non-component spec page still appears in the all-specs list
+    expect(summary.specPagesWithoutTokenTables).toContain('/styles/motion/overview/specs');
+  });
+
+  it('reports zero component-specific counts when there are no /components/**/specs pages', () => {
+    const pageGraph = makePageGraph([
+      makeSpecsPageNode('/styles/motion/overview/specs', { tokenTableIds: [] }),
+    ]);
+    const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
+
+    expect(summary.componentSpecPageCount).toBe(0);
+    expect(summary.componentSpecPagesWithTokenTables).toBe(0);
+    expect(summary.componentSpecPagesWithoutTokenTables).toHaveLength(0);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -379,6 +447,63 @@ describe('buildRejectedRoutesSummary', () => {
 
     expect(summary.policySkippedRouteCount).toBe(12);
   });
+
+  it('reports stalePublicDocsRouteSource as "unavailable" when no routePlanSummary is provided', () => {
+    const summary = buildRejectedRoutesSummary({ generatedAt: GENERATED_AT });
+    expect(summary.stalePublicDocsRouteSource).toBe('unavailable');
+    expect(summary.stalePublicDocsRouteCount).toBe(0);
+  });
+
+  it('reports stalePublicDocsRouteSource as "routePlanSummary" when routePlanSummary is provided', () => {
+    const routePlanSummary: RoutePlanSummary = {
+      acceptedRoutes: [],
+      staleRoutes: [],
+      removedRoutes: [],
+      ambiguousRoutes: [],
+      nonPublicRoutes: [],
+      extractionCandidates: [],
+    };
+    const summary = buildRejectedRoutesSummary({ routePlanSummary, generatedAt: GENERATED_AT });
+    expect(summary.stalePublicDocsRouteSource).toBe('routePlanSummary');
+  });
+
+  it('falls back to coverageDiagnostics.fullRoutePlanSummary and reports correct source', () => {
+    const staleEntry = {
+      route: '/components/banners',
+      sources: ['site_meta' as const],
+      publicDocsClassification: 'public-docs' as const,
+      reconciliationStatus: 'rejectedStale' as const,
+      navTitle: 'Banners',
+      skippedReason: 'stale-content',
+      failureReason: undefined,
+    };
+    const coverageDiagnostics = {
+      fullRoutePlanSummary: {
+        acceptedRoutes: [],
+        staleRoutes: [staleEntry],
+        removedRoutes: [],
+        ambiguousRoutes: [],
+        nonPublicRoutes: [],
+        extractionCandidates: [],
+      },
+    } as unknown as CoverageDiagnostics;
+
+    const summary = buildRejectedRoutesSummary({ coverageDiagnostics, generatedAt: GENERATED_AT });
+
+    expect(summary.stalePublicDocsRouteSource).toBe('coverageDiagnostics.fullRoutePlanSummary');
+    expect(summary.stalePublicDocsRouteCount).toBe(1);
+    expect(summary.stalePublicDocsRoutes[0]?.route).toBe('/components/banners');
+  });
+
+  it('does not throw when a route graph entry has no coverage field (malformed graph)', () => {
+    // Simulate a partially malformed graph entry where coverage is missing at runtime.
+    const malformedRoute = { route: '/components/button', coverage: undefined } as unknown as import('../src/graph/graph-types.js').RouteNode;
+    const routeGraph = { schemaVersion: 1 as const, baseUrl: 'https://m3.material.io', generatedAt: GENERATED_AT, routes: [malformedRoute] } as import('../src/graph/graph-types.js').RouteGraph;
+
+    expect(() => buildRejectedRoutesSummary({ routeGraph, generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildRejectedRoutesSummary({ routeGraph, generatedAt: GENERATED_AT });
+    expect(summary.nonContentRouteCount).toBe(0);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -436,6 +561,43 @@ describe('writeCacheDiagnostics / readCacheDiagnosticsSummary', () => {
     expect(summary!.unresolvedTokenRows).toBe(1);
     expect(summary!.specPagesWithoutTokenTables).toBe(1);
     expect(summary!.specPagesWithTokenTables).toBe(0);
+    expect(summary!.componentSpecPageCount).toBe(1);
+    expect(summary!.componentSpecPagesWithoutTokenTables).toBe(1);
+    expect(summary!.componentSpecPagesWithTokenTables).toBe(0);
+    expect(summary!.stalePublicDocsRouteSource).toBe('unavailable');
+  });
+
+  it('quality diagnostics remain non-fatal — writeCacheDiagnostics throws when cacheDir is a file, not a directory', async () => {
+    // Create a file where writeCacheDiagnostics would try to write a subdirectory.
+    // This causes mkdir to fail because the path component is a file.
+    const fileNotDir = path.join(cacheDir, 'block-diagnostics');
+    await writeFile(fileNotDir, '{}');
+    // writeCacheDiagnostics should reject because it cannot mkdir under a file path
+    await expect(
+      writeCacheDiagnostics({ cacheDir: fileNotDir, generatedAt: GENERATED_AT }),
+    ).rejects.toThrow();
+    // The crawler wraps writeCacheDiagnostics in runObservationalStep which swallows this error,
+    // keeping promotion alive even in --strict-graph mode.
+  });
+
+  it('returns stalePublicDocsRouteSource from written files when routePlanSummary is available', async () => {
+    const routePlanSummary: RoutePlanSummary = {
+      acceptedRoutes: [],
+      staleRoutes: [],
+      removedRoutes: [],
+      ambiguousRoutes: [],
+      nonPublicRoutes: [],
+      extractionCandidates: [],
+    };
+    await writeCacheDiagnostics({
+      cacheDir,
+      routePlanSummary,
+      generatedAt: GENERATED_AT,
+    });
+    const summary = await readCacheDiagnosticsSummary(cacheDir);
+    expect(summary).not.toBeNull();
+    expect(summary!.stalePublicDocsRouteSource).toBe('routePlanSummary');
+    expect(summary!.stalePublicDocsRoutes).toBe(0);
   });
 });
 
@@ -480,7 +642,11 @@ describe('validateCacheV2 quality field', () => {
     expect(result.quality!.unresolvedTokenCells).toBe(2);
     expect(result.quality!.specPagesWithTokenTables).toBe(1);
     expect(result.quality!.specPagesWithoutTokenTables).toBe(0);
+    expect(result.quality!.componentSpecPageCount).toBe(1);
+    expect(result.quality!.componentSpecPagesWithTokenTables).toBe(1);
+    expect(result.quality!.componentSpecPagesWithoutTokenTables).toBe(0);
     expect(result.quality!.unclassifiedRejectedPublicDocsRoutes).toBe(0);
+    expect(result.quality!.stalePublicDocsRouteSource).toBe('unavailable');
   });
 
   it('passes in default mode even when quality diagnostics contain unresolved values', async () => {

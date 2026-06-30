@@ -72,7 +72,7 @@ export function buildTokenResolutionSummary(params: {
     for (const tokenSet of table.tokenSets) {
       for (const token of tokenSet.tokens) {
         totalTokenRows++;
-        const unresolvedValues = token.values.filter((v) => !v.resolved);
+        const unresolvedValues = token.values?.filter((v) => !v.resolved) ?? [];
         if (unresolvedValues.length === 0) continue;
 
         totalUnresolvedRows++;
