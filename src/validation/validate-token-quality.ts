@@ -31,26 +31,19 @@ const ByRouteSchema = z.object({
 }).passthrough();
 
 const ByReasonSchema = z.object({
-  'missing-alias-target': z.number().default(0),
-  'missing-context-entry': z.number().default(0),
-  'unsupported-value-type': z.number().default(0),
-  'upstream-empty': z.number().default(0),
-  'parser-bug': z.number().default(0),
-  unclassified: z.number().default(0),
+  'missing-alias-target': z.number(),
+  'missing-context-entry': z.number(),
+  'unsupported-value-type': z.number(),
+  'upstream-empty': z.number(),
+  'parser-bug': z.number(),
+  unclassified: z.number(),
 });
 
 const TokenResolutionSummarySchema = z.object({
-  unresolvedTokenRows: z.number().default(0),
-  unresolvedCellCount: z.number().default(0),
-  unresolvedByRoute: z.array(ByRouteSchema).default([]),
-  unresolvedByReason: ByReasonSchema.default({
-    'missing-alias-target': 0,
-    'missing-context-entry': 0,
-    'unsupported-value-type': 0,
-    'upstream-empty': 0,
-    'parser-bug': 0,
-    unclassified: 0,
-  }),
+  unresolvedTokenRows: z.number(),
+  unresolvedCellCount: z.number(),
+  unresolvedByRoute: z.array(ByRouteSchema),
+  unresolvedByReason: ByReasonSchema,
 }).passthrough();
 
 export type QualityFailure = {
@@ -240,6 +233,18 @@ export async function checkTokenQuality(cacheDir: string): Promise<TokenQualityG
         diagnosticsPath: filePath,
       });
     } else {
+      // Fewer examples than the reported count — cannot fully prove the allowlist
+      if (upstreamEmptyFlat.length < byReason['upstream-empty']) {
+        qualityFailures.push({
+          dimension: 'upstream-empty.incomplete-evidence',
+          current: upstreamEmptyFlat.length,
+          allowed: byReason['upstream-empty'],
+          affectedRoutes: Array.from(new Set(upstreamEmptyFlat.map((e) => e.route))).slice(0, 5),
+          tokenExamples: upstreamEmptyFlat.map((e) => e.token).slice(0, 3),
+          diagnosticsPath: filePath,
+        });
+      }
+
       // Unknown tokens
       const unknownTokens = upstreamEmptyTokens.filter(
         (t) => !ALLOWED_UPSTREAM_EMPTY_TOKENS.includes(t),

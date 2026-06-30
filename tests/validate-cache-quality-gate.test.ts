@@ -167,6 +167,55 @@ describe('checkTokenQuality — file availability', () => {
   });
 });
 
+describe('checkTokenQuality — schema strictness', () => {
+  it('fails with token-resolution-summary.invalid when JSON is an empty object', async () => {
+    await writeDiagnosticsRaw(cacheDir, JSON.stringify({}));
+    const result = await checkTokenQuality(cacheDir);
+    expect(result.qualityPassed).toBe(false);
+    const failure = result.qualityFailures.find((f) => f.dimension === 'token-resolution-summary.invalid');
+    expect(failure).toBeDefined();
+  });
+
+  it('fails with token-resolution-summary.invalid when only unresolvedTokenRows is present', async () => {
+    await writeDiagnosticsRaw(cacheDir, JSON.stringify({ unresolvedTokenRows: 0 }));
+    const result = await checkTokenQuality(cacheDir);
+    expect(result.qualityPassed).toBe(false);
+    const failure = result.qualityFailures.find((f) => f.dimension === 'token-resolution-summary.invalid');
+    expect(failure).toBeDefined();
+  });
+
+  it('fails with token-resolution-summary.invalid when unresolvedByReason is missing a required key', async () => {
+    await writeDiagnosticsRaw(cacheDir, JSON.stringify({
+      unresolvedTokenRows: 0,
+      unresolvedCellCount: 0,
+      unresolvedByRoute: [],
+      unresolvedByReason: {
+        'missing-alias-target': 0,
+        'missing-context-entry': 0,
+        'unsupported-value-type': 0,
+        'upstream-empty': 0,
+        // 'parser-bug' intentionally absent
+        unclassified: 0,
+      },
+    }));
+    const result = await checkTokenQuality(cacheDir);
+    expect(result.qualityPassed).toBe(false);
+    const failure = result.qualityFailures.find((f) => f.dimension === 'token-resolution-summary.invalid');
+    expect(failure).toBeDefined();
+  });
+
+  it('passes with a valid complete production-shaped summary', async () => {
+    await writeTokenSummary(cacheDir, {
+      unresolvedTokenRows: 0,
+      unresolvedCellCount: 0,
+      byReason: makeByReason(),
+    });
+    const result = await checkTokenQuality(cacheDir);
+    expect(result.qualityPassed).toBe(true);
+    expect(result.qualityFailures).toEqual([]);
+  });
+});
+
 describe('checkTokenQuality — zero-tolerance reasons', () => {
   it('passes with zero unresolved values', async () => {
     await writeTokenSummary(cacheDir, {
@@ -289,11 +338,11 @@ describe('checkTokenQuality — upstream-empty allowlist', () => {
     expect(result.tokenQuality?.upstreamEmptyTokens).toEqual([PRODUCTION_BASELINE_TOKEN]);
   });
 
-  it('passes with the allowed token on a single allowed route (within count limit)', async () => {
+  it('passes with the allowed token on a single allowed route when count is 1', async () => {
     await writeTokenSummary(cacheDir, {
       unresolvedTokenRows: ALLOWED_UNRESOLVED_TOKEN_ROWS,
       unresolvedCellCount: ALLOWED_UNRESOLVED_CELL_COUNT,
-      byReason: makeByReason({ 'upstream-empty': ALLOWED_UPSTREAM_EMPTY_CELLS }),
+      byReason: makeByReason({ 'upstream-empty': 1 }),
       byRoute: [
         {
           route: ALLOWED_UPSTREAM_EMPTY_ROUTES[0]!,
@@ -304,6 +353,27 @@ describe('checkTokenQuality — upstream-empty allowlist', () => {
     const result = await checkTokenQuality(cacheDir);
     expect(result.qualityPassed).toBe(true);
     expect(result.qualityFailures).toEqual([]);
+  });
+
+  it('fails with upstream-empty.incomplete-evidence when count is 2 but only one example is provided', async () => {
+    await writeTokenSummary(cacheDir, {
+      unresolvedTokenRows: ALLOWED_UNRESOLVED_TOKEN_ROWS,
+      unresolvedCellCount: ALLOWED_UNRESOLVED_CELL_COUNT,
+      byReason: makeByReason({ 'upstream-empty': 2 }),
+      byRoute: [
+        {
+          route: ALLOWED_UPSTREAM_EMPTY_ROUTES[0]!,
+          examples: [{ token: PRODUCTION_BASELINE_TOKEN, unresolvedReason: 'upstream-empty' }],
+        },
+      ],
+    });
+    const result = await checkTokenQuality(cacheDir);
+    expect(result.qualityPassed).toBe(false);
+    const failure = result.qualityFailures.find((f) => f.dimension === 'upstream-empty.incomplete-evidence');
+    expect(failure).toBeDefined();
+    expect(failure?.current).toBe(1);
+    expect(failure?.allowed).toBe(2);
+    expect(failure?.diagnosticsPath).toBe(tokenResolutionDiagnosticsPath(cacheDir));
   });
 
   it('fails when upstream-empty > 0 but no upstream-empty examples exist', async () => {
@@ -491,10 +561,8 @@ describe('validateCacheV2 strictQuality', () => {
 
   it('fails strict quality when token-resolution-summary.json has invalid schema', async () => {
     await writeValidCacheV2Fixture(cacheDir);
+    // An object missing required fields is now rejected (schema has no defaults).
     await writeDiagnosticsRaw(cacheDir, JSON.stringify({ wrong: 'shape', notAnObject: true }));
-    // Schema uses passthrough + defaults — an object with unknown keys still parses.
-    // Test that a non-object (array) fails:
-    await writeDiagnosticsRaw(cacheDir, JSON.stringify([{ not: 'an-object' }]));
     const result = await validateCacheV2({ cacheDir, renderedOutputRebuildFn: stubRebuild, strictQuality: true });
     expect(result.strictQuality?.qualityPassed).toBe(false);
     const failure = result.strictQuality?.qualityFailures.find((f) => f.dimension === 'token-resolution-summary.invalid');
