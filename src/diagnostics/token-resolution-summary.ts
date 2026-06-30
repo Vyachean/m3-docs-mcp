@@ -27,6 +27,7 @@ export type TokenResolutionByTokenTable = {
 
 export type UnresolvedByReason = {
   'missing-alias-target': number;
+  'missing-context-entry': number;
   'unsupported-value-type': number;
   'upstream-empty': number;
   'parser-bug': number;
@@ -55,7 +56,7 @@ const ROLE_DISPLAY: Record<string, string> = {
 const MAX_EXAMPLES_PER_ROUTE = 5;
 
 function makeEmptyByReason(): UnresolvedByReason {
-  return { 'missing-alias-target': 0, 'unsupported-value-type': 0, 'upstream-empty': 0, 'parser-bug': 0, unclassified: 0 };
+  return { 'missing-alias-target': 0, 'missing-context-entry': 0, 'unsupported-value-type': 0, 'upstream-empty': 0, 'parser-bug': 0, unclassified: 0 };
 }
 
 function incrementReason(byReason: UnresolvedByReason, reason: UnresolvedReason | undefined): void {

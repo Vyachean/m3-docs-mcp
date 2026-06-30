@@ -4,10 +4,12 @@
  *
  * Coverage:
  * - resolved alias chain (happy path)
- * - missing-alias-target: entries exist but no context match
+ * - missing-context-entry: entries exist but no entry matches the requested selector (light/dark/high-contrast)
  * - upstream-empty: resolvedValue.undefined === true
  * - upstream-empty: empty context tree
  * - unsupported-value-type: non-empty resolvedValue that formats to ''
+ * - missing-alias-target: reserved future category — counted when present in graph, not emitted by classifier
+ * - parser-bug: reserved future category — currently always zero
  * - shape tokens now resolve (formatValueNode improvement)
  * - typography tokens now resolve (formatValueNode improvement)
  * - values-array wrapper tokens now resolve (formatValueNode improvement)
@@ -210,7 +212,7 @@ describe('buildTokenTableNode: unresolved reason classification', () => {
     expect(light.unresolvedReason).toBe('upstream-empty');
   });
 
-  it('classifies as missing-alias-target when context entries exist but no entry matches the selector', () => {
+  it('classifies as missing-context-entry when context entries exist but no entry matches the selector', () => {
     // Provide only a dark entry but ask for light — light context entry won't be found
     // because the entry only has DARK_TAG and AUDIENCE_3P_TAG
     const system = oneTokenSystem('md.comp.foo', { color: { red: 0.5, green: 0.5, blue: 0.5, alpha: 1 } }, [DARK_TAG, AUDIENCE_3P_TAG]);
@@ -221,9 +223,9 @@ describe('buildTokenTableNode: unresolved reason classification', () => {
 
     // Dark should resolve (has matching entry)
     expect(dark.resolved).toBe(true);
-    // Light should fail with missing-alias-target (entries exist, but none match light selector)
+    // Light should fail with missing-context-entry (entries exist, but none match light selector)
     expect(light.resolved).toBe(false);
-    expect(light.unresolvedReason).toBe('missing-alias-target');
+    expect(light.unresolvedReason).toBe('missing-context-entry');
   });
 
   it('classifies as unsupported-value-type when resolvedValue has keys but formats to empty', () => {
@@ -330,7 +332,7 @@ describe('buildTokenResolutionSummary: unresolvedByReason', () => {
     };
   }
 
-  it('counts missing-alias-target cells', () => {
+  it('counts missing-alias-target cells (reserved future category)', () => {
     const graph = makeTableWithReasons([
       { role: 'light', value: null, resolved: false, unresolvedReason: 'missing-alias-target' },
       { role: 'dark', value: null, resolved: false, unresolvedReason: 'missing-alias-target' },
@@ -338,9 +340,25 @@ describe('buildTokenResolutionSummary: unresolvedByReason', () => {
     const summary = buildTokenResolutionSummary({ tokenTableGraph: graph });
 
     expect(summary.unresolvedByReason['missing-alias-target']).toBe(2);
+    expect(summary.unresolvedByReason['missing-context-entry']).toBe(0);
     expect(summary.unresolvedByReason['upstream-empty']).toBe(0);
     expect(summary.unresolvedByReason['unsupported-value-type']).toBe(0);
+    // parser-bug is a reserved future category; the classifier does not currently emit it
     expect(summary.unresolvedByReason['parser-bug']).toBe(0);
+    expect(summary.unresolvedByReason.unclassified).toBe(0);
+  });
+
+  it('counts missing-context-entry cells', () => {
+    const graph = makeTableWithReasons([
+      { role: 'light', value: null, resolved: false, unresolvedReason: 'missing-context-entry' },
+      { role: 'dark', value: null, resolved: false, unresolvedReason: 'missing-context-entry' },
+    ]);
+    const summary = buildTokenResolutionSummary({ tokenTableGraph: graph });
+
+    expect(summary.unresolvedByReason['missing-context-entry']).toBe(2);
+    expect(summary.unresolvedByReason['missing-alias-target']).toBe(0);
+    expect(summary.unresolvedByReason['upstream-empty']).toBe(0);
+    expect(summary.unresolvedByReason['unsupported-value-type']).toBe(0);
     expect(summary.unresolvedByReason.unclassified).toBe(0);
   });
 
@@ -433,8 +451,8 @@ describe('buildTokenTableNode: unresolvedReason flows end-to-end into resolution
     expect(summary.unresolvedByReason.unclassified).toBe(0);
   });
 
-  it('missing-alias-target tokens produce missing-alias-target in summary', () => {
-    // Dark-only entry → light role gets missing-alias-target
+  it('missing-context-entry tokens produce missing-context-entry in summary', () => {
+    // Dark-only entry → light role gets missing-context-entry (entries exist but none match light)
     const system = oneTokenSystem('md.test.color', { color: { red: 0.5, green: 0.5, blue: 0.5, alpha: 1 } }, [DARK_TAG, AUDIENCE_3P_TAG]);
     const node = buildNode(system);
     const graph: TokenTableGraph = {
@@ -444,6 +462,7 @@ describe('buildTokenTableNode: unresolvedReason flows end-to-end into resolution
     };
     const summary = buildTokenResolutionSummary({ tokenTableGraph: graph });
 
-    expect(summary.unresolvedByReason['missing-alias-target']).toBeGreaterThan(0);
+    expect(summary.unresolvedByReason['missing-context-entry']).toBeGreaterThan(0);
+    expect(summary.unresolvedByReason['missing-alias-target']).toBe(0);
   });
 });

@@ -169,11 +169,13 @@ function classifyUnresolvedReason(
     // If every entry is explicitly marked undefined by DSDB, the value is intentionally absent
     const hasAnyRealEntry = entries.some((e) => e.resolvedValue['undefined'] !== true);
     if (!hasAnyRealEntry) return 'upstream-empty';
-    return 'missing-alias-target';
+    // Entries exist but none matched the requested selector (e.g. only dark exists, light was requested)
+    return 'missing-context-entry';
   }
   if (entry.resolvedValue['undefined'] === true) return 'upstream-empty';
   const meaningfulKeys = Object.keys(entry.resolvedValue).filter((k) => k !== 'undefined');
   if (meaningfulKeys.length === 0) return 'upstream-empty';
+  // The value has keys but the formatter produced empty output — unknown structure, not a known type
   return 'unsupported-value-type';
 }
 

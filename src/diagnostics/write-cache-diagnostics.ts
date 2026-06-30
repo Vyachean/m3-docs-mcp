@@ -125,6 +125,7 @@ export async function readCacheDiagnosticsSummary(cacheDir: string): Promise<Cac
     const unresolvedByReason: UnresolvedByReason | undefined = isRecord(rawByReason)
       ? {
           'missing-alias-target': typeof rawByReason['missing-alias-target'] === 'number' ? rawByReason['missing-alias-target'] : 0,
+          'missing-context-entry': typeof rawByReason['missing-context-entry'] === 'number' ? rawByReason['missing-context-entry'] : 0,
           'unsupported-value-type': typeof rawByReason['unsupported-value-type'] === 'number' ? rawByReason['unsupported-value-type'] : 0,
           'upstream-empty': typeof rawByReason['upstream-empty'] === 'number' ? rawByReason['upstream-empty'] : 0,
           'parser-bug': typeof rawByReason['parser-bug'] === 'number' ? rawByReason['parser-bug'] : 0,
