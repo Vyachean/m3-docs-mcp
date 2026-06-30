@@ -12,6 +12,7 @@ import { validateStructuredGraph } from './validate-structured-graph.js';
 import { validateRenderedOutput, type ValidateRenderedOutputInput } from './validate-rendered-output.js';
 import { validateCoverageSummary } from './validate-coverage-summary.js';
 import { validateMcpSmoke } from './validate-mcp-smoke.js';
+import { checkTokenQuality, type QualityFailure, type TokenQualitySummary } from './validate-token-quality.js';
 import type { CheckResult } from './types.js';
 
 /**
@@ -41,12 +42,24 @@ export const REQUIRED_CACHE_VALIDATION_ROUTES: readonly string[] = [
   '/components/segmented-buttons/specs',
 ];
 
+export type { QualityFailure, TokenQualitySummary };
+
+export type StrictQualityResult = {
+  strictQualityEnabled: true;
+  qualityPassed: boolean;
+  tokenQuality: TokenQualitySummary | null;
+  qualityFailures: QualityFailure[];
+};
+
 export type ValidateCacheV2Input = {
   cacheDir?: string;
   requiredRoutes?: readonly string[];
   /** Forwarded to validateRenderedOutput. Lets tests inject a fake offline-rebuild function
    *  instead of running the real raw-snapshot-backed rebuild against fixture data. */
   renderedOutputRebuildFn?: ValidateRenderedOutputInput['rebuildFromRawFn'];
+  /** When true, runs the opt-in token quality gate and adds strictQuality to the result.
+   *  Default behavior (false) leaves quality diagnostics informational and non-fatal. */
+  strictQuality?: boolean;
 };
 
 export type ValidateCacheV2Counts = {
@@ -78,6 +91,8 @@ export type ValidateCacheV2Result = {
   counts: ValidateCacheV2Counts;
   health: ManifestHealthSummary | null;
   quality?: ValidateCacheV2Quality;
+  /** Present only when validateCacheV2 was called with strictQuality: true. */
+  strictQuality?: StrictQualityResult;
 };
 
 export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise<ValidateCacheV2Result> {
@@ -96,7 +111,7 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
     validateMcpSmoke({ cacheDir, requiredRoutes }),
   ]);
 
-  const [manifest, artifactIndex, routeGraph, pageGraph, resourceGraph, tokenTableGraph, diagSummary] = await Promise.all([
+  const [manifest, artifactIndex, routeGraph, pageGraph, resourceGraph, tokenTableGraph, diagSummary, qualityGate] = await Promise.all([
     readManifest(cacheDir),
     readArtifactIndex(cacheDir),
     readRouteGraph(cacheDir),
@@ -104,9 +119,19 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
     readResourceGraph(cacheDir),
     readTokenTableGraph(cacheDir),
     readCacheDiagnosticsSummary(cacheDir),
+    input.strictQuality ? checkTokenQuality(cacheDir) : Promise.resolve(null),
   ]);
 
   const failedStages = results.filter((result) => !result.passed).map((result) => result.stage);
+
+  const strictQuality: StrictQualityResult | undefined = input.strictQuality
+    ? {
+        strictQualityEnabled: true,
+        qualityPassed: qualityGate?.qualityPassed ?? true,
+        tokenQuality: qualityGate?.tokenQuality ?? null,
+        qualityFailures: qualityGate?.qualityFailures ?? [],
+      }
+    : undefined;
 
   return {
     results,
@@ -121,6 +146,7 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
     },
     health: manifest?.health ?? null,
     ...(diagSummary ? { quality: toQuality(diagSummary) } : {}),
+    ...(strictQuality ? { strictQuality } : {}),
   };
 }
 

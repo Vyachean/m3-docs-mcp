@@ -122,9 +122,11 @@ program.command('install-browser')
 program.command('validate-cache')
   .description('Validate a generated cache v2 snapshot (schema-aware; the only production validator m3-docs-cache should use)')
   .option('--cache-dir <path>', 'Cache directory')
+  .option('--strict-quality', 'Fail when token resolution quality exceeds the known upstream-empty baseline (opt-in; default behavior is informational only)')
   .action(async (options) => {
     const cacheDir = options.cacheDir ?? getDefaultCacheDir();
-    const result = await validateCacheV2({ cacheDir });
+    const strictQuality: boolean = options.strictQuality ?? false;
+    const result = await validateCacheV2({ cacheDir, strictQuality });
 
     if (!result.allPassed) {
       console.error(`Cache validation FAILED for ${cacheDir}: ${result.failedStages.length} stage(s) failed (${result.failedStages.join(', ')}).`);
@@ -145,6 +147,23 @@ program.command('validate-cache')
     if (result.quality) {
       const q = result.quality;
       console.error(`Quality: unresolvedTokenRows=${q.unresolvedTokenRows} unresolvedTokenCells=${q.unresolvedTokenCells} specPagesWithTokenTables=${q.specPagesWithTokenTables} specPagesWithoutTokenTables=${q.specPagesWithoutTokenTables} stalePublicDocs=${q.unclassifiedRejectedPublicDocsRoutes}`);
+    }
+    if (result.strictQuality) {
+      const sq = result.strictQuality;
+      if (!sq.qualityPassed) {
+        console.error(`\nStrict quality FAILED for ${cacheDir}: ${sq.qualityFailures.length} quality dimension(s) exceeded the allowed baseline.`);
+        for (const failure of sq.qualityFailures) {
+          console.error(`\n  [${failure.dimension}]`);
+          console.error(`    current: ${failure.current}  allowed: ${failure.allowed}`);
+          if (failure.affectedRoutes.length > 0) console.error(`    top affected routes: ${failure.affectedRoutes.join(', ')}`);
+          if (failure.tokenExamples.length > 0) console.error(`    token examples: ${failure.tokenExamples.join(', ')}`);
+          console.error(`    diagnostics: ${failure.diagnosticsPath}`);
+        }
+        console.log(JSON.stringify(result, null, 2));
+        process.exitCode = 1;
+        return;
+      }
+      console.error(`Strict quality PASSED for ${cacheDir}`);
     }
     console.log(JSON.stringify(result, null, 2));
   });
