@@ -110,10 +110,17 @@ function formatValueNode(value: unknown): string {
   if (Array.isArray(value)) return value.map(formatValueNode).filter(Boolean).join(', ');
   if (!isRecord(value)) return '';
 
-  if ('red' in value && 'green' in value && 'blue' in value) {
-    const red = Number(value['red']);
-    const green = Number(value['green']);
-    const blue = Number(value['blue']);
+  // Color: missing channels are zero (DSDB omits zero-valued channels).
+  // Matches any object whose keys are a non-empty subset of {red, green, blue, alpha}.
+  const COLOR_KEYS = ['red', 'green', 'blue', 'alpha'];
+  if (
+    Object.keys(value).length > 0 &&
+    Object.keys(value).every((k) => COLOR_KEYS.includes(k)) &&
+    COLOR_KEYS.some((k) => k in value)
+  ) {
+    const red = Number(value['red'] ?? 0);
+    const green = Number(value['green'] ?? 0);
+    const blue = Number(value['blue'] ?? 0);
     const alpha = value['alpha'] != null ? Number(value['alpha']) : 1;
     if (!Number.isFinite(red) || !Number.isFinite(green) || !Number.isFinite(blue)) return '';
     if (Number.isFinite(alpha) && alpha < 0.9999) {
@@ -121,8 +128,14 @@ function formatValueNode(value: unknown): string {
     }
     return `#${Math.round(red * 255).toString(16).padStart(2, '0')}${Math.round(green * 255).toString(16).padStart(2, '0')}${Math.round(blue * 255).toString(16).padStart(2, '0')}`;
   }
-  if (typeof value['unit'] === 'string' && typeof value['value'] === 'number') {
-    return `${value['value']}${normalizeUnit(value['unit'])}`;
+  // Dimension: { unit, value? } — missing value means zero (DSDB zero-omission convention).
+  // Only matches objects whose keys are exclusively "unit" and/or "value".
+  if (
+    typeof value['unit'] === 'string' &&
+    Object.keys(value).every((k) => k === 'unit' || k === 'value')
+  ) {
+    const num = typeof value['value'] === 'number' ? value['value'] : 0;
+    return `${num}${normalizeUnit(value['unit'])}`;
   }
   // Compound value wrapper (e.g. tracking, compound dimension types)
   if ('values' in value && Array.isArray(value['values'])) {
