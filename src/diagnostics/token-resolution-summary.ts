@@ -69,8 +69,8 @@ export function buildTokenResolutionSummary(params: {
     let tableUnresolvedRows = 0;
     let tableUnresolvedCells = 0;
 
-    for (const tokenSet of table.tokenSets) {
-      for (const token of tokenSet.tokens) {
+    for (const tokenSet of table.tokenSets ?? []) {
+      for (const token of tokenSet.tokens ?? []) {
         totalTokenRows++;
         const unresolvedValues = token.values?.filter((v) => !v.resolved) ?? [];
         if (unresolvedValues.length === 0) continue;
@@ -80,7 +80,7 @@ export function buildTokenResolutionSummary(params: {
         tableUnresolvedCells += unresolvedValues.length;
         totalUnresolvedCells += unresolvedValues.length;
 
-        for (const route of table.routes) {
+        for (const route of table.routes ?? []) {
           let entry = routeMap.get(route);
           if (!entry) {
             entry = { tokenTableIds: new Set(), unresolvedTokenRows: 0, unresolvedCellCount: 0, examples: [] };
@@ -109,7 +109,7 @@ export function buildTokenResolutionSummary(params: {
     byTokenTable.push({
       tokenTableId: table.resourceId,
       resourceName: table.resourceName,
-      routes: [...table.routes],
+      routes: [...(table.routes ?? [])],
       unresolvedTokenRows: tableUnresolvedRows,
       unresolvedCellCount: tableUnresolvedCells,
     });

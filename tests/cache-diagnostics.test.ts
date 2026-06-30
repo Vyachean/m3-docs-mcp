@@ -233,6 +233,78 @@ describe('buildTokenResolutionSummary', () => {
     expect(summary.unresolvedTokenRows).toBe(0);
     expect(summary.unresolvedCellCount).toBe(0);
   });
+
+  it('does not throw when tokenSets is missing on a token table (malformed graph entry)', () => {
+    const malformedTable = {
+      resourceId: 'token-table:components/no-sets',
+      resourceName: 'md.comp.no-sets',
+      requestedTokenSets: [],
+      routes: ['/components/no-sets/specs'],
+      unresolvedTokenCount: 0,
+      tokenSets: undefined as unknown as TokenTableGraph['tokenTables'][number]['tokenSets'],
+    };
+    const graph = makeTokenTableGraph({ tokenTables: [malformedTable] });
+
+    expect(() => buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT });
+    expect(summary.totalTokenRows).toBe(0);
+    expect(summary.unresolvedTokenRows).toBe(0);
+  });
+
+  it('does not throw when tokens is missing on a tokenSet (malformed graph entry)', () => {
+    const malformedTable = {
+      resourceId: 'token-table:components/no-tokens',
+      resourceName: 'md.comp.no-tokens',
+      requestedTokenSets: [],
+      routes: ['/components/no-tokens/specs'],
+      unresolvedTokenCount: 0,
+      tokenSets: [
+        {
+          tokenSetName: 'md.comp.no-tokens',
+          displayName: 'No Tokens',
+          tokens: undefined as unknown as TokenTableGraph['tokenTables'][number]['tokenSets'][number]['tokens'],
+        },
+      ],
+    };
+    const graph = makeTokenTableGraph({ tokenTables: [malformedTable] });
+
+    expect(() => buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT });
+    expect(summary.totalTokenRows).toBe(0);
+    expect(summary.unresolvedTokenRows).toBe(0);
+  });
+
+  it('does not throw when routes is missing on a token table (malformed graph entry)', () => {
+    const malformedTable = {
+      resourceId: 'token-table:components/no-routes',
+      resourceName: 'md.comp.no-routes',
+      requestedTokenSets: [],
+      routes: undefined as unknown as TokenTableGraph['tokenTables'][number]['routes'],
+      unresolvedTokenCount: 1,
+      tokenSets: [
+        {
+          tokenSetName: 'md.comp.no-routes',
+          displayName: 'No Routes',
+          tokens: [
+            {
+              tokenName: 'md.comp.no-routes.color',
+              displayName: 'No routes color',
+              aliases: [],
+              values: [{ role: 'light' as const, value: null, resolved: false }],
+            },
+          ],
+        },
+      ],
+    };
+    const graph = makeTokenTableGraph({ tokenTables: [malformedTable] });
+
+    expect(() => buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildTokenResolutionSummary({ tokenTableGraph: graph, generatedAt: GENERATED_AT });
+    expect(summary.totalTokenRows).toBe(1);
+    expect(summary.unresolvedTokenRows).toBe(1);
+    expect(summary.unresolvedByRoute).toHaveLength(0);
+    expect(summary.unresolvedByTokenTable[0]?.routes).toEqual([]);
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -366,6 +438,55 @@ describe('buildSpecPagesSummary', () => {
     expect(summary.componentSpecPageCount).toBe(0);
     expect(summary.componentSpecPagesWithTokenTables).toBe(0);
     expect(summary.componentSpecPagesWithoutTokenTables).toHaveLength(0);
+  });
+
+  it('does not throw when tokenTableIds is missing on a specs page (malformed graph entry)', () => {
+    const malformedPage = {
+      ...makeSpecsPageNode('/components/switch/specs'),
+      tokenTableIds: undefined as unknown as string[],
+    };
+    const pageGraph = makePageGraph([malformedPage]);
+
+    expect(() => buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
+    expect(summary.specPagesWithTokenTables).toBe(0);
+    expect(summary.specPagesWithoutTokenTables).toContain('/components/switch/specs');
+  });
+
+  it('does not throw when sections is missing on a specs page (malformed graph entry)', () => {
+    const malformedPage = {
+      ...makeSpecsPageNode('/components/switch/specs'),
+      sections: undefined as unknown as PageGraph['pages'][number]['sections'],
+    };
+    const pageGraph = makePageGraph([malformedPage]);
+
+    expect(() => buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
+    expect(summary.specPagesWithEmptySections).toContain('/components/switch/specs');
+  });
+
+  it('does not throw when chunks is missing on a specs page (malformed graph entry)', () => {
+    const malformedPage = {
+      ...makeSpecsPageNode('/components/switch/specs'),
+      chunks: undefined as unknown as PageGraph['pages'][number]['chunks'],
+    };
+    const pageGraph = makePageGraph([malformedPage]);
+
+    expect(() => buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
+    expect(summary.specPagesWithEmptyChunks).toContain('/components/switch/specs');
+  });
+
+  it('does not throw when resourceIds is missing on a specs page (malformed graph entry)', () => {
+    const malformedPage = {
+      ...makeSpecsPageNode('/components/switch/specs'),
+      resourceIds: undefined as unknown as string[],
+    };
+    const pageGraph = makePageGraph([malformedPage]);
+
+    expect(() => buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT })).not.toThrow();
+    const summary = buildSpecPagesSummary({ pageGraph, markdownPagePaths: [], generatedAt: GENERATED_AT });
+    expect(summary.specPagesWithEmptyResources).toContain('/components/switch/specs');
   });
 });
 

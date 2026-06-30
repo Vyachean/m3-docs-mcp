@@ -60,8 +60,8 @@ export function buildSpecPagesSummary(params: {
   }
 
   const specPagesMissingGraphPage: string[] = specMdPaths
-    .filter((mdPath) => !specGraphRouteSet.has(routeFromMarkdownPath(mdPath)))
-    .map((mdPath) => routeFromMarkdownPath(mdPath));
+    .map(routeFromMarkdownPath)
+    .filter((route) => !specGraphRouteSet.has(route));
 
   let specPagesWithTokenTables = 0;
   const specPagesWithoutTokenTables: string[] = [];
@@ -74,7 +74,11 @@ export function buildSpecPagesSummary(params: {
   const componentSpecPagesWithoutTokenTables: string[] = [];
 
   for (const page of specGraphPages) {
-    const hasTokenTables = page.tokenTableIds.length > 0;
+    const tokenTableIds = page.tokenTableIds ?? [];
+    const sections = page.sections ?? [];
+    const chunks = page.chunks ?? [];
+    const resourceIds = page.resourceIds ?? [];
+    const hasTokenTables = tokenTableIds.length > 0;
     const isComponentSpec = isComponentSpecsRoute(page.route);
 
     if (hasTokenTables) {
@@ -92,9 +96,9 @@ export function buildSpecPagesSummary(params: {
       }
     }
 
-    if (page.sections.length === 0) specPagesWithEmptySections.push(page.route);
-    if (page.chunks.length === 0) specPagesWithEmptyChunks.push(page.route);
-    if (page.resourceIds.length === 0) specPagesWithEmptyResources.push(page.route);
+    if (sections.length === 0) specPagesWithEmptySections.push(page.route);
+    if (chunks.length === 0) specPagesWithEmptyChunks.push(page.route);
+    if (resourceIds.length === 0) specPagesWithEmptyResources.push(page.route);
   }
 
   const specPageCount = specGraphPages.length + specPagesMissingGraphPage.length;
