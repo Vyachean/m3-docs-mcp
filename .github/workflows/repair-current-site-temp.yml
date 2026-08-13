@@ -19,144 +19,39 @@ jobs:
         with:
           ref: fix/m3-site-format-2026-08
 
-      - name: Apply current-site source migration
+      - name: Preserve legacy subtree supplement contract
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_count(path, old, new, expected=1):
+          def replace_once(path, old, new):
               p = Path(path)
               text = p.read_text()
-              count = text.count(old)
-              if count != expected:
-                  raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old!r}')
-              p.write_text(text.replace(old, new))
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: expected exactly one match: {old!r}')
+              p.write_text(text.replace(old, new, 1))
 
-          replace_count('src/json-extraction/normalize-routes.ts', "export type NavigationSource = 'site-meta' | 'bundle-supplement';", "export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';")
-          replace_count('src/types.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 2)
-          replace_count('src/crawler.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';")
-
-          p = Path('src/json-extraction/route-graph.ts')
-          text = p.read_text()
-          text = text.replace('  alternateSlugs?: string[];\n};', '  alternateSlugs?: string[];\n  publicCorroborated?: boolean;\n};', 1)
-          text = text.replace('  if (patch.public !== undefined) current.public = patch.public;\n', '  if (patch.public !== undefined) current.public = patch.public;\n  if (patch.publicCorroborated) current.publicCorroborated = true;\n', 1)
-          marker = 'function classifyPublicDocsRoute(\n'
-          helper = '''function hasPublicDiscoverySource(candidate: RouteCandidate): boolean {
-            return candidate.sources.has('site_meta')
-              || candidate.sources.has('nav_drawer')
-              || candidate.sources.has('sitemap')
-              || candidate.sources.has('rendered_nav');
-          }
-
-          function findCorroboratedBundleEntry(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[]): BundleRouteEntry | null {
-            const exact = bundleRoutes.find((entry) => normalizeRoute(entry.slug) === candidate.route);
-            if (exact) return exact;
-            const alternate = bundleRoutes.find((entry) => entry.alternateSlugs?.some((slug) => normalizeRoute(slug) === candidate.route));
-            if (alternate) return alternate;
-            const comparableCandidates = getSafeComponentComparableRoutes(candidate.route);
-            if (comparableCandidates.length === 0) return null;
-            const normalizedMatches = bundleRoutes.filter((entry) => comparableCandidates.includes(entry.slug));
-            return normalizedMatches.length === 1 ? normalizedMatches[0]! : null;
-          }
-
-          '''
-          if text.count(marker) != 1:
-              raise SystemExit('route-graph classify marker changed')
-          text = text.replace(marker, helper + marker, 1)
-          old_public = "  const hasPublicDiscoverySource = candidate.sources.has('site_meta')\n    || candidate.sources.has('nav_drawer')\n    || candidate.sources.has('sitemap')\n    || candidate.sources.has('rendered_nav');"
-          new_public = "  const isPubliclyCorroborated = candidate.publicCorroborated === true || hasPublicDiscoverySource(candidate);"
-          if text.count(old_public) != 1:
-              raise SystemExit('route-graph public-source expression changed')
-          text = text.replace(old_public, new_public, 1)
-          top_index = "  if (candidate.sources.has('bundle') && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {\n    return 'non-content-index';\n  }\n"
-          if text.count(top_index) != 1:
-              raise SystemExit('route-graph top-index classifier changed')
-          text = text.replace(top_index, '', 1)
-          text = text.replace("  if (!hasPublicDiscoverySource) return 'outside-public-docs';", "  if (!isPubliclyCorroborated) return 'outside-public-docs';", 1)
-          text = text.replace('  renderedNavPaths?: string[];\n}): RoutePlanSummary {', '  renderedNavPaths?: string[];\n  allowUncorroboratedBundleRoutes?: boolean;\n}): RoutePlanSummary {', 1)
-          old_destructure = '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [] } = params;'
-          new_destructure = '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;'
-          if text.count(old_destructure) != 1:
-              raise SystemExit('route-graph params destructure changed')
-          text = text.replace(old_destructure, new_destructure, 1)
-          bundle_patch = '      alternateSlugs: entry.alternateSlugs,\n    });'
-          if text.count(bundle_patch) != 1:
-              raise SystemExit('route-graph bundle patch marker changed')
-          text = text.replace(bundle_patch, '      alternateSlugs: entry.alternateSlugs,\n      publicCorroborated: allowUncorroboratedBundleRoutes,\n    });', 1)
-          source_marker = "  for (const path of renderedNavPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'rendered_nav');\n\n"
-          corroboration = '''  for (const candidate of Array.from(candidates.values())) {
-            if (candidate.public === false || !hasPublicDiscoverySource(candidate)) continue;
-            const matched = findCorroboratedBundleEntry(candidate, bundleRoutes);
-            if (!matched) continue;
-            const canonicalCandidate = candidates.get(normalizeRoute(matched.slug));
-            if (canonicalCandidate) canonicalCandidate.publicCorroborated = true;
-          }
-
-          '''
-          if text.count(source_marker) != 1:
-              raise SystemExit('route-graph discovery source marker changed')
-          text = text.replace(source_marker, source_marker + corroboration, 1)
-          p.write_text(text)
-
-          p = Path('src/crawler.ts')
-          lines = p.read_text().splitlines()
-          fetch_log = next(i for i, line in enumerate(lines) if "logger?.log('error', 'site-meta:fetch-failed'" in line)
-          if 'default update path requires site_meta' not in lines[fetch_log + 1]:
-              raise SystemExit('crawler site-meta failure log shape changed')
-          lines[fetch_log] = "        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });"
-          lines[fetch_log + 1] = "        logVerbose(`site_meta.js unavailable (${reason}); continuing with sitemap public-route discovery.`);"
-
-          guard_start = next(i for i, line in enumerate(lines) if line.strip() == 'const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;')
-          guard_end = next(i for i in range(guard_start, len(lines)) if lines[i].lstrip().startswith('// page-reference-resolver'))
-          guard = [
-              '    const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;',
-              '    const sitemapProvidedRoutes = sitemapPublicDocPaths.size > 0;',
-              '    const browserFallbackAllowed = options.allowBrowserFallback === true;',
-              '',
-              '    if (!siteMetaProvidedRoutes && !sitemapProvidedRoutes && !browserFallbackAllowed) {',
-              '      // Deterministic refresh requires public-route discovery independent from the bundle.',
-              '      // Current Material publishes that boundary through sitemap.xml; older snapshots may',
-              '      // still provide site_meta.js. The bundle alone never proves that a route is public.',
-              "      const reason = 'neither site_meta.js nor sitemap.xml provided usable public routes';",
-              "      logger?.log('error', 'route-discovery:rejected', {",
-              "        phase: 'fetch-site-meta',",
-              '        reason,',
-              '        siteMetaFetched,',
-              '        siteMetaFailed,',
-              '        sitemapRouteCount: sitemapPublicDocPaths.size',
-              '      });',
-              '      await logger?.writeIntermediateDiagnostics({',
-              "        promotionDecision: 'pending',",
-              '        startedAt,',
-              '        siteMetaFetched,',
-              '        siteMetaFailed,',
-              '        bundleDiscoveryFailed,',
-              '        directJsonEnabled: false,',
-              '        directJsonDisabledReason: reason,',
-              '        dsdbConfigSource: null,',
-              '        networkRecoveryAttempted: false,',
-              '        networkRecoverySucceeded: false',
-              '      });',
-              '      throw new Error(`No usable public route discovery source (${reason}); refusing to use the bundle table as an uncorroborated full route source.`);',
-              '    }',
-              '',
-          ]
-          lines[guard_start:guard_end] = guard
-          p.write_text('\n'.join(lines) + '\n')
-
-          p = Path('src/crawler.ts')
-          text = p.read_text()
-          old_nav = "route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement'"
-          new_nav = "route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement'"
-          if text.count(old_nav) != 5:
-              raise SystemExit(f'crawler navigation-source expression count={text.count(old_nav)}')
-          text = text.replace(old_nav, new_nav)
-          plan_tail = '        sitemapPaths: Array.from(sitemapPublicDocPaths),\n        renderedNavPaths: Array.from(renderedNavPublicDocPaths)\n'
-          if text.count(plan_tail) != 1:
-              raise SystemExit('crawler route-plan call shape changed')
-          text = text.replace(plan_tail, '        sitemapPaths: Array.from(sitemapPublicDocPaths),\n        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed\n', 1)
-          p.write_text(text)
+          replace_once(
+              'src/json-extraction/route-graph.ts',
+              '  allowUncorroboratedBundleRoutes?: boolean;\n}): RoutePlanSummary {',
+              '  allowUncorroboratedBundleRoutes?: boolean;\n  allowedBundleSupplementPrefixes?: string[];\n}): RoutePlanSummary {'
+          )
+          replace_once(
+              'src/json-extraction/route-graph.ts',
+              '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;',
+              '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false, allowedBundleSupplementPrefixes = [] } = params;'
+          )
+          replace_once(
+              'src/json-extraction/route-graph.ts',
+              '      publicCorroborated: allowUncorroboratedBundleRoutes,',
+              "      publicCorroborated: allowUncorroboratedBundleRoutes || allowedBundleSupplementPrefixes.some((prefix) => normalizeRoute(entry.slug) === `/${prefix}` || normalizeRoute(entry.slug).startsWith(`/${prefix}/`)),"
+          )
+          replace_once(
+              'src/crawler.ts',
+              '        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed\n',
+              "        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed,\n        allowedBundleSupplementPrefixes: siteMetaProvidedRoutes\n          ? findSubtreesWithoutCoverage(normalizedSiteMetaRoutes.map((route) => route.path), ['components', 'styles', 'foundations'])\n          : []\n"
+          )
           PY
 
       - name: Install dependencies
@@ -165,13 +60,13 @@ jobs:
       - name: Static checks
         run: npm run check
 
-      - name: Commit source migration
+      - name: Commit compatibility fix
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/crawler.ts src/types.ts src/json-extraction/normalize-routes.ts src/json-extraction/route-graph.ts
-          git commit -m "fix: use sitemap for current Material route discovery"
+          git add src/crawler.ts src/json-extraction/route-graph.ts
+          git commit -m "fix: preserve scoped bundle subtree supplements"
           git push origin HEAD:fix/m3-site-format-2026-08
 
       - name: Unit tests
