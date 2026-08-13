@@ -56,6 +56,35 @@ describe('fetchSiteMeta sitemap fallback', () => {
     ]));
   });
 
+  it('also falls back when site_meta.js is present but no longer parseable', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const mockFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: () => url.endsWith('/sitemap.xml') ? 'application/xml' : 'application/javascript' },
+        text: async () => url.endsWith('/sitemap.xml')
+          ? '<urlset><url><loc>https://m3.material.io/foundations/design-tokens</loc></url></urlset>'
+          : 'const siteMetadataMoved = true;',
+      } as unknown as Response;
+    });
+
+    const result = await fetchSiteMeta(
+      'https://m3.material.io',
+      undefined,
+      mockFetch as unknown as typeof fetch,
+      diagnostics,
+    );
+
+    expect(Object.keys(result.routes)).toEqual(['/foundations/design-tokens']);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ expectedKind: 'site-meta', outcome: 'parse-error' }),
+      expect.objectContaining({ expectedKind: 'sitemap', outcome: 'success' }),
+    ]));
+  });
+
   it('remains fail-closed when neither site_meta.js nor sitemap.xml is usable', async () => {
     const mockFetch = vi.fn(async (input: string | URL | Request) => ({
       ok: false,
