@@ -1,4 +1,4 @@
-name: Capture current Material quality diagnostics
+name: Inspect current Material quality inputs
 
 on:
   push:
@@ -8,32 +8,14 @@ on:
       - .github/workflows/repair-current-site-temp.yml
 
 jobs:
-  capture-live-diagnostics:
+  inspect-quality-inputs:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/m3-site-format-2026-08
       - run: npm ci
       - run: npm run build
-      - name: Run current full extraction
-        continue-on-error: true
-        run: node dist/index.js update --cache-dir /tmp/m3-inspect --min-pages 10 --concurrency 8 --strict-graph --verbose
-      - name: Pack failed staging and logger diagnostics
-        if: always()
-        run: |
-          paths=()
-          [ -d /tmp/m3-inspect.failed-staging ] && paths+=(m3-inspect.failed-staging)
-          [ -d /tmp/m3-inspect ] && paths+=(m3-inspect)
-          if [ ${#paths[@]} -eq 0 ]; then
-            echo "No cache or diagnostics directory was produced" >&2
-            exit 1
-          fi
-          tar -C /tmp -czf /tmp/m3-quality-diagnostics.tar.gz "${paths[@]}"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: current-material-quality-diagnostics
-          path: /tmp/m3-quality-diagnostics.tar.gz
-          retention-days: 1
+      - run: npx playwright install --with-deps chromium
+      - run: node scripts/inspect-current-quality-temp.mjs
