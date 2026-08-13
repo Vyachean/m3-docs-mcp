@@ -1,4 +1,4 @@
-name: Repair current Material site format
+name: Inspect current Material route format
 
 on:
   push:
@@ -7,76 +7,40 @@ on:
     paths:
       - .github/workflows/repair-current-site-temp.yml
 
-permissions:
-  contents: write
-
 jobs:
-  repair-and-verify:
+  inspect-live-routes:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/m3-site-format-2026-08
-
-      - name: Preserve legacy subtree supplement contract
+      - run: npm ci
+      - name: Inspect live bundle and sitemap
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          node --input-type=module <<'NODE'
+          import { fetchAngularBundleText, extractBundleRouteTable } from './dist/json-extraction/page-reference-resolver.js';
 
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              if text.count(old) != 1:
-                  raise SystemExit(f'{path}: expected exactly one match: {old!r}')
-              p.write_text(text.replace(old, new, 1))
+          const baseUrl = 'https://m3.material.io';
+          const bundleText = await fetchAngularBundleText(baseUrl);
+          const routes = extractBundleRouteTable(bundleText);
+          const sitemapText = await (await fetch(`${baseUrl}/sitemap.xml`)).text();
+          const sitemapPaths = Array.from(sitemapText.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => new URL(m[1]).pathname);
+          const docs = sitemapPaths.filter((path) => path.startsWith('/components') || path.startsWith('/styles') || path.startsWith('/foundations') || path.startsWith('/develop'));
 
-          replace_once(
-              'src/json-extraction/route-graph.ts',
-              '  allowUncorroboratedBundleRoutes?: boolean;\n}): RoutePlanSummary {',
-              '  allowUncorroboratedBundleRoutes?: boolean;\n  allowedBundleSupplementPrefixes?: string[];\n}): RoutePlanSummary {'
-          )
-          replace_once(
-              'src/json-extraction/route-graph.ts',
-              '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;',
-              '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false, allowedBundleSupplementPrefixes = [] } = params;'
-          )
-          replace_once(
-              'src/json-extraction/route-graph.ts',
-              '      publicCorroborated: allowUncorroboratedBundleRoutes,',
-              "      publicCorroborated: allowUncorroboratedBundleRoutes || allowedBundleSupplementPrefixes.some((prefix) => normalizeRoute(entry.slug) === `/${prefix}` || normalizeRoute(entry.slug).startsWith(`/${prefix}/`)),"
-          )
-          replace_once(
-              'src/crawler.ts',
-              '        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed\n',
-              "        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed,\n        allowedBundleSupplementPrefixes: siteMetaProvidedRoutes\n          ? findSubtreesWithoutCoverage(normalizedSiteMetaRoutes.map((route) => route.path), ['components', 'styles', 'foundations'])\n          : []\n"
-          )
-          PY
+          console.log('bundle route count', routes.length);
+          console.log('sitemap doc count', docs.length);
+          for (const prefix of ['components', 'styles', 'foundations', 'develop']) {
+            console.log(`\n=== BUNDLE ${prefix} ===`);
+            for (const route of routes.filter((entry) => entry.slug === prefix || entry.slug.startsWith(`${prefix}/`)).slice(0, 80)) {
+              console.log(JSON.stringify({ slug: route.slug, collectionId: route.collectionId, documentId: route.documentId, tabs: route.tabs, alternateSlugs: route.alternateSlugs }));
+            }
+            console.log(`=== SITEMAP ${prefix} ===`);
+            console.log(docs.filter((path) => path === `/${prefix}` || path.startsWith(`/${prefix}/`)).slice(0, 120).join('\n'));
+          }
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Static checks
-        run: npm run check
-
-      - name: Commit compatibility fix
-        shell: bash
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/crawler.ts src/json-extraction/route-graph.ts
-          git commit -m "fix: preserve scoped bundle subtree supplements"
-          git push origin HEAD:fix/m3-site-format-2026-08
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Build
-        run: npm run build
-
-      - name: Install Chromium for full verification
-        run: npx playwright install --with-deps chromium
-
-      - name: Verify live full cache refresh
-        run: npm run verify:cache:full
+          for (const slug of ['components/buttons','components/switch','components/lists','components/segmented-buttons','styles/color','foundations/layout','develop']) {
+            console.log(`\nLOOKUP ${slug}`, JSON.stringify(routes.find((entry) => entry.slug === slug) ?? null));
+          }
+          NODE
