@@ -17,7 +17,7 @@ afterEach(async () => {
   await rm(cacheDir, { recursive: true, force: true });
 });
 
-async function writeFullSnapshot(): Promise<void> {
+async function writeBaseArtifacts(): Promise<{ bundleSha: string }> {
   const shell = await persistArtifact({
     kind: 'site-shell',
     pathParts: ['shell.html'],
@@ -27,6 +27,39 @@ async function writeFullSnapshot(): Promise<void> {
   }, cacheDir);
   await upsertArtifactRecord(shell, cacheDir);
 
+  const bundle = await persistArtifact({
+    kind: 'angular-bundle',
+    pathParts: ['main.abc123.js'],
+    sourceUrl: 'https://m3.material.io/main.abc123.js',
+    content: 'console.log("carbonVersion")',
+    sourceMethod: 'static-plan',
+  }, cacheDir);
+  await upsertArtifactRecord(bundle, cacheDir);
+  return { bundleSha: bundle.sha256 };
+}
+
+async function writeCurrentSnapshot(): Promise<void> {
+  const { bundleSha } = await writeBaseArtifacts();
+  const sitemap = await persistArtifact({
+    kind: 'sitemap',
+    pathParts: ['sitemap.xml'],
+    sourceUrl: 'https://m3.material.io/sitemap.xml',
+    content: '<urlset><url><loc>https://m3.material.io/components/buttons/specs</loc></url></urlset>',
+    sourceMethod: 'static-plan',
+  }, cacheDir);
+  await upsertArtifactRecord(sitemap, cacheDir);
+
+  await writeManifest(createCacheManifest({
+    baseUrl: 'https://m3.material.io',
+    carbonVersion: 'v123',
+    siteMetaHash: null,
+    angularBundleHash: bundleSha,
+    sitemapHash: sitemap.sha256,
+  }), cacheDir);
+}
+
+async function writeLegacySnapshot(): Promise<void> {
+  const { bundleSha } = await writeBaseArtifacts();
   const siteMeta = await persistArtifact({
     kind: 'site-meta',
     pathParts: ['site_meta.js'],
@@ -36,27 +69,25 @@ async function writeFullSnapshot(): Promise<void> {
   }, cacheDir);
   await upsertArtifactRecord(siteMeta, cacheDir);
 
-  const bundle = await persistArtifact({
-    kind: 'angular-bundle',
-    pathParts: ['main.abc123.js'],
-    sourceUrl: 'https://m3.material.io/main.abc123.js',
-    content: 'console.log("carbonVersion")',
-    sourceMethod: 'static-plan',
-  }, cacheDir);
-  await upsertArtifactRecord(bundle, cacheDir);
-
   await writeManifest(createCacheManifest({
     baseUrl: 'https://m3.material.io',
     carbonVersion: 'v123',
     siteMetaHash: siteMeta.sha256,
-    angularBundleHash: bundle.sha256,
+    angularBundleHash: bundleSha,
     sitemapHash: null,
   }), cacheDir);
 }
 
 describe('validateRawSnapshot', () => {
-  it('passes when manifest hashes and raw artifact-index entries are all present', async () => {
-    await writeFullSnapshot();
+  it('passes for the current sitemap-based snapshot without site_meta.js', async () => {
+    await writeCurrentSnapshot();
+    const result = await validateRawSnapshot({ cacheDir });
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
+  });
+
+  it('keeps legacy site_meta route-discovery snapshots valid', async () => {
+    await writeLegacySnapshot();
     const result = await validateRawSnapshot({ cacheDir });
     expect(result.passed).toBe(true);
     expect(result.reasons).toEqual([]);
@@ -69,12 +100,12 @@ describe('validateRawSnapshot', () => {
   });
 
   it('fails when carbonVersion is missing from the manifest', async () => {
-    await writeFullSnapshot();
+    await writeCurrentSnapshot();
     await writeManifest(createCacheManifest({
       baseUrl: 'https://m3.material.io',
       carbonVersion: null,
-      siteMetaHash: 'a'.repeat(64),
       angularBundleHash: 'b'.repeat(64),
+      sitemapHash: 'c'.repeat(64),
     }), cacheDir);
     const result = await validateRawSnapshot({ cacheDir });
     expect(result.passed).toBe(false);
@@ -82,8 +113,7 @@ describe('validateRawSnapshot', () => {
   });
 
   it('fails when the site-shell artifact is missing from raw/artifact-index.json', async () => {
-    await writeFullSnapshot();
-    // Overwrite the index with the site-shell entry removed.
+    await writeCurrentSnapshot();
     const { readArtifactIndex, writeArtifactIndex } = await import('../src/raw-artifacts/artifact-index.js');
     const index = await readArtifactIndex(cacheDir);
     await writeArtifactIndex({ artifacts: index.artifacts.filter((a) => a.kind !== 'site-shell') }, cacheDir);
@@ -93,26 +123,41 @@ describe('validateRawSnapshot', () => {
     expect(result.reasons.some((r) => r.includes('site-shell'))).toBe(true);
   });
 
-  it('fails when siteMetaHash is missing from the manifest', async () => {
-    await writeFullSnapshot();
+  it('fails when no hashed route-discovery source is recorded', async () => {
+    const { bundleSha } = await writeBaseArtifacts();
     await writeManifest(createCacheManifest({
       baseUrl: 'https://m3.material.io',
       carbonVersion: 'v123',
       siteMetaHash: null,
-      angularBundleHash: 'b'.repeat(64),
+      angularBundleHash: bundleSha,
+      sitemapHash: null,
     }), cacheDir);
     const result = await validateRawSnapshot({ cacheDir });
     expect(result.passed).toBe(false);
-    expect(result.reasons.some((r) => r.includes('siteMetaHash'))).toBe(true);
+    expect(result.reasons.some((r) => r.includes('route-discovery'))).toBe(true);
   });
 
-  it('fails when angularBundleHash is missing from the manifest', async () => {
-    await writeFullSnapshot();
+  it('fails when sitemapHash has no corresponding sitemap artifact', async () => {
+    const { bundleSha } = await writeBaseArtifacts();
     await writeManifest(createCacheManifest({
       baseUrl: 'https://m3.material.io',
       carbonVersion: 'v123',
-      siteMetaHash: 'a'.repeat(64),
+      siteMetaHash: null,
+      angularBundleHash: bundleSha,
+      sitemapHash: 'c'.repeat(64),
+    }), cacheDir);
+    const result = await validateRawSnapshot({ cacheDir });
+    expect(result.passed).toBe(false);
+    expect(result.reasons.some((r) => r.includes('sitemap'))).toBe(true);
+  });
+
+  it('fails when angularBundleHash is missing from the manifest', async () => {
+    await writeCurrentSnapshot();
+    await writeManifest(createCacheManifest({
+      baseUrl: 'https://m3.material.io',
+      carbonVersion: 'v123',
       angularBundleHash: null,
+      sitemapHash: 'c'.repeat(64),
     }), cacheDir);
     const result = await validateRawSnapshot({ cacheDir });
     expect(result.passed).toBe(false);
