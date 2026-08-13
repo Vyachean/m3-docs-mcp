@@ -25,7 +25,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_count(path, old, new, expected):
+          def replace_count(path, old, new, expected=1):
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
@@ -33,9 +33,71 @@ jobs:
                   raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old!r}')
               p.write_text(text.replace(old, new))
 
-          replace_count('src/json-extraction/normalize-routes.ts', "export type NavigationSource = 'site-meta' | 'bundle-supplement';", "export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 1)
+          replace_count('src/json-extraction/normalize-routes.ts', "export type NavigationSource = 'site-meta' | 'bundle-supplement';", "export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';")
           replace_count('src/types.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 2)
-          replace_count('src/crawler.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 1)
+          replace_count('src/crawler.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';")
+
+          p = Path('src/json-extraction/route-graph.ts')
+          text = p.read_text()
+          text = text.replace('  alternateSlugs?: string[];\n};', '  alternateSlugs?: string[];\n  publicCorroborated?: boolean;\n};', 1)
+          text = text.replace('  if (patch.public !== undefined) current.public = patch.public;\n', '  if (patch.public !== undefined) current.public = patch.public;\n  if (patch.publicCorroborated) current.publicCorroborated = true;\n', 1)
+          marker = 'function classifyPublicDocsRoute(\n'
+          helper = '''function hasPublicDiscoverySource(candidate: RouteCandidate): boolean {
+            return candidate.sources.has('site_meta')
+              || candidate.sources.has('nav_drawer')
+              || candidate.sources.has('sitemap')
+              || candidate.sources.has('rendered_nav');
+          }
+
+          function findCorroboratedBundleEntry(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[]): BundleRouteEntry | null {
+            const exact = bundleRoutes.find((entry) => normalizeRoute(entry.slug) === candidate.route);
+            if (exact) return exact;
+            const alternate = bundleRoutes.find((entry) => entry.alternateSlugs?.some((slug) => normalizeRoute(slug) === candidate.route));
+            if (alternate) return alternate;
+            const comparableCandidates = getSafeComponentComparableRoutes(candidate.route);
+            if (comparableCandidates.length === 0) return null;
+            const normalizedMatches = bundleRoutes.filter((entry) => comparableCandidates.includes(entry.slug));
+            return normalizedMatches.length === 1 ? normalizedMatches[0]! : null;
+          }
+
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit('route-graph classify marker changed')
+          text = text.replace(marker, helper + marker, 1)
+          old_public = "  const hasPublicDiscoverySource = candidate.sources.has('site_meta')\n    || candidate.sources.has('nav_drawer')\n    || candidate.sources.has('sitemap')\n    || candidate.sources.has('rendered_nav');"
+          new_public = "  const isPubliclyCorroborated = candidate.publicCorroborated === true || hasPublicDiscoverySource(candidate);"
+          if text.count(old_public) != 1:
+              raise SystemExit('route-graph public-source expression changed')
+          text = text.replace(old_public, new_public, 1)
+          top_index = "  if (candidate.sources.has('bundle') && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {\n    return 'non-content-index';\n  }\n"
+          if text.count(top_index) != 1:
+              raise SystemExit('route-graph top-index classifier changed')
+          text = text.replace(top_index, '', 1)
+          text = text.replace("  if (!hasPublicDiscoverySource) return 'outside-public-docs';", "  if (!isPubliclyCorroborated) return 'outside-public-docs';", 1)
+          text = text.replace('  renderedNavPaths?: string[];\n}): RoutePlanSummary {', '  renderedNavPaths?: string[];\n  allowUncorroboratedBundleRoutes?: boolean;\n}): RoutePlanSummary {', 1)
+          old_destructure = '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [] } = params;'
+          new_destructure = '  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;'
+          if text.count(old_destructure) != 1:
+              raise SystemExit('route-graph params destructure changed')
+          text = text.replace(old_destructure, new_destructure, 1)
+          bundle_patch = '      alternateSlugs: entry.alternateSlugs,\n    });'
+          if text.count(bundle_patch) != 1:
+              raise SystemExit('route-graph bundle patch marker changed')
+          text = text.replace(bundle_patch, '      alternateSlugs: entry.alternateSlugs,\n      publicCorroborated: allowUncorroboratedBundleRoutes,\n    });', 1)
+          source_marker = "  for (const path of renderedNavPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'rendered_nav');\n\n"
+          corroboration = '''  for (const candidate of Array.from(candidates.values())) {
+            if (candidate.public === false || !hasPublicDiscoverySource(candidate)) continue;
+            const matched = findCorroboratedBundleEntry(candidate, bundleRoutes);
+            if (!matched) continue;
+            const canonicalCandidate = candidates.get(normalizeRoute(matched.slug));
+            if (canonicalCandidate) canonicalCandidate.publicCorroborated = true;
+          }
+
+          '''
+          if text.count(source_marker) != 1:
+              raise SystemExit('route-graph discovery source marker changed')
+          text = text.replace(source_marker, source_marker + corroboration, 1)
+          p.write_text(text)
 
           p = Path('src/crawler.ts')
           lines = p.read_text().splitlines()
@@ -53,7 +115,7 @@ jobs:
               '    const browserFallbackAllowed = options.allowBrowserFallback === true;',
               '',
               '    if (!siteMetaProvidedRoutes && !sitemapProvidedRoutes && !browserFallbackAllowed) {',
-              '      // A deterministic refresh needs public-route discovery independent from the bundle.',
+              '      // Deterministic refresh requires public-route discovery independent from the bundle.',
               '      // Current Material publishes that boundary through sitemap.xml; older snapshots may',
               '      // still provide site_meta.js. The bundle alone never proves that a route is public.',
               "      const reason = 'neither site_meta.js nor sitemap.xml provided usable public routes';",
@@ -90,16 +152,11 @@ jobs:
           if text.count(old_nav) != 5:
               raise SystemExit(f'crawler navigation-source expression count={text.count(old_nav)}')
           text = text.replace(old_nav, new_nav)
-          old_supplement = "route.sources.includes('bundle') && !route.sources.includes('site_meta')"
-          new_supplement = "route.sources.includes('bundle') && !route.sources.includes('site_meta') && !route.sources.includes('sitemap') && !route.sources.includes('rendered_nav')"
-          if text.count(old_supplement) != 1:
-              raise SystemExit(f'crawler bundle-supplement count expression count={text.count(old_supplement)}')
-          text = text.replace(old_supplement, new_supplement)
-          old_prefix = "route.sources.includes('bundle') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))"
-          new_prefix = "route.sources.includes('bundle') && !route.sources.includes('site_meta') && !route.sources.includes('sitemap') && !route.sources.includes('rendered_nav') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))"
-          if text.count(old_prefix) != 1:
-              raise SystemExit(f'crawler supplemented-prefix expression count={text.count(old_prefix)}')
-          p.write_text(text.replace(old_prefix, new_prefix))
+          plan_tail = '        sitemapPaths: Array.from(sitemapPublicDocPaths),\n        renderedNavPaths: Array.from(renderedNavPublicDocPaths)\n'
+          if text.count(plan_tail) != 1:
+              raise SystemExit('crawler route-plan call shape changed')
+          text = text.replace(plan_tail, '        sitemapPaths: Array.from(sitemapPublicDocPaths),\n        renderedNavPaths: Array.from(renderedNavPublicDocPaths),\n        allowUncorroboratedBundleRoutes: browserFallbackAllowed\n', 1)
+          p.write_text(text)
           PY
 
       - name: Install dependencies
@@ -107,6 +164,15 @@ jobs:
 
       - name: Static checks
         run: npm run check
+
+      - name: Commit source migration
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/crawler.ts src/types.ts src/json-extraction/normalize-routes.ts src/json-extraction/route-graph.ts
+          git commit -m "fix: use sitemap for current Material route discovery"
+          git push origin HEAD:fix/m3-site-format-2026-08
 
       - name: Unit tests
         run: npm test
@@ -119,12 +185,3 @@ jobs:
 
       - name: Verify live full cache refresh
         run: npm run verify:cache:full
-
-      - name: Commit verified migration
-        shell: bash
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/crawler.ts src/types.ts src/json-extraction/normalize-routes.ts
-          git commit -m "fix: use sitemap for current Material route discovery"
-          git push origin HEAD:fix/m3-site-format-2026-08
