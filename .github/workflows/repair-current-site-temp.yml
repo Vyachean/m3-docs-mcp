@@ -1,4 +1,4 @@
-name: Repair current Material bundle references
+name: Capture current Material extraction diagnostics
 
 on:
   push:
@@ -7,145 +7,33 @@ on:
     paths:
       - .github/workflows/repair-current-site-temp.yml
 
-permissions:
-  contents: write
-
 jobs:
-  repair-and-verify:
+  capture-live-diagnostics:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/m3-site-format-2026-08
-
-      - name: Apply current bundle format repair
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected one match, found {count}: {old[:120]!r}')
-              p.write_text(text.replace(old, new, 1))
-
-          # Merge duplicate slug objects instead of keeping the first metadata-only occurrence.
-          p = Path('src/json-extraction/page-reference-resolver.ts')
-          text = p.read_text()
-          pattern = re.compile(r'export function extractBundleRouteTable\(bundleText: string\): BundleRouteEntry\[\] \{.*?\n\}\n\n/\*\* Finds the smallest balanced', re.S)
-          replacement = """export function extractBundleRouteTable(bundleText: string): BundleRouteEntry[] {
-            const entriesBySlug = new Map<string, BundleRouteEntry>();
-            const slugMatches = Array.from(bundleText.matchAll(/\"slug\":\"[^\"]*\"/g));
-            for (let i = 0; i < slugMatches.length; i += 1) {
-              const match = slugMatches[i]!;
-              const offset = match.index ?? 0;
-              const fragment = extractBalancedObjectAround(bundleText, offset)
-                ?? bundleText.slice(offset, slugMatches[i + 1]?.index ?? bundleText.length);
-              const entry = parseBundleRouteFragment(fragment);
-              if (!entry) continue;
-              const previous = entriesBySlug.get(entry.slug);
-              entriesBySlug.set(entry.slug, previous ? mergeBundleRouteEntries(previous, entry) : entry);
-            }
-            return Array.from(entriesBySlug.values());
-          }
-
-          function mergeBundleRouteEntries(current: BundleRouteEntry, incoming: BundleRouteEntry): BundleRouteEntry {
-            const alternateSlugs = Array.from(new Set([...(current.alternateSlugs ?? []), ...(incoming.alternateSlugs ?? [])]));
-            const currentTabs = current.tabs ?? [];
-            const incomingTabs = incoming.tabs ?? [];
-            const tabs = incomingTabs.length > currentTabs.length ? incomingTabs : currentTabs;
-            return {
-              slug: current.slug,
-              documentId: current.documentId ?? incoming.documentId,
-              collectionId: current.collectionId ?? incoming.collectionId,
-              exportedCarbonFileId: current.exportedCarbonFileId ?? incoming.exportedCarbonFileId,
-              pageCanonId: current.pageCanonId ?? incoming.pageCanonId,
-              carbonPath: current.carbonPath ?? incoming.carbonPath,
-              title: current.title ?? incoming.title,
-              alternateSlugs: alternateSlugs.length > 0 ? alternateSlugs : undefined,
-              tabs: tabs.length > 0 ? tabs : undefined,
-            };
-          }
-
-          /** Finds the smallest balanced"""
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise SystemExit(f'page-reference-resolver route-table function shape changed: {count}')
-          p.write_text(text)
-
-          replace_once(
-              'src/json-extraction/route-graph.ts',
-              "  if (bundleEntry && (!bundleEntry.collectionId || !bundleEntry.documentId)) return 'missing-extraction-metadata';",
-              "  if (bundleEntry && !bundleEntry.exportedCarbonFileId && (!bundleEntry.collectionId || !bundleEntry.documentId)) return 'missing-extraction-metadata';"
-          )
-
-          replace_once(
-              'src/crawler.ts',
-              "          if (route.pageReferenceSource === 'bundle-table' && route.collectionId && route.documentId) {",
-              "          if (route.pageReferenceSource === 'bundle-table' && (route.exportedCarbonFileId || (route.collectionId && route.documentId))) {"
-          )
-          replace_once('src/crawler.ts', '    const collectionId = route.collectionId!;', '    const collectionId = route.collectionId;')
-          replace_once('src/crawler.ts', '    const documentId = route.documentId!;', '    const documentId = route.documentId;')
-
-          p = Path('src/crawler.ts')
-          text = p.read_text()
-          old = "    const [pageDataResult, carbonResult] = await Promise.all([\n      fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute),\n      fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal, fetch, fetchDiagnostics, sourceCoverageRoute)\n    ]);"
-          new = "    const [pageDataResult, carbonResult] = await Promise.all([\n      collectionId && documentId\n        ? fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute)\n        : Promise.resolve(null),\n      fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal, fetch, fetchDiagnostics, sourceCoverageRoute)\n    ]);"
-          if text.count(old) != 1:
-              raise SystemExit(f'crawler page-data/carbon parallel fetch shape changed: {text.count(old)}')
-          text = text.replace(old, new, 1)
-          text = text.replace("    if (pageDataResult.status === 'ok') {", "    if (pageDataResult?.status === 'ok' && collectionId && documentId) {", 1)
-          text = text.replace("    const pageDataOk = pageDataResult.status === 'ok';", "    const pageDataOk = pageDataResult?.status === 'ok';", 1)
-          text = text.replace('    const pageDataUrl = pageDataResult.url;', '    const pageDataUrl = pageDataResult?.url;', 1)
-          old_status = "    const pageDataStatus = pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status;"
-          new_status = "    const pageDataStatus = pageDataResult\n      ? (pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status)\n      : undefined;"
-          if text.count(old_status) != 1:
-              raise SystemExit('crawler pageDataStatus shape changed')
-          text = text.replace(old_status, new_status, 1)
-          text = text.replace('      pageDataFetchedOnce: true,', '      pageDataFetchedOnce: pageDataResult !== null,', 1)
-          text = text.replace('    const pageDataJson = pageDataOk ? pageDataResult.data : null;', '    const pageDataJson = pageDataOk && pageDataResult ? pageDataResult.data : null;', 1)
-          old_comment = '   * Deterministic fetch-page-data path for a route resolved via the page-reference-resolver\n   * (collectionId/documentId/exportedCarbonFileId from the bundle table). No slug guessing: at\n   * most one page-data URL and one Carbon content URL are attempted. Routes with tabs[] produce\n   * one virtual cache page per tab from a single page-data + Carbon fetch.'
-          new_comment = '   * Deterministic direct-JSON path for a route resolved via the page-reference-resolver.\n   * Current bundles use exportedCarbonFileId as the primary reference; legacy bundles may also\n   * provide collectionId/documentId for page-data. No slug guessing is used, and tabs reuse the\n   * same fetched source payloads.'
-          if text.count(old_comment) != 1:
-              raise SystemExit('crawler reference-path comment shape changed')
-          p.write_text(text.replace(old_comment, new_comment, 1))
-
-          # Parser regression fixture for the August 2026 bundle shape.
-          p = Path('tests/page-reference-resolver.test.ts')
-          text = p.read_text()
-          anchor = "  it('parses pageCanonId when it is present in bundle fragments', () => {\n"
-          test = "  it('merges metadata-only and current-format Carbon records for the same slug', () => {\n    const parsed = extractBundleRouteTable([\n      '{\\\"slug\\\":\\\"components/buttons\\\",\\\"metadata\\\":{\\\"share_title\\\":\\\"Buttons\\\"}}',\n      '{\\\"slug\\\":\\\"components/buttons\\\",\\\"exportedCarbonFileId\\\":\\\"buttons.json\\\",\\\"tabs\\\":[{\\\"label\\\":\\\"Overview\\\"},{\\\"label\\\":\\\"Specs\\\"}]}'\n    ].join(','));\n    expect(parsed).toHaveLength(1);\n    expect(parsed[0]).toMatchObject({ slug: 'components/buttons', exportedCarbonFileId: 'buttons.json' });\n    expect(parsed[0]?.tabs?.map((tab) => tab.label)).toEqual(['Overview', 'Specs']);\n  });\n\n"
-          if text.count(anchor) != 1:
-              raise SystemExit('page-reference-resolver test anchor changed')
-          p.write_text(text.replace(anchor, test + anchor, 1))
-
-          p = Path('tests/route-graph.test.ts')
-          text = p.read_text()
-          anchor = "  it('rejects public sitemap routes whose matched bundle entry lacks extraction metadata', () => {\n"
-          test = "  it('accepts exportedCarbonFileId without legacy page-data ids', () => {\n    const plan = buildRoutePlan({\n      baseUrl: 'https://m3.material.io',\n      includeBlog: false,\n      siteMeta: null,\n      normalizedSiteMetaRoutes: [],\n      bundleRoutes: [{ slug: 'components/buttons', exportedCarbonFileId: 'buttons.json', tabs: [{ label: 'Overview' }, { label: 'Specs' }] }],\n      sitemapPaths: ['/components/buttons/specs']\n    });\n    expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({ route: '/components/buttons', exportedCarbonFileId: 'buttons.json', publicDocsClassification: 'public-docs' }));\n    expect(plan.staleRoutes).toEqual([]);\n  });\n\n"
-          if text.count(anchor) != 1:
-              raise SystemExit('route-graph test anchor changed')
-          p.write_text(text.replace(anchor, test + anchor, 1))
-          PY
-
       - run: npm ci
-      - run: npm run check
-
-      - name: Commit source repair
-        shell: bash
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/json-extraction/page-reference-resolver.ts src/json-extraction/route-graph.ts src/crawler.ts tests/page-reference-resolver.test.ts tests/route-graph.test.ts
-          git commit -m "fix: support current Carbon route references"
-          git push origin HEAD:fix/m3-site-format-2026-08
-
-      - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
-      - run: npm run verify:cache:full
+      - name: Run current full extraction
+        continue-on-error: true
+        run: node dist/index.js update --cache-dir /tmp/m3-inspect --min-pages 10 --concurrency 8 --strict-graph --verbose
+      - name: Pack failed staging diagnostics
+        if: always()
+        run: |
+          if [ -d /tmp/m3-inspect.failed-staging ]; then
+            tar -C /tmp -czf /tmp/m3-inspect-diagnostics.tar.gz m3-inspect.failed-staging
+          elif [ -d /tmp/m3-inspect ]; then
+            tar -C /tmp -czf /tmp/m3-inspect-diagnostics.tar.gz m3-inspect
+          else
+            echo "No cache directory was produced" >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: current-material-extraction-diagnostics
+          path: /tmp/m3-inspect-diagnostics.tar.gz
+          retention-days: 1
