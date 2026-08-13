@@ -2229,7 +2229,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         bundleRoutes,
         sitemapPaths: Array.from(sitemapPublicDocPaths),
         renderedNavPaths: Array.from(renderedNavPublicDocPaths),
-        allowUncorroboratedBundleRoutes: browserFallbackAllowed
+        allowUncorroboratedBundleRoutes: browserFallbackAllowed,
+        allowedBundleSupplementPrefixes: siteMetaProvidedRoutes
+          ? findSubtreesWithoutCoverage(normalizedSiteMetaRoutes.map((route) => route.path), ['components', 'styles', 'foundations'])
+          : []
       });
       const builtRoutePlan = routePlanSummary;
       coverageDiagnostics.bundleSupplementRouteCount = builtRoutePlan.acceptedRoutes.filter((route) => route.sources.includes('bundle') && !route.sources.includes('site_meta')).length;

@@ -394,8 +394,9 @@ export function buildRoutePlan(params: {
   sitemapPaths: string[];
   renderedNavPaths?: string[];
   allowUncorroboratedBundleRoutes?: boolean;
+  allowedBundleSupplementPrefixes?: string[];
 }): RoutePlanSummary {
-  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;
+  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false, allowedBundleSupplementPrefixes = [] } = params;
   const candidates = new Map<string, RouteCandidate>();
 
   for (const route of normalizedSiteMetaRoutes) {
@@ -439,7 +440,7 @@ export function buildRoutePlan(params: {
       tabs: entry.tabs?.map((tab) => tab.label),
       tabSlugs: entry.tabs?.map((tab) => normalizeTabSlug(tab)),
       alternateSlugs: entry.alternateSlugs,
-      publicCorroborated: allowUncorroboratedBundleRoutes,
+      publicCorroborated: allowUncorroboratedBundleRoutes || allowedBundleSupplementPrefixes.some((prefix) => normalizeRoute(entry.slug) === `/${prefix}` || normalizeRoute(entry.slug).startsWith(`/${prefix}/`)),
     });
   }
 
