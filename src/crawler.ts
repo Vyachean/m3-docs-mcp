@@ -3041,23 +3041,25 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   };
 
   /**
-   * Deterministic fetch-page-data path for a route resolved via the page-reference-resolver
-   * (collectionId/documentId/exportedCarbonFileId from the bundle table). No slug guessing: at
-   * most one page-data URL and one Carbon content URL are attempted. Routes with tabs[] produce
-   * one virtual cache page per tab from a single page-data + Carbon fetch.
+   * Deterministic direct-JSON path for a route resolved via the page-reference-resolver.
+   * Current bundles use exportedCarbonFileId as the primary reference; legacy bundles may also
+   * provide collectionId/documentId for page-data. No slug guessing is used, and tabs reuse the
+   * same fetched source payloads.
    */
   async function runReferenceBasedRouteFetch(route: DsdbRoute, carbonVersion: string, routeUrl: string, capturedAt: string): Promise<void> {
     const routePath = routePathFromSlug(route.slug);
     const sourceCoverageRoute = route.siteMetaRoute ?? `/${route.slug}`;
-    const collectionId = route.collectionId!;
-    const documentId = route.documentId!;
+    const collectionId = route.collectionId;
+    const documentId = route.documentId;
 
     const [pageDataResult, carbonResult] = await Promise.all([
-      fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute),
+      collectionId && documentId
+        ? fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute)
+        : Promise.resolve(null),
       fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal, fetch, fetchDiagnostics, sourceCoverageRoute)
     ]);
 
-    if (pageDataResult.status === 'ok') {
+    if (pageDataResult?.status === 'ok' && collectionId && documentId) {
       await persistRawArtifact({
         kind: 'page-data',
         pathParts: [collectionId, documentId],
@@ -3082,13 +3084,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       });
     }
 
-    const pageDataOk = pageDataResult.status === 'ok';
+    const pageDataOk = pageDataResult?.status === 'ok';
     const carbonOk = carbonResult.status === 'ok';
     const contentSource: ExtractionRouteDiagnostic['contentSource'] = pageDataOk && carbonOk
       ? 'page-data+carbon'
       : carbonOk ? 'carbon' : 'page-data';
-    const pageDataUrl = pageDataResult.url;
-    const pageDataStatus = pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status;
+    const pageDataUrl = pageDataResult?.url;
+    const pageDataStatus = pageDataResult
+      ? (pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status)
+      : undefined;
     const carbonUrl = carbonResult.status === 'not-available' ? undefined : carbonResult.url;
     const carbonStatus = carbonResult.status === 'ok' || carbonResult.status === 'http-error' ? carbonResult.httpStatus : carbonResult.status === 'not-available' ? undefined : carbonResult.status;
 
@@ -3103,7 +3107,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       reconciliationStatus: route.reconciliationStatus,
       contentSource,
       sourceRoute: sourceCoverageRoute,
-      pageDataFetchedOnce: true,
+      pageDataFetchedOnce: pageDataResult !== null,
       pageDataUrl,
       pageDataStatus,
       carbonUrl,
@@ -3132,7 +3136,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
       return;
     }
 
-    const pageDataJson = pageDataOk ? pageDataResult.data : null;
+    const pageDataJson = pageDataOk && pageDataResult ? pageDataResult.data : null;
     const contentJson = carbonOk ? carbonResult.data : null;
     const fetchResource = withArtifactPersistence(
       createDsdbResourceFetcher(baseUrl, carbonVersion, [], signal, fetch, sourceCoverageRoute, fetchDiagnostics),
@@ -3381,7 +3385,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         try {
           throwIfAborted(signal);
 
-          if (route.pageReferenceSource === 'bundle-table' && route.collectionId && route.documentId) {
+          if (route.pageReferenceSource === 'bundle-table' && (route.exportedCarbonFileId || (route.collectionId && route.documentId))) {
             await runReferenceBasedRouteFetch(route, config.carbonVersion, routeUrl, capturedAt);
             return;
           }

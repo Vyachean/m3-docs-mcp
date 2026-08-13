@@ -181,7 +181,7 @@ function classifyPublicDocsRoute(
     return 'unsupported-platform-or-policy';
   }
   if (!isDocsPath(normalized, includeBlog)) return 'outside-public-docs';
-  if (bundleEntry && (!bundleEntry.collectionId || !bundleEntry.documentId)) return 'missing-extraction-metadata';
+  if (bundleEntry && !bundleEntry.exportedCarbonFileId && (!bundleEntry.collectionId || !bundleEntry.documentId)) return 'missing-extraction-metadata';
   return 'public-docs';
 }
 

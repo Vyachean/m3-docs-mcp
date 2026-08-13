@@ -46,6 +46,16 @@ describe('extractBundleRouteTable (real fixture)', () => {
     expect(buttons?.tabs?.map((t) => t.label)).toEqual(['Overview', 'Specs', 'Guidelines', 'Accessibility']);
   });
 
+  it('merges metadata-only and current-format Carbon records for the same slug', () => {
+    const parsed = extractBundleRouteTable([
+      '{\"slug\":\"components/buttons\",\"metadata\":{\"share_title\":\"Buttons\"}}',
+      '{\"slug\":\"components/buttons\",\"exportedCarbonFileId\":\"buttons.json\",\"tabs\":[{\"label\":\"Overview\"},{\"label\":\"Specs\"}]}'
+    ].join(','));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ slug: 'components/buttons', exportedCarbonFileId: 'buttons.json' });
+    expect(parsed[0]?.tabs?.map((tab) => tab.label)).toEqual(['Overview', 'Specs']);
+  });
+
   it('parses pageCanonId when it is present in bundle fragments', () => {
     const routesWithCanon = extractBundleRouteTable(
       '{"slug":"components/switch","documentId":"doc-switch","collectionId":"ComponentsM3","pageCanonId":"page-canon-switch","exportedCarbonFileId":"switch.json"}'

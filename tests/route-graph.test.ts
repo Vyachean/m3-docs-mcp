@@ -183,6 +183,19 @@ describe('buildRoutePlan', () => {
     }));
   });
 
+  it('accepts exportedCarbonFileId without legacy page-data ids', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes: [{ slug: 'components/buttons', exportedCarbonFileId: 'buttons.json', tabs: [{ label: 'Overview' }, { label: 'Specs' }] }],
+      sitemapPaths: ['/components/buttons/specs']
+    });
+    expect(plan.acceptedRoutes).toContainEqual(expect.objectContaining({ route: '/components/buttons', exportedCarbonFileId: 'buttons.json', publicDocsClassification: 'public-docs' }));
+    expect(plan.staleRoutes).toEqual([]);
+  });
+
   it('rejects public sitemap routes whose matched bundle entry lacks extraction metadata', () => {
     const plan = buildRoutePlan({
       baseUrl: 'https://m3.material.io',

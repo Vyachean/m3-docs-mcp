@@ -137,24 +137,37 @@ export function extractCarbonVersion(bundleText: string): string | null {
  * not fatal to the whole parse.
  */
 export function extractBundleRouteTable(bundleText: string): BundleRouteEntry[] {
-  const entries: BundleRouteEntry[] = [];
-  const seen = new Set<string>();
+  const entriesBySlug = new Map<string, BundleRouteEntry>();
   const slugMatches = Array.from(bundleText.matchAll(/"slug":"[^"]*"/g));
   for (let i = 0; i < slugMatches.length; i += 1) {
     const match = slugMatches[i]!;
     const offset = match.index ?? 0;
-    // Prefer the real balanced `{...}` object around this slug (matches production minified JS).
-    // Fall back to the loose span up to the next "slug": occurrence — needed for fixtures/text
-    // that isn't wrapped in braces, mirroring the permissive parsing the spec requires.
     const fragment = extractBalancedObjectAround(bundleText, offset)
       ?? bundleText.slice(offset, slugMatches[i + 1]?.index ?? bundleText.length);
     const entry = parseBundleRouteFragment(fragment);
     if (!entry) continue;
-    if (seen.has(entry.slug)) continue;
-    seen.add(entry.slug);
-    entries.push(entry);
+    const previous = entriesBySlug.get(entry.slug);
+    entriesBySlug.set(entry.slug, previous ? mergeBundleRouteEntries(previous, entry) : entry);
   }
-  return entries;
+  return Array.from(entriesBySlug.values());
+}
+
+function mergeBundleRouteEntries(current: BundleRouteEntry, incoming: BundleRouteEntry): BundleRouteEntry {
+  const alternateSlugs = Array.from(new Set([...(current.alternateSlugs ?? []), ...(incoming.alternateSlugs ?? [])]));
+  const currentTabs = current.tabs ?? [];
+  const incomingTabs = incoming.tabs ?? [];
+  const tabs = incomingTabs.length > currentTabs.length ? incomingTabs : currentTabs;
+  return {
+    slug: current.slug,
+    documentId: current.documentId ?? incoming.documentId,
+    collectionId: current.collectionId ?? incoming.collectionId,
+    exportedCarbonFileId: current.exportedCarbonFileId ?? incoming.exportedCarbonFileId,
+    pageCanonId: current.pageCanonId ?? incoming.pageCanonId,
+    carbonPath: current.carbonPath ?? incoming.carbonPath,
+    title: current.title ?? incoming.title,
+    alternateSlugs: alternateSlugs.length > 0 ? alternateSlugs : undefined,
+    tabs: tabs.length > 0 ? tabs : undefined,
+  };
 }
 
 /** Finds the smallest balanced `{...}` object that contains the given offset. */
