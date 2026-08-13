@@ -6,18 +6,11 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
 /**
  * Stage 1 of `verify:cache:full`: raw snapshot completeness.
  *
- * Confirms the four foundational raw artifacts (site shell, site_meta, Angular bundle,
- * carbonVersion) are present and hashed, both in `manifest.json` and in
- * `raw/artifact-index.json`. This is the first gate in the documented 1-7 verification order —
- * everything else (route graph, browser oracle parity, structured graph, rendered Markdown)
- * assumes the raw snapshot underneath it actually exists, so a failure here should stop the
- * pipeline before any later, more expensive check runs.
- *
- * `carbonVersion` itself is not a raw artifact kind (see raw-artifacts/artifact-types.ts's
- * ArtifactKindSchema) — it is a string recorded directly on the manifest — so its presence check
- * reads `manifest.carbonVersion` rather than looking for an artifact-index entry.
+ * A valid deterministic snapshot always contains the site shell, Angular bundle and
+ * carbonVersion. Route discovery must also be captured and hashed: current Material snapshots use
+ * sitemap.xml, while older snapshots may still contain site_meta.js. When both are available both
+ * are checked, so accepting the current format does not weaken the snapshot-integrity boundary.
  */
-
 export type ValidateRawSnapshotInput = {
   cacheDir?: string;
 };
@@ -37,27 +30,41 @@ export async function validateRawSnapshot(input: ValidateRawSnapshotInput = {}):
   if (!manifest.carbonVersion) {
     reasons.push('manifest.carbonVersion is missing (Angular bundle carbonVersion was not recorded).');
   }
-  if (!manifest.siteMetaHash) {
-    reasons.push('manifest.siteMetaHash is missing (site_meta.js was not hashed).');
-  }
   if (!manifest.angularBundleHash) {
     reasons.push('manifest.angularBundleHash is missing (Angular main bundle was not hashed).');
   }
+  if (!manifest.siteMetaHash && !manifest.sitemapHash) {
+    reasons.push('manifest has no hashed route-discovery source (siteMetaHash or sitemapHash).');
+  }
 
   const siteShellArtifacts = findArtifactsByKind(artifactIndex, 'site-shell');
+  const siteMetaArtifacts = findArtifactsByKind(artifactIndex, 'site-meta');
+  const sitemapArtifacts = findArtifactsByKind(artifactIndex, 'sitemap');
+  const angularBundleArtifacts = findArtifactsByKind(artifactIndex, 'angular-bundle');
+
   if (siteShellArtifacts.length === 0) {
     reasons.push('raw/artifact-index.json has no site-shell artifact recorded.');
   }
-  const siteMetaArtifacts = findArtifactsByKind(artifactIndex, 'site-meta');
-  if (siteMetaArtifacts.length === 0) {
-    reasons.push('raw/artifact-index.json has no site-meta artifact recorded.');
-  }
-  const angularBundleArtifacts = findArtifactsByKind(artifactIndex, 'angular-bundle');
   if (angularBundleArtifacts.length === 0) {
     reasons.push('raw/artifact-index.json has no angular-bundle artifact recorded.');
   }
+  if (siteMetaArtifacts.length === 0 && sitemapArtifacts.length === 0) {
+    reasons.push('raw/artifact-index.json has no route-discovery artifact (site-meta or sitemap) recorded.');
+  }
+  if (manifest.siteMetaHash && siteMetaArtifacts.length === 0) {
+    reasons.push('manifest.siteMetaHash is present but raw/artifact-index.json has no site-meta artifact recorded.');
+  }
+  if (manifest.sitemapHash && sitemapArtifacts.length === 0) {
+    reasons.push('manifest.sitemapHash is present but raw/artifact-index.json has no sitemap artifact recorded.');
+  }
+  if (!manifest.siteMetaHash && siteMetaArtifacts.length > 0) {
+    reasons.push('raw/artifact-index.json has a site-meta artifact but manifest.siteMetaHash is missing.');
+  }
+  if (!manifest.sitemapHash && sitemapArtifacts.length > 0) {
+    reasons.push('raw/artifact-index.json has a sitemap artifact but manifest.sitemapHash is missing.');
+  }
 
-  for (const artifact of [...siteShellArtifacts, ...siteMetaArtifacts, ...angularBundleArtifacts]) {
+  for (const artifact of [...siteShellArtifacts, ...siteMetaArtifacts, ...sitemapArtifacts, ...angularBundleArtifacts]) {
     if (!artifact.sha256) {
       reasons.push(`Artifact ${artifact.id} (${artifact.kind}) is missing a sha256 hash.`);
     }
@@ -68,6 +75,7 @@ export async function validateRawSnapshot(input: ValidateRawSnapshotInput = {}):
       carbonVersion: manifest.carbonVersion,
       siteShellArtifactCount: siteShellArtifacts.length,
       siteMetaArtifactCount: siteMetaArtifacts.length,
+      sitemapArtifactCount: sitemapArtifacts.length,
       angularBundleArtifactCount: angularBundleArtifacts.length,
     });
   }
