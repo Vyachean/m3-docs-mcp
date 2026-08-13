@@ -169,7 +169,7 @@ type DsdbRoute = {
   metadataWarnings?: string[];
   /** Resolved via the isolated page-reference-resolver against the bundle route table. */
   tabs?: BundleTabEntry[];
-  navigationSource?: 'site-meta' | 'bundle-supplement';
+  navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';
   pageReferenceSource?: 'bundle-table' | 'missing';
   aliasMatchedBy?: 'bundle-alternate-slug';
   reconciliationStatus?: 'exact' | 'alternateSlug' | 'contentIdentityMatch' | 'normalizedSlugMatch';
@@ -2124,28 +2124,32 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         const wasFetched = isSiteMetaError && !reason.startsWith('site_meta.js fetch failed');
         if (wasFetched) siteMetaFetched = true;
         siteMetaFailed = true;
-        logger?.log('error', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
-        logError(`site_meta.js unusable (${reason}); the default update path requires site_meta as the route source.`);
+        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
+        logVerbose(`site_meta.js unavailable (${reason}); continuing with sitemap public-route discovery.`);
       }
     }
 
     const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
+    const sitemapProvidedRoutes = sitemapPublicDocPaths.size > 0;
     const browserFallbackAllowed = options.allowBrowserFallback === true;
 
-    if (!siteMetaProvidedRoutes && !browserFallbackAllowed) {
-      // site_meta is the only accepted full route source for the default (deterministic) update
-      // path. Never fall back to the bundle route table for whole-site route discovery there —
-      // the bundle table may only resolve page references for routes already known from
-      // site_meta, or supplement specific tracked subtrees. (Legacy callers that explicitly opt
-      // into allowBrowserFallback keep the old degraded bundle/browser-network-recovery path.)
-      siteMetaFailed = true;
-      const reason = siteMetaFetched ? 'site_meta.js fetched but produced zero usable routes' : 'site_meta.js could not be fetched/parsed';
-      logger?.log('error', 'site-meta:rejected', { phase: 'fetch-site-meta', reason, siteMetaFetched, siteMetaFailed });
+    if (!siteMetaProvidedRoutes && !sitemapProvidedRoutes && !browserFallbackAllowed) {
+      // Deterministic refresh requires public-route discovery independent from the bundle.
+      // Current Material publishes that boundary through sitemap.xml; older snapshots may
+      // still provide site_meta.js. The bundle alone never proves that a route is public.
+      const reason = 'neither site_meta.js nor sitemap.xml provided usable public routes';
+      logger?.log('error', 'route-discovery:rejected', {
+        phase: 'fetch-site-meta',
+        reason,
+        siteMetaFetched,
+        siteMetaFailed,
+        sitemapRouteCount: sitemapPublicDocPaths.size
+      });
       await logger?.writeIntermediateDiagnostics({
         promotionDecision: 'pending',
         startedAt,
         siteMetaFetched,
-        siteMetaFailed: true,
+        siteMetaFailed,
         bundleDiscoveryFailed,
         directJsonEnabled: false,
         directJsonDisabledReason: reason,
@@ -2153,7 +2157,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         networkRecoveryAttempted: false,
         networkRecoverySucceeded: false
       });
-      throw new Error(`site_meta.js did not provide a usable route list (${reason}); refusing to fall back to the bundle table as a full route source.`);
+      throw new Error(`No usable public route discovery source (${reason}); refusing to use the bundle table as an uncorroborated full route source.`);
     }
 
     // page-reference-resolver: fetch the Angular bundle once for carbonVersion + the route table
@@ -2224,7 +2228,8 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         normalizedSiteMetaRoutes,
         bundleRoutes,
         sitemapPaths: Array.from(sitemapPublicDocPaths),
-        renderedNavPaths: Array.from(renderedNavPublicDocPaths)
+        renderedNavPaths: Array.from(renderedNavPublicDocPaths),
+        allowUncorroboratedBundleRoutes: browserFallbackAllowed
       });
       const builtRoutePlan = routePlanSummary;
       coverageDiagnostics.bundleSupplementRouteCount = builtRoutePlan.acceptedRoutes.filter((route) => route.sources.includes('bundle') && !route.sources.includes('site_meta')).length;
@@ -2242,7 +2247,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
           sources: route.sources,
           reconciliationStatus: route.reconciliationStatus,
           publicDocsClassification: route.publicDocsClassification,
-          navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+          navigationSource: route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement',
           tabSlugs: route.tabSlugs,
         });
       }
@@ -2260,7 +2265,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             sources: route.sources,
             reconciliationStatus: route.reconciliationStatus,
             publicDocsClassification: route.publicDocsClassification,
-            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement',
             status: 'policySkipped',
             failureReasons: ['policy-skipped-blog']
           });
@@ -2272,7 +2277,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             sources: route.sources,
             reconciliationStatus: route.reconciliationStatus,
             publicDocsClassification: route.publicDocsClassification,
-            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+            navigationSource: route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement',
             status: 'nonContent',
             failureReasons: ['non-content-index']
           });
@@ -2294,7 +2299,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
             : 'missing-page-reference',
           finalMethod: null,
           fallbackReasons: ['json-fetch-failed'],
-          navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+          navigationSource: route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement',
           pageReferenceSource: route.reconciliationStatus === 'rejectedNonPublic' ? undefined : 'missing',
           collectionId: route.collectionId ?? undefined,
           documentId: route.documentId ?? undefined
@@ -2313,7 +2318,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         documentId: route.documentId ?? null,
         repoId: null,
         isBlog: isBlogPath(route.canonicalRoute ?? route.route),
-        navigationSource: route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement',
+        navigationSource: route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement',
         raw: route
       })), {
         includeBlog,

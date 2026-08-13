@@ -153,7 +153,7 @@ export type ExtractionRouteDiagnostic = {
   routeMetadataWarnings?: string[];
   candidateSelectionReasons?: string[];
   /** Where this route's path came from: site_meta.routes, or a bundle-supplement subtree. */
-  navigationSource?: 'site-meta' | 'bundle-supplement';
+  navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';
   /** Where collectionId/documentId were resolved from for the page-data fetch. */
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
   /** How the resolved bundle route was matched when it did not win by exact route equality. */
@@ -473,7 +473,7 @@ export type RouteCoverageEntry = {
   sources?: RouteCandidateSource[];
   reconciliationStatus?: RouteReconciliationStatus;
   publicDocsClassification?: PublicDocsClassification;
-  navigationSource?: 'site-meta' | 'bundle-supplement';
+  navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';
   pageReferenceSource?: 'bundle-table' | 'site-meta-reference' | 'missing';
   expectedVirtualRoutes: string[];
   expectedOutputPaths: string[];

@@ -2,7 +2,7 @@ import { compareMaterialRoutePriority, isBlogPath } from '../crawl-priority.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type NavigationSource = 'site-meta' | 'bundle-supplement';
+export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';
 
 export type NormalizedRoute = {
   path: string;

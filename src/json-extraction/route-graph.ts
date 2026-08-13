@@ -22,6 +22,7 @@ type RouteCandidate = {
   tabs?: string[];
   tabSlugs?: string[];
   alternateSlugs?: string[];
+  publicCorroborated?: boolean;
 };
 
 type ReconciledRoute = RoutePlanEntry & {
@@ -61,6 +62,7 @@ function addCandidate(map: Map<string, RouteCandidate>, route: string, source: R
   if (patch.navTitle && !current.navTitle) current.navTitle = patch.navTitle;
   if (patch.routeTitle && !current.routeTitle) current.routeTitle = patch.routeTitle;
   if (patch.public !== undefined) current.public = patch.public;
+  if (patch.publicCorroborated) current.publicCorroborated = true;
   if (patch.redirectExternalUrl !== undefined) current.redirectExternalUrl = patch.redirectExternalUrl;
   if (patch.collectionId && !current.collectionId) current.collectionId = patch.collectionId;
   if (patch.documentId && !current.documentId) current.documentId = patch.documentId;
@@ -137,6 +139,24 @@ function discoverySourceRoute(path: string, bundleRoutes: BundleRouteEntry[]): s
   return normalized;
 }
 
+function hasPublicDiscoverySource(candidate: RouteCandidate): boolean {
+  return candidate.sources.has('site_meta')
+    || candidate.sources.has('nav_drawer')
+    || candidate.sources.has('sitemap')
+    || candidate.sources.has('rendered_nav');
+}
+
+function findCorroboratedBundleEntry(candidate: RouteCandidate, bundleRoutes: BundleRouteEntry[]): BundleRouteEntry | null {
+  const exact = bundleRoutes.find((entry) => normalizeRoute(entry.slug) === candidate.route);
+  if (exact) return exact;
+  const alternate = bundleRoutes.find((entry) => entry.alternateSlugs?.some((slug) => normalizeRoute(slug) === candidate.route));
+  if (alternate) return alternate;
+  const comparableCandidates = getSafeComponentComparableRoutes(candidate.route);
+  if (comparableCandidates.length === 0) return null;
+  const normalizedMatches = bundleRoutes.filter((entry) => comparableCandidates.includes(entry.slug));
+  return normalizedMatches.length === 1 ? normalizedMatches[0]! : null;
+}
+
 function classifyPublicDocsRoute(
   route: string,
   includeBlog: boolean,
@@ -144,17 +164,11 @@ function classifyPublicDocsRoute(
   bundleEntry?: BundleRouteEntry
 ): PublicDocsClassification {
   const normalized = normalizeRoute(route);
-  const hasPublicDiscoverySource = candidate.sources.has('site_meta')
-    || candidate.sources.has('nav_drawer')
-    || candidate.sources.has('sitemap')
-    || candidate.sources.has('rendered_nav');
+  const isPubliclyCorroborated = candidate.publicCorroborated === true || hasPublicDiscoverySource(candidate);
   if (candidate.redirectExternalUrl) return 'redirect';
   if (normalized.startsWith('/go/')) return 'go-link';
   if (/\.(png|jpg|jpeg|gif|svg|webp|css|js|xml|txt|json)$/i.test(normalized)) return 'asset';
-  if (candidate.sources.has('bundle') && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
-    return 'non-content-index';
-  }
-  if (!hasPublicDiscoverySource) return 'outside-public-docs';
+  if (!isPubliclyCorroborated) return 'outside-public-docs';
   if (normalized.startsWith('/develop/android')
     || normalized.startsWith('/develop/web')
     || normalized.startsWith('/develop/ios')
@@ -379,8 +393,9 @@ export function buildRoutePlan(params: {
   bundleRoutes: BundleRouteEntry[];
   sitemapPaths: string[];
   renderedNavPaths?: string[];
+  allowUncorroboratedBundleRoutes?: boolean;
 }): RoutePlanSummary {
-  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [] } = params;
+  const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [], allowUncorroboratedBundleRoutes = false } = params;
   const candidates = new Map<string, RouteCandidate>();
 
   for (const route of normalizedSiteMetaRoutes) {
@@ -424,11 +439,20 @@ export function buildRoutePlan(params: {
       tabs: entry.tabs?.map((tab) => tab.label),
       tabSlugs: entry.tabs?.map((tab) => normalizeTabSlug(tab)),
       alternateSlugs: entry.alternateSlugs,
+      publicCorroborated: allowUncorroboratedBundleRoutes,
     });
   }
 
   for (const path of sitemapPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'sitemap');
   for (const path of renderedNavPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'rendered_nav');
+
+  for (const candidate of Array.from(candidates.values())) {
+  if (candidate.public === false || !hasPublicDiscoverySource(candidate)) continue;
+  const matched = findCorroboratedBundleEntry(candidate, bundleRoutes);
+  if (!matched) continue;
+  const canonicalCandidate = candidates.get(normalizeRoute(matched.slug));
+  if (canonicalCandidate) canonicalCandidate.publicCorroborated = true;
+}
 
   const acceptedRoutes: RoutePlanEntry[] = [];
   const staleRoutes: RoutePlanEntry[] = [];
