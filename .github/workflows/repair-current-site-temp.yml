@@ -1,11 +1,6 @@
 name: Inspect current Material bundle references
 
-on:
-  push:
-    branches:
-      - fix/m3-site-format-2026-08
-    paths:
-      - .github/workflows/repair-current-site-temp.yml
+on: [push]
 
 jobs:
   inspect-live-bundle:
@@ -16,30 +11,4 @@ jobs:
         with:
           ref: fix/m3-site-format-2026-08
       - run: npm ci
-      - name: Inspect live bundle representation
-        shell: bash
-        run: |
-          node --input-type=module <<'NODE'
-          import { fetchAngularBundleText } from './dist/json-extraction/page-reference-resolver.js';
-
-          const bundle = await fetchAngularBundleText('https://m3.material.io');
-          const show = (needle, before = 1800, after = 3500) => {
-            const index = bundle.indexOf(needle);
-            console.log(`\n===== ${needle} @ ${index} =====`);
-            if (index >= 0) console.log(bundle.slice(Math.max(0, index - before), index + needle.length + after));
-          };
-
-          console.log('length', bundle.length);
-          console.log('collectionId occurrences', (bundle.match(/collectionId/g) ?? []).length);
-          console.log('documentId occurrences', (bundle.match(/documentId/g) ?? []).length);
-          console.log('exportedCarbonFileId occurrences', (bundle.match(/exportedCarbonFileId/g) ?? []).length);
-          console.log('tabs occurrences', (bundle.match(/tabs/g) ?? []).length);
-          console.log('reference occurrences', (bundle.match(/reference/g) ?? []).length);
-
-          show('"slug":"components/buttons"');
-          show('"slug":"styles/shape"');
-          show('"slug":"foundations/design-tokens"');
-          show('collectionId', 1200, 2500);
-          show('documentId', 1200, 2500);
-          show('exportedCarbonFileId', 1200, 2500);
-          NODE
+      - run: node scripts/inspect-current-bundle-temp.mjs
