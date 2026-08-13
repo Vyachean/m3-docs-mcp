@@ -4,7 +4,7 @@ import { normalizeTabSlug } from '../route-coverage.js';
 import type { CompactRoutePlanSummary, PublicDocsClassification, RouteCandidateSource, RoutePlanEntry, RoutePlanSummary, RouteReconciliationStatus } from '../types.js';
 import type { SiteMeta } from './fetch-site-meta.js';
 import type { NormalizedRoute } from './normalize-routes.js';
-import type { BundleRouteEntry } from './page-reference-resolver.js';
+import type { BundleRouteEntry, BundleTabEntry } from './page-reference-resolver.js';
 
 type RouteCandidate = {
   route: string;
@@ -110,6 +110,33 @@ function extractNavDrawerRoutes(siteMeta: SiteMeta, baseUrl: string): Array<{ ro
     .map(([route, navTitle]) => ({ route, navTitle }));
 }
 
+function tabMatchesDiscoverySuffix(tab: BundleTabEntry, suffix: string): boolean {
+  if (normalizeTabSlug(tab) === suffix) return true;
+  return (tab.alternateSlugs ?? []).some((alias) => alias.replace(/^\/+|\/+$/g, '') === suffix);
+}
+
+/**
+ * The current Material sitemap exposes tab URLs (for example
+ * /components/buttons/specs) while the Angular bundle keeps one parent route
+ * (/components/buttons) with tabs[]. Collapse only verified tab descendants to
+ * that parent; all other sitemap/navigation URLs keep their own identity and
+ * must reconcile normally.
+ */
+function discoverySourceRoute(path: string, bundleRoutes: BundleRouteEntry[]): string {
+  const normalized = normalizeRoute(path);
+  for (const entry of bundleRoutes) {
+    const parentRoutes = [entry.slug, ...(entry.alternateSlugs ?? [])].map(normalizeRoute);
+    for (const parent of parentRoutes) {
+      if (!normalized.startsWith(`${parent}/`)) continue;
+      const suffix = normalized.slice(parent.length + 1);
+      if (entry.tabs?.some((tab) => tabMatchesDiscoverySuffix(tab, suffix))) {
+        return normalizeRoute(entry.slug);
+      }
+    }
+  }
+  return normalized;
+}
+
 function classifyPublicDocsRoute(
   route: string,
   includeBlog: boolean,
@@ -117,13 +144,17 @@ function classifyPublicDocsRoute(
   bundleEntry?: BundleRouteEntry
 ): PublicDocsClassification {
   const normalized = normalizeRoute(route);
-  const isBundleOnlyCandidate = candidate.sources.has('bundle') && !candidate.sources.has('site_meta') && !candidate.sources.has('nav_drawer');
+  const hasPublicDiscoverySource = candidate.sources.has('site_meta')
+    || candidate.sources.has('nav_drawer')
+    || candidate.sources.has('sitemap')
+    || candidate.sources.has('rendered_nav');
   if (candidate.redirectExternalUrl) return 'redirect';
   if (normalized.startsWith('/go/')) return 'go-link';
   if (/\.(png|jpg|jpeg|gif|svg|webp|css|js|xml|txt|json)$/i.test(normalized)) return 'asset';
-  if (isBundleOnlyCandidate && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
+  if (candidate.sources.has('bundle') && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
     return 'non-content-index';
   }
+  if (!hasPublicDiscoverySource) return 'outside-public-docs';
   if (normalized.startsWith('/develop/android')
     || normalized.startsWith('/develop/web')
     || normalized.startsWith('/develop/ios')
@@ -136,8 +167,7 @@ function classifyPublicDocsRoute(
     return 'unsupported-platform-or-policy';
   }
   if (!isDocsPath(normalized, includeBlog)) return 'outside-public-docs';
-  const metadataSource = bundleEntry ?? candidate;
-  if (isBundleOnlyCandidate && (!metadataSource.collectionId || !metadataSource.documentId)) return 'missing-extraction-metadata';
+  if (bundleEntry && (!bundleEntry.collectionId || !bundleEntry.documentId)) return 'missing-extraction-metadata';
   return 'public-docs';
 }
 
@@ -397,8 +427,8 @@ export function buildRoutePlan(params: {
     });
   }
 
-  for (const path of sitemapPaths) addCandidate(candidates, path, 'sitemap');
-  for (const path of renderedNavPaths) addCandidate(candidates, path, 'rendered_nav');
+  for (const path of sitemapPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'sitemap');
+  for (const path of renderedNavPaths) addCandidate(candidates, discoverySourceRoute(path, bundleRoutes), 'rendered_nav');
 
   const acceptedRoutes: RoutePlanEntry[] = [];
   const staleRoutes: RoutePlanEntry[] = [];
@@ -432,7 +462,7 @@ export function buildRoutePlan(params: {
           ? 'bundle route lacks extraction metadata'
           : 'route is not a public documentation page',
         failureReason: publicDocsClassification === 'missing-extraction-metadata'
-          ? 'bundle discovery candidate lacks collectionId/documentId'
+          ? 'matched bundle route lacks collectionId/documentId'
           : undefined
       }));
       continue;
