@@ -52,6 +52,62 @@ describe('buildRoutePlan', () => {
     }));
   });
 
+  it('collapses current sitemap tab URLs to their bundle parent route', () => {
+    const bundleRoutes: BundleRouteEntry[] = [{
+      slug: 'components/buttons',
+      documentId: 'doc-buttons',
+      collectionId: 'ComponentsM3',
+      tabs: [
+        { label: 'Overview' },
+        { label: 'Specs' },
+        { label: 'Guidelines' },
+        { label: 'Accessibility' }
+      ]
+    }];
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes,
+      sitemapPaths: [
+        '/components/buttons/overview',
+        '/components/buttons/specs',
+        '/components/buttons/guidelines',
+        '/components/buttons/accessibility'
+      ]
+    });
+
+    expect(plan.acceptedRoutes).toEqual([
+      expect.objectContaining({
+        route: '/components/buttons',
+        canonicalRoute: '/components/buttons',
+        sources: ['bundle', 'sitemap'],
+        reconciliationStatus: 'exact',
+        tabs: ['Overview', 'Specs', 'Guidelines', 'Accessibility'],
+        tabSlugs: ['overview', 'specs', 'guidelines', 'accessibility']
+      })
+    ]);
+    expect(plan.staleRoutes).toEqual([]);
+  });
+
+  it('does not publish uncorroborated bundle-only routes', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes: [{ slug: 'components/internal-only', documentId: 'doc-internal', collectionId: 'ComponentsM3' }],
+      sitemapPaths: []
+    });
+
+    expect(plan.acceptedRoutes).toEqual([]);
+    expect(plan.nonPublicRoutes).toContainEqual(expect.objectContaining({
+      route: '/components/internal-only',
+      publicDocsClassification: 'outside-public-docs'
+    }));
+  });
+
   it('uses parsed pageCanonId identity before normalized slug matching', () => {
     const plan = buildRoutePlan({
       baseUrl: 'https://m3.material.io',
@@ -127,20 +183,20 @@ describe('buildRoutePlan', () => {
     }));
   });
 
-  it('rejects bundle-only routes without extraction metadata', () => {
+  it('rejects public sitemap routes whose matched bundle entry lacks extraction metadata', () => {
     const plan = buildRoutePlan({
       baseUrl: 'https://m3.material.io',
       includeBlog: false,
       siteMeta: null,
       normalizedSiteMetaRoutes: [],
       bundleRoutes: [{ slug: 'components/missing-meta' }],
-      sitemapPaths: []
+      sitemapPaths: ['/components/missing-meta']
     });
 
     expect(plan.nonPublicRoutes).toContainEqual(expect.objectContaining({
       route: '/components/missing-meta',
       publicDocsClassification: 'missing-extraction-metadata',
-      failureReason: 'bundle discovery candidate lacks collectionId/documentId'
+      failureReason: 'matched bundle route lacks collectionId/documentId'
     }));
     expect(plan.acceptedRoutes).toEqual([]);
   });
