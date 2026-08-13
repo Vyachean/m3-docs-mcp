@@ -25,117 +25,80 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          def replace_exact(path, old, new, *, expected=1):
+          def replace_count(path, old, new, expected):
               p = Path(path)
               text = p.read_text()
               count = text.count(old)
               if count != expected:
-                  raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old[:120]!r}')
+                  raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old!r}')
               p.write_text(text.replace(old, new))
 
-          replace_exact(
-              'src/json-extraction/normalize-routes.ts',
-              "export type NavigationSource = 'site-meta' | 'bundle-supplement';",
-              "export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';"
-          )
-          replace_exact(
-              'src/types.ts',
-              "navigationSource?: 'site-meta' | 'bundle-supplement';",
-              "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';",
-              expected=2
-          )
-          replace_exact(
-              'src/crawler.ts',
-              "navigationSource?: 'site-meta' | 'bundle-supplement';",
-              "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';"
-          )
-          replace_exact(
-              'src/crawler.ts',
-              """        logger?.log('error', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
-        logError(`site_meta.js unusable (${reason}); the default update path requires site_meta as the route source.`);""",
-              """        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
-        logVerbose(`site_meta.js unavailable (${reason}); continuing with sitemap public-route discovery.`);"""
-          )
-          replace_exact(
-              'src/crawler.ts',
-              """    const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
-    const browserFallbackAllowed = options.allowBrowserFallback === true;
+          replace_count('src/json-extraction/normalize-routes.ts', "export type NavigationSource = 'site-meta' | 'bundle-supplement';", "export type NavigationSource = 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 1)
+          replace_count('src/types.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 2)
+          replace_count('src/crawler.ts', "navigationSource?: 'site-meta' | 'bundle-supplement';", "navigationSource?: 'site-meta' | 'sitemap' | 'rendered-nav' | 'bundle-supplement';", 1)
 
-    if (!siteMetaProvidedRoutes && !browserFallbackAllowed) {
-      // site_meta is the only accepted full route source for the default (deterministic) update
-      // path. Never fall back to the bundle route table for whole-site route discovery there —
-      // the bundle table may only resolve page references for routes already known from
-      // site_meta, or supplement specific tracked subtrees. (Legacy callers that explicitly opt
-      // into allowBrowserFallback keep the old degraded bundle/browser-network-recovery path.)
-      siteMetaFailed = true;
-      const reason = siteMetaFetched ? 'site_meta.js fetched but produced zero usable routes' : 'site_meta.js could not be fetched/parsed';
-      logger?.log('error', 'site-meta:rejected', { phase: 'fetch-site-meta', reason, siteMetaFetched, siteMetaFailed });
-      await logger?.writeIntermediateDiagnostics({
-        promotionDecision: 'pending',
-        startedAt,
-        siteMetaFetched,
-        siteMetaFailed: true,
-        bundleDiscoveryFailed,
-        directJsonEnabled: false,
-        directJsonDisabledReason: reason,
-        dsdbConfigSource: null,
-        networkRecoveryAttempted: false,
-        networkRecoverySucceeded: false
-      });
-      throw new Error(`site_meta.js did not provide a usable route list (${reason}); refusing to fall back to the bundle table as a full route source.`);
-    }""",
-              """    const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
-    const sitemapProvidedRoutes = sitemapPublicDocPaths.size > 0;
-    const browserFallbackAllowed = options.allowBrowserFallback === true;
+          p = Path('src/crawler.ts')
+          lines = p.read_text().splitlines()
+          fetch_log = next(i for i, line in enumerate(lines) if "logger?.log('error', 'site-meta:fetch-failed'" in line)
+          if 'default update path requires site_meta' not in lines[fetch_log + 1]:
+              raise SystemExit('crawler site-meta failure log shape changed')
+          lines[fetch_log] = "        logger?.log('warn', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });"
+          lines[fetch_log + 1] = "        logVerbose(`site_meta.js unavailable (${reason}); continuing with sitemap public-route discovery.`);"
 
-    if (!siteMetaProvidedRoutes && !sitemapProvidedRoutes && !browserFallbackAllowed) {
-      // A deterministic refresh needs a public-route discovery source independent from the
-      // bundle route table. The current site publishes that boundary through sitemap.xml; older
-      // snapshots may still provide site_meta.js. Never accept the bundle alone as proof that an
-      // internal route is public documentation.
-      const reason = 'neither site_meta.js nor sitemap.xml provided usable public routes';
-      logger?.log('error', 'route-discovery:rejected', {
-        phase: 'fetch-site-meta',
-        reason,
-        siteMetaFetched,
-        siteMetaFailed,
-        sitemapRouteCount: sitemapPublicDocPaths.size
-      });
-      await logger?.writeIntermediateDiagnostics({
-        promotionDecision: 'pending',
-        startedAt,
-        siteMetaFetched,
-        siteMetaFailed,
-        bundleDiscoveryFailed,
-        directJsonEnabled: false,
-        directJsonDisabledReason: reason,
-        dsdbConfigSource: null,
-        networkRecoveryAttempted: false,
-        networkRecoverySucceeded: false
-      });
-      throw new Error(`No usable public route discovery source (${reason}); refusing to use the bundle table as an uncorroborated full route source.`);
-    }"""
-          )
+          guard_start = next(i for i, line in enumerate(lines) if line.strip() == 'const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;')
+          guard_end = next(i for i in range(guard_start, len(lines)) if lines[i].lstrip().startswith('// page-reference-resolver'))
+          guard = [
+              '    const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;',
+              '    const sitemapProvidedRoutes = sitemapPublicDocPaths.size > 0;',
+              '    const browserFallbackAllowed = options.allowBrowserFallback === true;',
+              '',
+              '    if (!siteMetaProvidedRoutes && !sitemapProvidedRoutes && !browserFallbackAllowed) {',
+              '      // A deterministic refresh needs public-route discovery independent from the bundle.',
+              '      // Current Material publishes that boundary through sitemap.xml; older snapshots may',
+              '      // still provide site_meta.js. The bundle alone never proves that a route is public.',
+              "      const reason = 'neither site_meta.js nor sitemap.xml provided usable public routes';",
+              "      logger?.log('error', 'route-discovery:rejected', {",
+              "        phase: 'fetch-site-meta',",
+              '        reason,',
+              '        siteMetaFetched,',
+              '        siteMetaFailed,',
+              '        sitemapRouteCount: sitemapPublicDocPaths.size',
+              '      });',
+              '      await logger?.writeIntermediateDiagnostics({',
+              "        promotionDecision: 'pending',",
+              '        startedAt,',
+              '        siteMetaFetched,',
+              '        siteMetaFailed,',
+              '        bundleDiscoveryFailed,',
+              '        directJsonEnabled: false,',
+              '        directJsonDisabledReason: reason,',
+              '        dsdbConfigSource: null,',
+              '        networkRecoveryAttempted: false,',
+              '        networkRecoverySucceeded: false',
+              '      });',
+              '      throw new Error(`No usable public route discovery source (${reason}); refusing to use the bundle table as an uncorroborated full route source.`);',
+              '    }',
+              '',
+          ]
+          lines[guard_start:guard_end] = guard
+          p.write_text('\n'.join(lines) + '\n')
 
           p = Path('src/crawler.ts')
           text = p.read_text()
           old_nav = "route.sources.includes('site_meta') ? 'site-meta' : 'bundle-supplement'"
           new_nav = "route.sources.includes('site_meta') ? 'site-meta' : route.sources.includes('sitemap') ? 'sitemap' : route.sources.includes('rendered_nav') ? 'rendered-nav' : 'bundle-supplement'"
-          count = text.count(old_nav)
-          if count != 5:
-              raise SystemExit(f'src/crawler.ts: expected 5 navigation source expressions, found {count}')
+          if text.count(old_nav) != 5:
+              raise SystemExit(f'crawler navigation-source expression count={text.count(old_nav)}')
           text = text.replace(old_nav, new_nav)
           old_supplement = "route.sources.includes('bundle') && !route.sources.includes('site_meta')"
           new_supplement = "route.sources.includes('bundle') && !route.sources.includes('site_meta') && !route.sources.includes('sitemap') && !route.sources.includes('rendered_nav')"
-          count = text.count(old_supplement)
-          if count != 1:
-              raise SystemExit(f'src/crawler.ts: expected one bundle supplement count expression, found {count}')
+          if text.count(old_supplement) != 1:
+              raise SystemExit(f'crawler bundle-supplement count expression count={text.count(old_supplement)}')
           text = text.replace(old_supplement, new_supplement)
           old_prefix = "route.sources.includes('bundle') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))"
           new_prefix = "route.sources.includes('bundle') && !route.sources.includes('site_meta') && !route.sources.includes('sitemap') && !route.sources.includes('rendered_nav') && (route.route === `/${prefix}` || route.route.startsWith(`/${prefix}/`))"
-          count = text.count(old_prefix)
-          if count != 1:
-              raise SystemExit(f'src/crawler.ts: expected one supplemented-prefix expression, found {count}')
+          if text.count(old_prefix) != 1:
+              raise SystemExit(f'crawler supplemented-prefix expression count={text.count(old_prefix)}')
           p.write_text(text.replace(old_prefix, new_prefix))
           PY
 
