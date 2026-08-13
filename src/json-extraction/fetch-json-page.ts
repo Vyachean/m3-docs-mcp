@@ -112,6 +112,7 @@ export function buildDsdbResourceCandidateUrls(
   const candidates = [
     normalized.startsWith('http://') || normalized.startsWith('https://') ? normalized : null,
     resourceType === 'TOKEN_TABLE' && lastSegment ? `${dsdbBase}/TOKEN_TABLE.${lastSegment}.json` : null,
+    resourceType === 'TYPOGRAPHY' && lastSegment ? `${dsdbBase}/TYPOGRAPHY.${lastSegment}.json` : null,
     toGenericDsdbFilenameCandidate(dsdbBase, normalized),
     directPath
   ];
