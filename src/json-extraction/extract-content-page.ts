@@ -296,6 +296,8 @@ async function renderChunkMarkdown(
     return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic, collectedTokenTables);
   }
 
+  if (chunkType === 'EMPTY') return '';
+
   pageDiagnostic.unknownChunkTypes.push(chunkType);
   pageDiagnostic.unresolvedResourceCount += 1;
   return [
