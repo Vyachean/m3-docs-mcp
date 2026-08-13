@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeMaterialPublicDocPath } from '../crawler-utils.js';
 import { createFetchDiagnostic, type FetchDiagnostic } from '../raw-artifacts/fetch-diagnostics.js';
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
@@ -75,11 +76,49 @@ export class SiteMetaParseError extends Error {
 
 type FetchLike = typeof fetch;
 
+/**
+ * Fetches the preferred rich navigation metadata from `/site_meta.js`.
+ *
+ * The Material site no longer guarantees that file exists. When it is unavailable or unusable,
+ * the official `/sitemap.xml` is used as a deterministic public route-list fallback. The fallback
+ * deliberately contains route identity only; collection/document ids still come from the Angular
+ * bundle resolver in the crawler. `onRawText` is invoked only for a real `site_meta.js` response,
+ * so raw-snapshot provenance never records sitemap bytes as a site-meta artifact.
+ */
 export async function fetchSiteMeta(
   baseUrl: string,
   signal?: AbortSignal,
   fetchImpl: FetchLike = fetch,
   diagnostics: FetchDiagnostic[] = [],
+  onRawText?: (text: string, response: Response) => void
+): Promise<SiteMeta> {
+  let primaryError: SiteMetaParseError;
+  try {
+    return await fetchPrimarySiteMeta(baseUrl, signal, fetchImpl, diagnostics, onRawText);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    primaryError = error instanceof SiteMetaParseError
+      ? error
+      : new SiteMetaParseError(error instanceof Error ? error.message : String(error), { cause: error });
+  }
+
+  try {
+    return await fetchSitemapRouteFallback(baseUrl, signal, fetchImpl, diagnostics);
+  } catch (fallbackError) {
+    if (signal?.aborted) throw fallbackError;
+    const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+    throw new SiteMetaParseError(
+      `${primaryError.message}; sitemap route fallback failed: ${fallbackMessage}`,
+      { isFormatError: primaryError.isFormatError, cause: fallbackError }
+    );
+  }
+}
+
+async function fetchPrimarySiteMeta(
+  baseUrl: string,
+  signal: AbortSignal | undefined,
+  fetchImpl: FetchLike,
+  diagnostics: FetchDiagnostic[],
   onRawText?: (text: string, response: Response) => void
 ): Promise<SiteMeta> {
   const url = new URL('/site_meta.js', baseUrl).toString();
@@ -120,6 +159,77 @@ export async function fetchSiteMeta(
     }));
     throw err;
   }
+}
+
+async function fetchSitemapRouteFallback(
+  baseUrl: string,
+  signal: AbortSignal | undefined,
+  fetchImpl: FetchLike,
+  diagnostics: FetchDiagnostic[]
+): Promise<SiteMeta> {
+  const url = new URL('/sitemap.xml', baseUrl).toString();
+  let response: Response;
+  try {
+    response = await fetchImpl(url, { signal });
+  } catch (err) {
+    const networkError = err instanceof Error ? err.message : String(err);
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'sitemap', outcome: 'network-error', networkError,
+      reason: 'rejected: sitemap.xml route fallback fetch threw a network error'
+    }));
+    throw new Error(`sitemap.xml fetch failed: ${networkError}`, { cause: err });
+  }
+
+  if (!response.ok) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'sitemap', httpStatus: response.status, outcome: 'http-error',
+      reason: `rejected: sitemap.xml route fallback returned HTTP ${response.status}`
+    }));
+    throw new Error(`sitemap.xml fetch failed: HTTP ${response.status} ${response.statusText}`);
+  }
+
+  const text = await response.text();
+  const locValues = Array.from(text.matchAll(/<loc>([\s\S]*?)<\/loc>/gi))
+    .map((match) => decodeXmlText(match[1] ?? '').trim())
+    .filter(Boolean);
+  const routes: Record<string, SiteMetaRouteValue> = {};
+
+  for (const value of locValues) {
+    const route = normalizeMaterialPublicDocPath(value, baseUrl);
+    if (!route) continue;
+    routes[route] = {
+      other_routes: [],
+      public: true,
+      redirect_external_url: null,
+    };
+  }
+
+  if (Object.keys(routes).length === 0) {
+    diagnostics.push(createFetchDiagnostic({
+      url, expectedKind: 'sitemap', httpStatus: response.status,
+      contentType: response.headers?.get?.('content-type') ?? null, outcome: 'parse-error',
+      parseError: 'sitemap.xml contained no usable same-origin public documentation routes',
+      reason: 'rejected: sitemap.xml route fallback contained no usable public routes'
+    }));
+    throw new Error('sitemap.xml contained no usable same-origin public documentation routes');
+  }
+
+  diagnostics.push(createFetchDiagnostic({
+    url, expectedKind: 'sitemap', httpStatus: response.status,
+    contentType: response.headers?.get?.('content-type') ?? null, outcome: 'success',
+    reason: `accepted: sitemap.xml supplied ${Object.keys(routes).length} deterministic public routes after site_meta.js was unavailable`
+  }));
+
+  return SiteMetaSchema.parse({ routes });
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
 }
 
 /**
