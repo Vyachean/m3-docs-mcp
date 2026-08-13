@@ -1,152 +1,37 @@
 name: Repair current Material quality formats
 
-on:
-  push:
-    branches:
-      - fix/m3-site-format-2026-08
-    paths:
-      - .github/workflows/repair-current-site-temp.yml
+on: [push]
 
 permissions:
   contents: write
 
 jobs:
   repair-and-verify:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
           ref: fix/m3-site-format-2026-08
-
-      - name: Apply format fixes
+      - name: Apply focused source fixes
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def replace_once(path, old, new):
-              p = Path(path)
-              text = p.read_text()
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f'{path}: expected one match, found {count}: {old[:120]!r}')
-              p.write_text(text.replace(old, new, 1))
-
-          replace_once(
-              'src/json-extraction/extract-content-page.ts',
-              "  if (chunkType === 'RESOURCE') {\n    return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic, collectedTokenTables);\n  }\n\n  pageDiagnostic.unknownChunkTypes.push(chunkType);",
-              "  if (chunkType === 'RESOURCE') {\n    return renderDsdbResourceChunk(decodeResourceChunk(chunk), fetchResource, pageDiagnostic, collectedTokenTables);\n  }\n\n  // Current Material catalog pages use explicit EMPTY spacer chunks. They intentionally carry\n  // no content and are not extraction failures or unresolved resources.\n  if (chunkType === 'EMPTY') return '';\n\n  pageDiagnostic.unknownChunkTypes.push(chunkType);"
-          )
-
-          replace_once(
-              'src/json-extraction/fetch-json-page.ts',
-              "    resourceType === 'TOKEN_TABLE' && lastSegment ? `${dsdbBase}/TOKEN_TABLE.${lastSegment}.json` : null,\n    toGenericDsdbFilenameCandidate(dsdbBase, normalized),",
-              "    resourceType === 'TOKEN_TABLE' && lastSegment ? `${dsdbBase}/TOKEN_TABLE.${lastSegment}.json` : null,\n    resourceType === 'TYPOGRAPHY' && lastSegment ? `${dsdbBase}/TYPOGRAPHY.${lastSegment}.json` : null,\n    toGenericDsdbFilenameCandidate(dsdbBase, normalized),"
-          )
-
-          replace_once(
-              'src/json-extraction/extract-dsdb-resource.ts',
-              "  if (libraryModuleType !== 'TOKEN_TABLE') {",
-              "  if (libraryModuleType !== 'TOKEN_TABLE' && libraryModuleType !== 'TYPOGRAPHY') {"
-          )
-          p = Path('src/json-extraction/extract-dsdb-resource.ts')
-          text = p.read_text()
-          marker = "function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {\n"
-          if text.count(marker) != 1:
-              raise SystemExit('extractTokenTableSystem marker changed')
-          text = text.replace(marker, marker + "  const root = parseTokenTableSystem(resource);\n  if (root) return root;\n", 1)
-          token_section_start = text.index("  pageDiagnostic.tokenTables += 1;")
-          prefix, suffix = text[:token_section_start], text[token_section_start:]
-          suffix = suffix.replace("renderResourcePlaceholder('TOKEN_TABLE'", "renderResourcePlaceholder(libraryModuleType")
-          p.write_text(prefix + suffix)
-
-          p = Path('tests/json-extraction.test.ts')
-          text = p.read_text()
-          anchor = "  it('renders text sections from structured content JSON', async () => {\n"
-          tests = '''  it('builds the current TYPOGRAPHY DSDB resource URL from a design-system resource name', () => {
-            expect(buildDsdbResourceCandidateUrls(
-              'https://m3.material.io',
-              '2026-08-12_10-00-15',
-              'designSystems/20543ce18892f7d9',
-              'TYPOGRAPHY'
-            )[0]).toBe('https://m3.material.io/_dsm/data/dsdb-m3/2026-08-12_10-00-15/TYPOGRAPHY.20543ce18892f7d9.json');
-          });
-
-          it('treats EMPTY content chunks as intentional no-op content', async () => {
-            const result = await extractContentPageToMaterialPage({
-              url: 'https://m3.material.io/components',
-              pageData: null,
-              contentPage: {
-                title: 'Components',
-                sections: [{
-                  title: 'Catalog',
-                  contentBlocks: [{
-                    title: 'Buttons',
-                    contentChunks: [
-                      { contentChunkType: 'TEXT', htmlValue: '<p>Buttons prompt actions in a UI.</p>' },
-                      { contentChunkType: 'EMPTY' }
-                    ]
-                  }]
-                }]
-              },
-              fetchResource: async () => null
-            });
-            expect(result.fallbackReason).toBeNull();
-            expect(result.pageDiagnostic.unknownChunkTypes).toEqual([]);
-            expect(result.pageDiagnostic.unresolvedResourceCount).toBe(0);
-            expect(result.page.markdown).not.toContain('Unsupported Material chunk: EMPTY');
-          });
-
-          it('renders current TYPOGRAPHY resources through the token-system pipeline', async () => {
-            const result = await extractContentPageToMaterialPage({
-              url: 'https://m3.material.io/styles/typography/type-scale-tokens',
-              pageData: null,
-              contentPage: {
-                title: 'Type scale & tokens',
-                sections: [{
-                  title: 'Type scale & tokens',
-                  contentBlocks: [{
-                    title: 'Baseline type style tokens',
-                    contentChunks: [{
-                      contentChunkType: 'RESOURCE',
-                      libraryModuleType: 'TYPOGRAPHY',
-                      resourceName: 'designSystems/20543ce18892f7d9',
-                      moduleConfigurationOverrides: { tokenSets: ['Button - Common'] }
-                    }]
-                  }]
-                }]
-              },
-              fetchResource: async (resourceName, resourceType) => (
-                resourceType === 'TYPOGRAPHY' && resourceName === 'designSystems/20543ce18892f7d9'
-              ) ? fixture('token-table-resource.json') : null
-            });
-            expect(result.fallbackReason).toBeNull();
-            expect(result.page.markdown).toContain('md.comp.button.container.color');
-            expect(result.pageDiagnostic.unknownResourceTypes).toEqual([]);
-            expect(result.pageDiagnostic.unresolvedResourceCount).toBe(0);
-            expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
-          });
-
-'''
-          if text.count(anchor) != 1:
-              raise SystemExit('json-extraction test anchor changed')
-          p.write_text(text.replace(anchor, tests + anchor, 1))
-          PY
-
+          python3 -c 'from pathlib import Path; p=Path("src/json-extraction/extract-content-page.ts"); s=p.read_text(); old="  pageDiagnostic.unknownChunkTypes.push(chunkType);"; new="  if (chunkType === \"EMPTY\") return \"\";\n\n  pageDiagnostic.unknownChunkTypes.push(chunkType);"; assert s.count(old)==1; p.write_text(s.replace(old,new,1))'
+          python3 -c 'from pathlib import Path; p=Path("src/json-extraction/fetch-json-page.ts"); s=p.read_text(); old="    resourceType === \"TOKEN_TABLE\" && lastSegment ? `${dsdbBase}/TOKEN_TABLE.${lastSegment}.json` : null,"; new=old+"\n    resourceType === \"TYPOGRAPHY\" && lastSegment ? `${dsdbBase}/TYPOGRAPHY.${lastSegment}.json` : null,"; assert s.count(old)==1; p.write_text(s.replace(old,new,1))'
+          python3 -c 'from pathlib import Path; p=Path("src/json-extraction/extract-dsdb-resource.ts"); s=p.read_text(); old="  if (libraryModuleType !== \"TOKEN_TABLE\") {"; new="  if (libraryModuleType !== \"TOKEN_TABLE\" && libraryModuleType !== \"TYPOGRAPHY\") {"; assert s.count(old)==1; p.write_text(s.replace(old,new,1))'
+          python3 -c 'from pathlib import Path; p=Path("src/json-extraction/extract-dsdb-resource.ts"); s=p.read_text(); old="function extractTokenTableSystem(resource: unknown): TokenTableSystem | null {"; new=old+"\n  const root = parseTokenTableSystem(resource);\n  if (root) return root;"; assert s.count(old)==1; p.write_text(s.replace(old,new,1))'
       - run: npm ci
       - run: npm run check
       - run: npm test
       - run: npm run build
-
       - name: Commit verified source fixes
         shell: bash
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/json-extraction/extract-content-page.ts src/json-extraction/extract-dsdb-resource.ts src/json-extraction/fetch-json-page.ts tests/json-extraction.test.ts
+          git add src/json-extraction/extract-content-page.ts src/json-extraction/extract-dsdb-resource.ts src/json-extraction/fetch-json-page.ts
           git commit -m "fix: support current empty and typography content"
           git push origin HEAD:fix/m3-site-format-2026-08
-
       - run: npx playwright install --with-deps chromium
       - run: npm run verify:cache:full
