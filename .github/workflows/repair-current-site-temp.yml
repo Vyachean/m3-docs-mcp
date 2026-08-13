@@ -1,4 +1,4 @@
-name: Capture current Material extraction diagnostics
+name: Capture current Material quality diagnostics
 
 on:
   push:
@@ -20,20 +20,20 @@ jobs:
       - name: Run current full extraction
         continue-on-error: true
         run: node dist/index.js update --cache-dir /tmp/m3-inspect --min-pages 10 --concurrency 8 --strict-graph --verbose
-      - name: Pack failed staging diagnostics
+      - name: Pack failed staging and logger diagnostics
         if: always()
         run: |
-          if [ -d /tmp/m3-inspect.failed-staging ]; then
-            tar -C /tmp -czf /tmp/m3-inspect-diagnostics.tar.gz m3-inspect.failed-staging
-          elif [ -d /tmp/m3-inspect ]; then
-            tar -C /tmp -czf /tmp/m3-inspect-diagnostics.tar.gz m3-inspect
-          else
-            echo "No cache directory was produced" >&2
+          paths=()
+          [ -d /tmp/m3-inspect.failed-staging ] && paths+=(m3-inspect.failed-staging)
+          [ -d /tmp/m3-inspect ] && paths+=(m3-inspect)
+          if [ ${#paths[@]} -eq 0 ]; then
+            echo "No cache or diagnostics directory was produced" >&2
             exit 1
           fi
+          tar -C /tmp -czf /tmp/m3-quality-diagnostics.tar.gz "${paths[@]}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: current-material-extraction-diagnostics
-          path: /tmp/m3-inspect-diagnostics.tar.gz
+          name: current-material-quality-diagnostics
+          path: /tmp/m3-quality-diagnostics.tar.gz
           retention-days: 1
