@@ -1,4 +1,4 @@
-name: Inspect current Material route format
+name: Inspect current Material bundle references
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - .github/workflows/repair-current-site-temp.yml
 
 jobs:
-  inspect-live-routes:
+  inspect-live-bundle:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -16,31 +16,30 @@ jobs:
         with:
           ref: fix/m3-site-format-2026-08
       - run: npm ci
-      - name: Inspect live bundle and sitemap
+      - name: Inspect live bundle representation
         shell: bash
         run: |
           node --input-type=module <<'NODE'
-          import { fetchAngularBundleText, extractBundleRouteTable } from './dist/json-extraction/page-reference-resolver.js';
+          import { fetchAngularBundleText } from './dist/json-extraction/page-reference-resolver.js';
 
-          const baseUrl = 'https://m3.material.io';
-          const bundleText = await fetchAngularBundleText(baseUrl);
-          const routes = extractBundleRouteTable(bundleText);
-          const sitemapText = await (await fetch(`${baseUrl}/sitemap.xml`)).text();
-          const sitemapPaths = Array.from(sitemapText.matchAll(/<loc>([^<]+)<\/loc>/g), (m) => new URL(m[1]).pathname);
-          const docs = sitemapPaths.filter((path) => path.startsWith('/components') || path.startsWith('/styles') || path.startsWith('/foundations') || path.startsWith('/develop'));
+          const bundle = await fetchAngularBundleText('https://m3.material.io');
+          const show = (needle, before = 1800, after = 3500) => {
+            const index = bundle.indexOf(needle);
+            console.log(`\n===== ${needle} @ ${index} =====`);
+            if (index >= 0) console.log(bundle.slice(Math.max(0, index - before), index + needle.length + after));
+          };
 
-          console.log('bundle route count', routes.length);
-          console.log('sitemap doc count', docs.length);
-          for (const prefix of ['components', 'styles', 'foundations', 'develop']) {
-            console.log(`\n=== BUNDLE ${prefix} ===`);
-            for (const route of routes.filter((entry) => entry.slug === prefix || entry.slug.startsWith(`${prefix}/`)).slice(0, 80)) {
-              console.log(JSON.stringify({ slug: route.slug, collectionId: route.collectionId, documentId: route.documentId, tabs: route.tabs, alternateSlugs: route.alternateSlugs }));
-            }
-            console.log(`=== SITEMAP ${prefix} ===`);
-            console.log(docs.filter((path) => path === `/${prefix}` || path.startsWith(`/${prefix}/`)).slice(0, 120).join('\n'));
-          }
+          console.log('length', bundle.length);
+          console.log('collectionId occurrences', (bundle.match(/collectionId/g) ?? []).length);
+          console.log('documentId occurrences', (bundle.match(/documentId/g) ?? []).length);
+          console.log('exportedCarbonFileId occurrences', (bundle.match(/exportedCarbonFileId/g) ?? []).length);
+          console.log('tabs occurrences', (bundle.match(/tabs/g) ?? []).length);
+          console.log('reference occurrences', (bundle.match(/reference/g) ?? []).length);
 
-          for (const slug of ['components/buttons','components/switch','components/lists','components/segmented-buttons','styles/color','foundations/layout','develop']) {
-            console.log(`\nLOOKUP ${slug}`, JSON.stringify(routes.find((entry) => entry.slug === slug) ?? null));
-          }
+          show('"slug":"components/buttons"');
+          show('"slug":"styles/shape"');
+          show('"slug":"foundations/design-tokens"');
+          show('collectionId', 1200, 2500);
+          show('documentId', 1200, 2500);
+          show('exportedCarbonFileId', 1200, 2500);
           NODE
