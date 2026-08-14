@@ -1,0 +1,68 @@
+name: Verify typography mutation gates
+
+on:
+  push:
+    branches:
+      - fix/typography-token-values
+
+permissions:
+  contents: read
+
+jobs:
+  mutation-json-extraction:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:mutation:json-extraction
+
+  mutation-full:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:mutation:full
+
+  mutation-changed-paths:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Write focused mutation config
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          fs.writeFileSync('/tmp/stryker-typography.json', JSON.stringify({
+            $schema: `${process.cwd()}/node_modules/@stryker-mutator/core/schema/stryker-schema.json`,
+            testRunner: 'vitest',
+            packageManager: 'npm',
+            reporters: ['progress', 'clear-text'],
+            mutate: [
+              'src/graph/token-table-graph.ts',
+              'src/json-extraction/render-markdown.ts',
+              'src/validation/validate-structured-graph.ts'
+            ],
+            coverageAnalysis: 'perTest',
+            thresholds: { high: 80, low: 70, break: 65 },
+            vitest: { configFile: `${process.cwd()}/vitest.config.ts` }
+          }, null, 2));
+          NODE
+      - run: npx stryker run /tmp/stryker-typography.json
