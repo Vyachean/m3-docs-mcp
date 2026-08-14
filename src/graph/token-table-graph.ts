@@ -182,11 +182,19 @@ function formatValueNode(value: unknown): string {
   return '';
 }
 
-function formatResolvedValue(resolvedValue: Record<string, unknown>): string | null {
+function formatAxisValueNode(value: unknown): string {
+  if (!isRecord(value) || typeof value['tag'] !== 'string') return '';
+  if (!Object.keys(value).every((key) => key === 'tag' || key === 'value')) return '';
+  const axisValue = value['value'];
+  if (axisValue != null && (typeof axisValue !== 'number' || !Number.isFinite(axisValue))) return '';
+  return JSON.stringify(axisValue == null ? { tag: value['tag'] } : { tag: value['tag'], value: axisValue });
+}
+
+function formatResolvedValue(resolvedValue: Record<string, unknown>, tokenValueType: string): string | null {
   if (!resolvedValue || resolvedValue['undefined'] === true) return null;
   const formatted = Object.entries(resolvedValue)
     .filter(([key]) => key !== 'undefined')
-    .map(([, value]) => formatValueNode(value))
+    .map(([, value]) => tokenValueType === 'AXIS_VALUE' ? formatAxisValueNode(value) : formatValueNode(value))
     .filter(Boolean)
     .join(' ');
   return formatted || null;
@@ -195,6 +203,7 @@ function formatResolvedValue(resolvedValue: Record<string, unknown>): string | n
 function classifyUnresolvedReason(
   entries: DecodedContextTreeEntry[],
   entry: DecodedContextTreeEntry | undefined,
+  tokenValueType: string,
 ): UnresolvedReason {
   if (!entry) {
     if (entries.length === 0) return 'upstream-empty';
@@ -205,6 +214,12 @@ function classifyUnresolvedReason(
     return 'missing-context-entry';
   }
   if (entry.resolvedValue['undefined'] === true) return 'upstream-empty';
+  const fontTracking = entry.resolvedValue['fontTracking'];
+  if (
+    tokenValueType === 'FONT_TRACKING' &&
+    isRecord(fontTracking) &&
+    Object.keys(fontTracking).length === 0
+  ) return 'upstream-empty';
   const meaningfulKeys = Object.keys(entry.resolvedValue).filter((k) => k !== 'undefined');
   if (meaningfulKeys.length === 0) return 'upstream-empty';
   // The value has keys but the formatter produced empty output — unknown structure, not a known type
@@ -223,7 +238,8 @@ function extractAliasChain(tree: DecodedReferenceNode, selfTokenName: string): s
 
 function buildTokenValues(
   entries: DecodedContextTreeEntry[],
-  idx: TagIndex
+  idx: TagIndex,
+  tokenValueType: string,
 ): { values: TokenValueEntry[]; aliases: string[]; unresolved: boolean } {
   const values: TokenValueEntry[] = [];
   let aliases: string[] = [];
@@ -235,15 +251,15 @@ function buildTokenValues(
       ?? findContextEntry(entries, idx, selector);
     if (!entry) {
       if (selector.contrast === 'default') {
-        const reason = classifyUnresolvedReason(entries, undefined);
+        const reason = classifyUnresolvedReason(entries, undefined, tokenValueType);
         values.push({ role, value: null, resolved: false, unresolvedReason: reason });
         unresolved = true;
       }
       continue;
     }
-    const value = formatResolvedValue(entry.resolvedValue);
+    const value = formatResolvedValue(entry.resolvedValue, tokenValueType);
     if (value === null) {
-      const reason = classifyUnresolvedReason(entries, entry);
+      const reason = classifyUnresolvedReason(entries, entry, tokenValueType);
       values.push({ role, value: null, resolved: false, unresolvedReason: reason });
       if (selector.contrast === 'default') unresolved = true;
     } else {
@@ -276,7 +292,7 @@ export function buildTokenTableNode(params: {
     const tokenNodes = tokens.map((token) => {
       const treeData = params.system.contextualReferenceTrees[token.name];
       const entries = treeData?.contextualReferenceTree ?? [];
-      const { values, aliases, unresolved } = buildTokenValues(entries, idx);
+      const { values, aliases, unresolved } = buildTokenValues(entries, idx, token.tokenValueType);
       if (unresolved) unresolvedTokenCount += 1;
       return {
         tokenName: token.tokenName,
