@@ -2125,27 +2125,29 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         if (wasFetched) siteMetaFetched = true;
         siteMetaFailed = true;
         logger?.log('error', 'site-meta:fetch-failed', { phase: 'fetch-site-meta', reason, isSiteMetaError, siteMetaFetched });
-        logError(`site_meta.js unusable (${reason}); the default update path requires site_meta as the route source.`);
+        logVerbose(`site_meta.js unusable (${reason}); continuing with sitemap.xml when it provides a deterministic public route set.`);
       }
     }
 
     const siteMetaProvidedRoutes = normalizedSiteMetaRoutes.length > 0;
+    const sitemapProvidedRoutes = sitemapPublicDocPaths.size > 0;
+    const deterministicRouteSourceAvailable = siteMetaProvidedRoutes || sitemapProvidedRoutes;
     const browserFallbackAllowed = options.allowBrowserFallback === true;
 
-    if (!siteMetaProvidedRoutes && !browserFallbackAllowed) {
-      // site_meta is the only accepted full route source for the default (deterministic) update
-      // path. Never fall back to the bundle route table for whole-site route discovery there —
-      // the bundle table may only resolve page references for routes already known from
-      // site_meta, or supplement specific tracked subtrees. (Legacy callers that explicitly opt
-      // into allowBrowserFallback keep the old degraded bundle/browser-network-recovery path.)
-      siteMetaFailed = true;
-      const reason = siteMetaFetched ? 'site_meta.js fetched but produced zero usable routes' : 'site_meta.js could not be fetched/parsed';
-      logger?.log('error', 'site-meta:rejected', { phase: 'fetch-site-meta', reason, siteMetaFetched, siteMetaFailed });
+    if (!deterministicRouteSourceAvailable && !browserFallbackAllowed) {
+      // The default update requires an independently observed public route set. site_meta is the
+      // richer source when present; sitemap is the deterministic replacement when site_meta is
+      // unavailable. The Angular bundle may resolve canonical routes/content references but must
+      // not become the sole authority for what is public.
+      const reason = siteMetaFetched
+        ? 'site_meta.js produced zero usable routes and sitemap.xml produced zero usable routes'
+        : 'neither site_meta.js nor sitemap.xml provided a usable public route set';
+      logger?.log('error', 'route-source:rejected', { phase: 'fetch-site-meta', reason, siteMetaFetched, siteMetaFailed, sitemapRouteCount: sitemapPublicDocPaths.size });
       await logger?.writeIntermediateDiagnostics({
         promotionDecision: 'pending',
         startedAt,
         siteMetaFetched,
-        siteMetaFailed: true,
+        siteMetaFailed,
         bundleDiscoveryFailed,
         directJsonEnabled: false,
         directJsonDisabledReason: reason,
@@ -2153,7 +2155,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         networkRecoveryAttempted: false,
         networkRecoverySucceeded: false
       });
-      throw new Error(`site_meta.js did not provide a usable route list (${reason}); refusing to fall back to the bundle table as a full route source.`);
+      throw new Error(`No deterministic public route source is available (${reason}); refusing to use the Angular bundle as the sole route authority.`);
     }
 
     // page-reference-resolver: fetch the Angular bundle once for carbonVersion + the route table
@@ -3041,15 +3043,15 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   async function runReferenceBasedRouteFetch(route: DsdbRoute, carbonVersion: string, routeUrl: string, capturedAt: string): Promise<void> {
     const routePath = routePathFromSlug(route.slug);
     const sourceCoverageRoute = route.siteMetaRoute ?? `/${route.slug}`;
-    const collectionId = route.collectionId!;
-    const documentId = route.documentId!;
+    const collectionId = route.collectionId;
+    const documentId = route.documentId;
 
     const [pageDataResult, carbonResult] = await Promise.all([
       fetchPageDataByReference(baseUrl, { collectionId, documentId }, signal, fetch, fetchDiagnostics, sourceCoverageRoute),
       fetchCarbonContentByReference(baseUrl, carbonVersion, route.exportedCarbonFileId, signal, fetch, fetchDiagnostics, sourceCoverageRoute)
     ]);
 
-    if (pageDataResult.status === 'ok') {
+    if (pageDataResult.status === 'ok' && collectionId && documentId) {
       await persistRawArtifact({
         kind: 'page-data',
         pathParts: [collectionId, documentId],
@@ -3079,8 +3081,10 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     const contentSource: ExtractionRouteDiagnostic['contentSource'] = pageDataOk && carbonOk
       ? 'page-data+carbon'
       : carbonOk ? 'carbon' : 'page-data';
-    const pageDataUrl = pageDataResult.url;
-    const pageDataStatus = pageDataResult.status === 'ok' || pageDataResult.status === 'http-error' ? pageDataResult.httpStatus : pageDataResult.status;
+    const pageDataUrl = pageDataResult.status === 'not-available' ? undefined : pageDataResult.url;
+    const pageDataStatus = pageDataResult.status === 'ok' || pageDataResult.status === 'http-error'
+      ? pageDataResult.httpStatus
+      : pageDataResult.status === 'not-available' ? undefined : pageDataResult.status;
     const carbonUrl = carbonResult.status === 'not-available' ? undefined : carbonResult.url;
     const carbonStatus = carbonResult.status === 'ok' || carbonResult.status === 'http-error' ? carbonResult.httpStatus : carbonResult.status === 'not-available' ? undefined : carbonResult.status;
 
@@ -3373,7 +3377,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
         try {
           throwIfAborted(signal);
 
-          if (route.pageReferenceSource === 'bundle-table' && route.collectionId && route.documentId) {
+          if (route.pageReferenceSource === 'bundle-table') {
             await runReferenceBasedRouteFetch(route, config.carbonVersion, routeUrl, capturedAt);
             return;
           }

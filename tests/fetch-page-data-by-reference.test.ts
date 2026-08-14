@@ -76,3 +76,18 @@ describe('fetchCarbonContentByReference', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
+
+
+describe('fetchPageDataByReference missing exact reference', () => {
+  it('returns not-available without guessing or fetching', async () => {
+    const fetchImpl = vi.fn();
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      {},
+      undefined,
+      fetchImpl as unknown as typeof fetch
+    );
+    expect(result).toEqual({ status: 'not-available' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

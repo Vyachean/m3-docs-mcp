@@ -56,6 +56,53 @@ describe('JSON-first extraction', () => {
     ]);
   });
 
+  it('builds the current TYPOGRAPHY DSDB resource candidate observed on the live site', () => {
+    expect(buildDsdbResourceCandidateUrls(
+      'https://m3.material.io',
+      '2026-08-12_10-00-15',
+      'designSystems/20543ce18892f7d9',
+      'TYPOGRAPHY'
+    )[0]).toBe(
+      'https://m3.material.io/_dsm/data/dsdb-m3/2026-08-12_10-00-15/TYPOGRAPHY.20543ce18892f7d9.json'
+    );
+  });
+
+  it('renders TYPOGRAPHY resources as DSDB token-system tables instead of unsupported placeholders', async () => {
+    const contentPage = {
+      title: 'Typography',
+      sections: [{
+        title: 'Type scale & tokens',
+        blocks: [{
+          chunks: [
+            { contentChunkType: 'TEXT', htmlValue: '<p>Use the Material type scale for consistent typography.</p>' },
+            {
+              contentChunkType: 'RESOURCE',
+              libraryModuleType: 'TYPOGRAPHY',
+              resourceName: 'designSystems/20543ce18892f7d9',
+              libraryModuleConfigurationOverrides: { tokenSets: ['Enabled container'] }
+            }
+          ]
+        }]
+      }]
+    };
+    const result = await extractContentPageToMaterialPage({
+      url: 'https://m3.material.io/styles/typography/type-scale-tokens',
+      pageData: null,
+      contentPage,
+      fetchResource: async (resourceName, resourceType) => (
+        resourceType === 'TYPOGRAPHY' && resourceName === 'designSystems/20543ce18892f7d9'
+      ) ? fixture('token-table-resource.json') : null
+    });
+
+    expect(result.fallbackReason).toBeNull();
+    expect(result.page.markdown).toContain('| Token | Name | sys alias | ref alias | Light | Dark |');
+    expect(result.page.markdown).not.toContain('Material resource placeholder: TYPOGRAPHY');
+    expect(result.pageDiagnostic.unknownResourceTypes).not.toContain('TYPOGRAPHY');
+    expect(result.pageDiagnostic.unresolvedResourceCount).toBe(0);
+    expect(result.pageDiagnostic.tokenTables).toBe(1);
+    expect(result.pageDiagnostic.tokenTablesRendered).toBe(1);
+  });
+
   it('renders text sections from structured content JSON', async () => {
     const result = await extractContentPageToMaterialPage({
       url: 'https://m3.material.io/components/lists/overview',

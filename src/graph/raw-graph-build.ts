@@ -330,7 +330,7 @@ function buildRawPage(
         } else if (rawType === 'RESOURCE') {
           chunkType = 'resource';
           const moduleType = chunk.libraryModuleType ?? 'UNKNOWN_RESOURCE';
-          if (moduleType === 'TOKEN_TABLE') {
+          if (moduleType === 'TOKEN_TABLE' || moduleType === 'TYPOGRAPHY') {
             resourceId = tokenTableResourceId(route, chunkIndex, chunk.resourceName);
             if (!tokenTableIds.includes(resourceId)) tokenTableIds.push(resourceId);
             const dsdbArtifact = findDsdbArtifact(dsdbArtifactsByTrailingSegment, chunk.resourceName);
@@ -653,7 +653,7 @@ export async function buildRawBackedGraph(params: {
         title: route.title,
         section: route.section,
         reference: { ...route.reference },
-        tabs: route.tabs.map((item) => ({ ...item })),
+        tabs: [],
         origins: [...route.origins],
         sourceArtifacts: [...route.sourceArtifacts],
         expectedOutputPaths: narrowed.expectedOutputPaths,

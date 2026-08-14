@@ -204,6 +204,8 @@ Observed patterns:
   - `https://m3.material.io/_dsm/data/dsdb-m3/{carbonVersion}/designSystems_<designSystemId>_components_<componentId>.json`
 - token-table resource:
   - `https://m3.material.io/_dsm/data/dsdb-m3/{carbonVersion}/TOKEN_TABLE.<componentId>.json`
+- typography token-system resource:
+  - `https://m3.material.io/_dsm/data/dsdb-m3/{carbonVersion}/TYPOGRAPHY.<designSystemId>.json`
 
 Representative examples:
 
@@ -215,6 +217,8 @@ Representative examples:
   - `https://m3.material.io/_dsm/data/dsdb-m3/2026-06-24_09-00-10/designSystems_030656e0a1083ef1_components_4c66f2c4b2f2cb18.json`
 - buttons token table:
   - `https://m3.material.io/_dsm/data/dsdb-m3/2026-06-24_09-00-10/TOKEN_TABLE.1c4257f8804f9478.json`
+- typography type-scale resource (observed 2026-08-14):
+  - `https://m3.material.io/_dsm/data/dsdb-m3/2026-08-12_10-00-15/TYPOGRAPHY.20543ce18892f7d9.json`
 
 ## Route/reference resolution model
 
