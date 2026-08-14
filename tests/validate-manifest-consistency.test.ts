@@ -2,6 +2,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readIndex } from '../src/cache.js';
+import { readPageGraph, readRouteGraph, readTokenTableGraph } from '../src/graph/graph-store.js';
 import {
   manifestPath,
   readManifest,
@@ -49,6 +51,30 @@ async function writeDriftedCount(key: keyof ManifestCounts): Promise<void> {
 }
 
 describe('validateManifestConsistency', () => {
+  it('maps every persisted manifest count to its canonical owner', async () => {
+    await writeValidCacheV2Fixture(cacheDir);
+    const [counts, artifactIndex, routeGraph, pageGraph, tokenTableGraph, index] = await Promise.all([
+      readPersistedManifestCounts(cacheDir),
+      readArtifactIndex(cacheDir),
+      readRouteGraph(cacheDir),
+      readPageGraph(cacheDir),
+      readTokenTableGraph(cacheDir),
+      readIndex(cacheDir),
+    ]);
+    if (!routeGraph || !pageGraph || !tokenTableGraph || !index) {
+      throw new Error('Fixture persisted owners are incomplete.');
+    }
+
+    expect(counts).toEqual({
+      rawArtifacts: artifactIndex.artifacts.length,
+      routes: routeGraph.routes.length,
+      pages: pageGraph.pages.length,
+      markdownPages: index.pages.length,
+      dsdbResources: artifactIndex.artifacts.filter((artifact) => artifact.kind === 'dsdb-resource').length,
+      tokenTables: tokenTableGraph.tokenTables.length,
+    });
+  });
+
   it('passes when every manifest count matches its persisted owner', async () => {
     await writeValidCacheV2Fixture(cacheDir);
     const result = await validateManifestConsistency({ cacheDir });
