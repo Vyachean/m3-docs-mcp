@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { getDefaultCacheDir } from './cache.js';
+import { getDefaultCacheDir, readIndex } from './cache.js';
+import { readPageGraph, readRouteGraph, readTokenTableGraph } from './graph/graph-store.js';
+import { findArtifactsByKind, readArtifactIndex } from './raw-artifacts/artifact-index.js';
 
 /**
  * Cache schema v2 manifest (`manifest.json` at the cache directory root).
@@ -114,8 +116,50 @@ export async function readManifest(cacheDir = getDefaultCacheDir()): Promise<Cac
   }
 }
 
-/** Writes the cache schema v2 manifest to disk, replacing any existing manifest. */
+/**
+ * Reads the canonical persisted owners summarized by manifest.counts.
+ *
+ * A complete cache snapshot has all graph files and index.json by the time the crawler writes
+ * manifest.json. When those owners are not all available yet (for example, an isolated manifest
+ * unit test), return null and preserve the caller-provided placeholder counts. Once a complete
+ * persisted snapshot exists, its owners win over any crawl-time operation/reference counters.
+ */
+export async function readPersistedManifestCounts(cacheDir = getDefaultCacheDir()): Promise<ManifestCounts | null> {
+  const [artifactIndex, routeGraph, pageGraph, tokenTableGraph, index] = await Promise.all([
+    readArtifactIndex(cacheDir),
+    readRouteGraph(cacheDir),
+    readPageGraph(cacheDir),
+    readTokenTableGraph(cacheDir),
+    readIndex(cacheDir),
+  ]);
+
+  if (!routeGraph || !pageGraph || !tokenTableGraph || !index) return null;
+
+  return ManifestCountsSchema.parse({
+    rawArtifacts: artifactIndex.artifacts.length,
+    routes: routeGraph.routes.length,
+    pages: pageGraph.pages.length,
+    markdownPages: index.pages.length,
+    dsdbResources: findArtifactsByKind(artifactIndex, 'dsdb-resource').length,
+    tokenTables: tokenTableGraph.tokenTables.length,
+  });
+}
+
+/**
+ * Writes the cache schema v2 manifest to disk, replacing any existing manifest.
+ *
+ * When a complete persisted snapshot already exists, manifest counts are derived from its
+ * canonical owners instead of trusting caller-supplied crawl-time counters. This keeps the
+ * manifest a summary of what is actually persisted after artifact de-duplication and graph
+ * reconciliation. Callers that intentionally construct a manifest before the rest of a snapshot
+ * exists retain the provided placeholder counts.
+ */
 export async function writeManifest(manifest: CacheManifest, cacheDir = getDefaultCacheDir()): Promise<void> {
+  const persistedCounts = await readPersistedManifestCounts(cacheDir);
+  const manifestToWrite = CacheManifestSchema.parse({
+    ...manifest,
+    counts: persistedCounts ?? manifest.counts,
+  });
   await mkdir(cacheDir, { recursive: true });
-  await writeFile(manifestPath(cacheDir), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await writeFile(manifestPath(cacheDir), `${JSON.stringify(manifestToWrite, null, 2)}\n`, 'utf8');
 }
