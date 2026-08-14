@@ -34,50 +34,44 @@ jobs:
               raise SystemExit(f'Expected exactly one manifest import match, got {text.count(old_import)}')
           text = text.replace(old_import, new_import)
 
-          old_block = """  const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
-          const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
-          const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
-            baseUrl,
-            carbonVersion: carbonVersionForManifest,
-            siteMetaHash: siteMetaHashForManifest,
-            angularBundleHash: angularBundleHashForManifest,
-            sitemapHash: sitemapHashForManifest,
-            generatedAt: capturedAt,
-            counts: {
-              rawArtifacts: artifactRecords.length,
-              routes: routeCoverageBySourceRoute.size,
-              pages: pages.length,
-              markdownPages: pages.length,
-              dsdbResources: dsdbResourceArtifactCount,
-              tokenTables: tokenTableCount
-            },
-            health
-          });
-          """
-          new_block = """  const persistedManifestCounts = await readPersistedManifestCounts(cacheDir);
-          const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
-            baseUrl,
-            carbonVersion: carbonVersionForManifest,
-            siteMetaHash: siteMetaHashForManifest,
-            angularBundleHash: angularBundleHashForManifest,
-            sitemapHash: sitemapHashForManifest,
-            generatedAt: capturedAt,
-            counts: persistedManifestCounts,
-            health
-          });
-          """
-          if text.count(old_block) != 1:
-              raise SystemExit(f'Expected exactly one manifest block match, got {text.count(old_block)}')
-          text = text.replace(old_block, new_block)
+          start_marker = "  const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;"
+          end_marker = "\n\n  await runPromotionStep('manifest', 'write cache manifest'"
+          if text.count(start_marker) != 1:
+              raise SystemExit(f'Expected exactly one manifest block start, got {text.count(start_marker)}')
+          start = text.index(start_marker)
+          end = text.find(end_marker, start)
+          if end < 0:
+              raise SystemExit('Manifest block end marker not found')
+
+          new_block = "\n".join([
+              "  const persistedManifestCounts = await readPersistedManifestCounts(cacheDir);",
+              "  const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({",
+              "    baseUrl,",
+              "    carbonVersion: carbonVersionForManifest,",
+              "    siteMetaHash: siteMetaHashForManifest,",
+              "    angularBundleHash: angularBundleHashForManifest,",
+              "    sitemapHash: sitemapHashForManifest,",
+              "    generatedAt: capturedAt,",
+              "    counts: persistedManifestCounts,",
+              "    health",
+              "  });",
+          ])
+          text = text[:start] + new_block + text[end:]
+
+          if text.count(new_import) != 1:
+              raise SystemExit('Updated manifest import invariant failed')
+          if text.count('const persistedManifestCounts = await readPersistedManifestCounts(cacheDir);') != 1:
+              raise SystemExit('Persisted manifest count call invariant failed')
+          if 'rawArtifacts: artifactRecords.length' in text:
+              raise SystemExit('Old raw artifact operation count remains')
+          if 'const dsdbResourceArtifactCount =' in text or 'const tokenTableCount =' in text:
+              raise SystemExit('Old manifest count helper remains')
 
           path.write_text(text)
           PY
 
-          grep -F "readPersistedManifestCounts" src/crawler.ts
-          if grep -Fq "rawArtifacts: artifactRecords.length" src/crawler.ts; then
-            echo "Old manifest operation count remains" >&2
-            exit 1
-          fi
+          git diff --check
+          git diff -- src/crawler.ts
 
       - name: Commit patch and remove temporary workflow
         shell: bash
