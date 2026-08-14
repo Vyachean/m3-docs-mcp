@@ -33,9 +33,9 @@ jobs:
           end = source.index("\n          NODE", start)
           body = source[start:end]
           code = '\n'.join(line[10:] if line.startswith('          ') else line for line in body.splitlines())
-          Path('/tmp/apply-typography-fix.mjs').write_text(code)
+          Path('/tmp/apply-typography-fix.cjs').write_text(code)
           PY
-          node /tmp/apply-typography-fix.mjs
+          node /tmp/apply-typography-fix.cjs
 
       - run: npm ci
       - run: npx vitest run tests/typography-token-quality.test.ts tests/validate-structured-graph.test.ts tests/json-extraction.test.ts tests/token-resolution-classify.test.ts
