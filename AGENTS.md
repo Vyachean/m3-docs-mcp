@@ -39,6 +39,11 @@ The cache directory has three layers, raw snapshot first:
    `MaterialDocsStore` (`src/store.ts`) and the original seven MCP tools — it is not the source of
    truth for the graph-oriented tools.
 
+`manifest.json` is a compact summary of the persisted snapshot. Its `counts` must be derived from
+canonical persisted owners (`raw/artifact-index.json`, graph files, and `index.json`) after artifact
+deduplication and graph reconciliation. Crawl-time persistence attempts or reference occurrences are
+diagnostics, not alternative manifest count semantics.
+
 A browser oracle (`src/browser-oracle/`) cross-checks a fixed set of 8 required routes by live
 Playwright capture against the raw snapshot/graph; it is a validation layer, not a crawl path. It is
 **strict in full verification** (`verify:cache:full`): a capture failure (no Chromium/network) fails
@@ -54,7 +59,7 @@ a loose approximation. Without `--strict-graph` (the default, used by most dev/s
 failures stay non-fatal and `health` falls back to a cheaper approximation — `unverified` always
 means "validation hasn't run," never a stand-in for `verified`.
 
-See README.md for full structure, field-level detail, and the 7-stage `verify:cache:full` pipeline.
+See README.md for full structure, field-level detail, and the 8-stage `verify:cache:full` pipeline.
 
 **When changing crawler, cache store, route planning, route coverage, JSON extraction, renderer, token
 tables, browser oracle, or MCP tools, you must run `npm run check`, `npm test`, `npm run build`, and
