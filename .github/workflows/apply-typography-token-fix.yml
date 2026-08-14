@@ -1,0 +1,78 @@
+name: Apply typography token fix
+
+on:
+  push:
+    branches:
+      - fix/typography-token-values
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/typography-token-values
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Apply focused source changes
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+
+          function replaceExact(file, before, after) {
+            const source = fs.readFileSync(file, 'utf8');
+            if (!source.includes(before)) {
+              throw new Error(`Expected source block not found in ${file}`);
+            }
+            fs.writeFileSync(file, source.replace(before, after));
+          }
+
+          replaceExact(
+            'src/graph/token-table-graph.ts',
+            `  // Compound value wrapper (e.g. tracking, compound dimension types)\n  if ('values' in value && Array.isArray(value['values'])) {\n    return value['values'].map(formatValueNode).filter(Boolean).join(', ');\n  }\n  // Shape tokens: family, defaultSize, corners`,
+            `  // Compound value wrapper (e.g. tracking, compound dimension types)\n  if ('values' in value && Array.isArray(value['values'])) {\n    return value['values'].map(formatValueNode).filter(Boolean).join(', ');\n  }\n  // Variable-font axis values used by the current Material TYPOGRAPHY resource.\n  // Keep this explicit rather than treating arbitrary objects as resolved: an unknown DSDB\n  // structure must remain fail-closed and surface as unsupported-value-type.\n  if (\n    typeof value['tag'] === 'string' &&\n    Object.keys(value).every((key) => key === 'tag' || key === 'value')\n  ) {\n    const axisValue = value['value'];\n    if (axisValue != null && (typeof axisValue !== 'number' || !Number.isFinite(axisValue))) return '';\n    return JSON.stringify(axisValue == null ? { tag: value['tag'] } : { tag: value['tag'], value: axisValue });\n  }\n  // Shape tokens: family, defaultSize, corners`,
+          );
+
+          replaceExact(
+            'src/json-extraction/render-markdown.ts',
+            `  if ('unit' in v && typeof v.unit === 'string') {\n    if (typeof v.value !== 'number') return '';\n    return \`${'${v.value}'}${'${normalizeUnit(v.unit)}'}\`;\n  }`,
+            `  if ('unit' in v && typeof v.unit === 'string') {\n    // DSDB omits zero-valued numeric fields. A missing/null dimension value therefore means 0,\n    // while a present non-finite/non-number value is still an unsupported structure.\n    if (v.value != null && (typeof v.value !== 'number' || !Number.isFinite(v.value))) return '';\n    const value = v.value == null ? 0 : v.value;\n    return \`${'${value}'}${'${normalizeUnit(v.unit)}'}\`;\n  }`,
+          );
+
+          replaceExact(
+            'src/validation/validate-cache-v2.ts',
+            `import { validateMcpSmoke } from './validate-mcp-smoke.js';\nimport type { CheckResult } from './types.js';`,
+            `import { validateMcpSmoke } from './validate-mcp-smoke.js';\nimport { validateTokenResolution } from './validate-token-resolution.js';\nimport type { CheckResult } from './types.js';`,
+          );
+
+          replaceExact(
+            'src/validation/validate-cache-v2.ts',
+            `    validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: input.renderedOutputRebuildFn }),\n    validateCoverageSummary({ cacheDir, mode: 'full' }),\n    validateMcpSmoke({ cacheDir, requiredRoutes }),`,
+            `    validateRenderedOutput({ cacheDir, mode: 'full', rebuildFromRawFn: input.renderedOutputRebuildFn }),\n    validateCoverageSummary({ cacheDir, mode: 'full' }),\n    validateTokenResolution({ cacheDir }),\n    validateMcpSmoke({ cacheDir, requiredRoutes }),`,
+          );
+          NODE
+
+      - run: npm ci
+      - run: npx vitest run tests/typography-token-quality.test.ts tests/token-resolution-classify.test.ts
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - run: npm run verify:cache:full
+
+      - name: Commit source fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/graph/token-table-graph.ts src/json-extraction/render-markdown.ts src/validation/validate-cache-v2.ts
+          git diff --cached --check
+          git commit -m "fix: preserve current typography token values"
+          git push origin HEAD:fix/typography-token-values
