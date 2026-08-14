@@ -8,6 +8,8 @@ import { failedCheck, passedCheck, type CheckResult } from './types.js';
  *
  * Count derivation stays owned by manifest.ts (`readPersistedManifestCounts`) so generation and
  * validation cannot drift into two independent definitions of what each manifest count means.
+ * Missing/invalid owner files are reported by their dedicated validators; this stage only compares
+ * the count summary of whatever valid persisted owners exist.
  */
 export type ValidateManifestConsistencyInput = {
   cacheDir?: string;
@@ -34,11 +36,6 @@ export async function validateManifestConsistency(
 
   if (!manifest) {
     return failedCheck(stage, ['manifest.json is missing or failed schema validation.']);
-  }
-  if (!persistedCounts) {
-    return failedCheck(stage, [
-      'Cannot derive persisted manifest counts because index.json or one of the canonical graph files is missing or invalid.',
-    ]);
   }
 
   const reasons: string[] = [];
