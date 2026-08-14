@@ -167,3 +167,28 @@ describe('findSubtreesWithoutCoverage / bundleRoutesUnderPrefix', () => {
     expect(supplement.map((r) => r.slug)).toEqual(['styles/color/roles']);
   });
 });
+
+
+describe('extractBundleRouteTable duplicate route records', () => {
+  it('merges a metadata-light first occurrence with later extraction metadata and tabs', () => {
+    const routes = extractBundleRouteTable([
+      '{"slug":"components/buttons","metadata":{"share_title":"Buttons"}}',
+      '{"slug":"components/buttons","exportedCarbonFileId":"buttons.json","carbonPath":"m3/pages/common-buttons","tabs":[{"label":"Overview"},{"label":"Specs"}]}'
+    ].join(','));
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      slug: 'components/buttons',
+      exportedCarbonFileId: 'buttons.json',
+      carbonPath: 'm3/pages/common-buttons',
+      tabs: [{ label: 'Overview' }, { label: 'Specs' }]
+    });
+  });
+
+  it('fails closed when duplicate records conflict on extraction identity', () => {
+    expect(() => extractBundleRouteTable([
+      '{"slug":"components/buttons","exportedCarbonFileId":"buttons-a.json"}',
+      '{"slug":"components/buttons","exportedCarbonFileId":"buttons-b.json"}'
+    ].join(','))).toThrow(/Conflicting Angular bundle route metadata/);
+  });
+});

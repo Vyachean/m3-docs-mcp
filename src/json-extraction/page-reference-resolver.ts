@@ -137,8 +137,8 @@ export function extractCarbonVersion(bundleText: string): string | null {
  * not fatal to the whole parse.
  */
 export function extractBundleRouteTable(bundleText: string): BundleRouteEntry[] {
-  const entries: BundleRouteEntry[] = [];
-  const seen = new Set<string>();
+  const entriesBySlug = new Map<string, BundleRouteEntry>();
+  const slugOrder: string[] = [];
   const slugMatches = Array.from(bundleText.matchAll(/"slug":"[^"]*"/g));
   for (let i = 0; i < slugMatches.length; i += 1) {
     const match = slugMatches[i]!;
@@ -150,11 +150,53 @@ export function extractBundleRouteTable(bundleText: string): BundleRouteEntry[] 
       ?? bundleText.slice(offset, slugMatches[i + 1]?.index ?? bundleText.length);
     const entry = parseBundleRouteFragment(fragment);
     if (!entry) continue;
-    if (seen.has(entry.slug)) continue;
-    seen.add(entry.slug);
-    entries.push(entry);
+    const existing = entriesBySlug.get(entry.slug);
+    if (!existing) {
+      entriesBySlug.set(entry.slug, entry);
+      slugOrder.push(entry.slug);
+      continue;
+    }
+    entriesBySlug.set(entry.slug, mergeBundleRouteEntries(existing, entry));
   }
-  return entries;
+  return slugOrder.map((slug) => entriesBySlug.get(slug)!);
+}
+
+function mergeBundleRouteEntries(existing: BundleRouteEntry, incoming: BundleRouteEntry): BundleRouteEntry {
+  if (existing.slug !== incoming.slug) {
+    throw new Error(`Cannot merge Angular bundle routes with different slugs: ${existing.slug} vs ${incoming.slug}`);
+  }
+  return {
+    slug: existing.slug,
+    documentId: mergeBundleScalar(existing.slug, 'documentId', existing.documentId, incoming.documentId),
+    collectionId: mergeBundleScalar(existing.slug, 'collectionId', existing.collectionId, incoming.collectionId),
+    exportedCarbonFileId: mergeBundleScalar(existing.slug, 'exportedCarbonFileId', existing.exportedCarbonFileId, incoming.exportedCarbonFileId),
+    pageCanonId: mergeBundleScalar(existing.slug, 'pageCanonId', existing.pageCanonId, incoming.pageCanonId),
+    carbonPath: mergeBundleScalar(existing.slug, 'carbonPath', existing.carbonPath, incoming.carbonPath),
+    title: mergeBundleScalar(existing.slug, 'title', existing.title, incoming.title),
+    alternateSlugs: mergeStringArrays(existing.alternateSlugs, incoming.alternateSlugs),
+    tabs: mergeBundleTabs(existing.slug, existing.tabs, incoming.tabs),
+  };
+}
+
+function mergeBundleScalar(slug: string, field: string, existing: string | undefined, incoming: string | undefined): string | undefined {
+  if (existing && incoming && existing !== incoming) {
+    throw new Error(`Conflicting Angular bundle route metadata for ${slug}: ${field}=${JSON.stringify(existing)} vs ${JSON.stringify(incoming)}`);
+  }
+  return existing ?? incoming;
+}
+
+function mergeStringArrays(existing: string[] | undefined, incoming: string[] | undefined): string[] | undefined {
+  if (!existing && !incoming) return undefined;
+  return Array.from(new Set([...(existing ?? []), ...(incoming ?? [])]));
+}
+
+function mergeBundleTabs(slug: string, existing: BundleTabEntry[] | undefined, incoming: BundleTabEntry[] | undefined): BundleTabEntry[] | undefined {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  if (JSON.stringify(existing) !== JSON.stringify(incoming)) {
+    throw new Error(`Conflicting Angular bundle tab metadata for ${slug}`);
+  }
+  return existing;
 }
 
 /** Finds the smallest balanced `{...}` object that contains the given offset. */

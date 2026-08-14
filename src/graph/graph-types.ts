@@ -121,6 +121,7 @@ export const RouteNodeSchema = z.object({
   title: z.string().nullable(),
   section: z.string().nullable(),
   reference: RouteReferenceSchema,
+  /** Child/virtual tab routes owned by this route. Virtual tab leaf nodes do not repeat the parent sibling-tab collection. */
   tabs: z.array(RouteTabNodeSchema),
   origins: z.array(RouteOriginSchema),
   sourceArtifacts: z.array(SourceArtifactRefSchema),

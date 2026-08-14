@@ -184,6 +184,42 @@ describe('deterministic pipeline: bundle-supplement + tab-splitting (real fixtur
     }
   }, 30_000);
 
+
+  it('uses sitemap + Carbon-only bundle metadata when site_meta is unavailable', async () => {
+    const html = '<html><body><script src="/static/angular/main.a1b2c3d4.js"></script></body></html>';
+    const currentBundle = [
+      'const cfg={"carbonVersion":"2026-06-10_13-00-05"};',
+      '{"slug":"components/buttons","metadata":{"share_title":"Buttons"}}',
+      '{"slug":"components/buttons","exportedCarbonFileId":"e31df68a-59d4-41dc-8743-8c48b476d4f8.json","carbonPath":"m3/pages/common-buttons","tabs":[{"label":"Overview"},{"label":"Specs"},{"label":"Guidelines"},{"label":"Accessibility"}]}'
+    ].join(';');
+    const sitemap = '<?xml version="1.0"?><urlset>'
+      + ['overview', 'specs', 'guidelines', 'accessibility'].map((tab) => `<url><loc>https://m3.material.io/components/buttons/${tab}</loc></url>`).join('')
+      + '</urlset>';
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === 'https://m3.material.io') return { ok: true, status: 200, headers: { get: () => 'text/html' }, text: async () => html } as unknown as Response;
+      if (url === 'https://m3.material.io/sitemap.xml') return { ok: true, status: 200, headers: { get: () => 'application/xml' }, text: async () => sitemap } as unknown as Response;
+      if (url === 'https://m3.material.io/site_meta.js') return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => 'text/html' }, text: async () => '' } as unknown as Response;
+      if (url === 'https://m3.material.io/static/angular/main.a1b2c3d4.js') return { ok: true, status: 200, headers: { get: () => 'application/javascript' }, text: async () => currentBundle } as unknown as Response;
+      if (url === 'https://m3.material.io/_dsm/content/m3/2026-06-10_13-00-05/e31df68a-59d4-41dc-8743-8c48b476d4f8.json') return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => contentButtons } as unknown as Response;
+      return { ok: false, status: 404, statusText: 'Not Found', headers: { get: () => 'application/json' }, text: async () => '', json: async () => ({}) } as unknown as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const index = await crawlMaterialDocs({ cacheDir, maxPages: 1, minPageCount: 0, force: true });
+    expect(index.pages.map((page) => page.path).filter((p) => p.startsWith('components/buttons/')).sort()).toEqual([
+      'components/buttons/accessibility.md',
+      'components/buttons/guidelines.md',
+      'components/buttons/overview.md',
+      'components/buttons/specs.md',
+    ]);
+    expect(fetchMock.mock.calls.map(([input]) => String(input)).some((url) => url.includes('/page-data/'))).toBe(false);
+    expect(index.coverageDiagnostics?.fullRoutePlanSummary?.acceptedRoutes).toContainEqual(expect.objectContaining({
+      route: '/components/buttons',
+      sources: ['bundle', 'sitemap']
+    }));
+  }, 30_000);
+
   it('does not let a small maxPages (source-route limit) cap virtual tab pages from an already-attempted route', async () => {
     const html = '<html><body><script src="/static/angular/main.dea11ea1.js"></script></body></html>';
     const siteMeta = {

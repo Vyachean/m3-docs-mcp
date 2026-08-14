@@ -54,6 +54,12 @@ function matchedBundleRouteFields(entry: BundleRouteEntry): Pick<RoutePlanEntry,
   };
 }
 
+function bundlePublishedPaths(entry: BundleRouteEntry): string[] {
+  const canonicalRoute = normalizeRoute(entry.slug);
+  if (!entry.tabs || entry.tabs.length === 0) return [canonicalRoute];
+  return entry.tabs.map((tab) => normalizeRoute(`${canonicalRoute}/${normalizeTabSlug(tab)}`));
+}
+
 function addCandidate(map: Map<string, RouteCandidate>, route: string, source: RouteCandidateSource, patch: Partial<RouteCandidate> = {}): void {
   const normalized = normalizeRoute(route);
   const current = map.get(normalized) ?? { route: normalized, sources: new Set<RouteCandidateSource>() };
@@ -117,11 +123,12 @@ function classifyPublicDocsRoute(
   bundleEntry?: BundleRouteEntry
 ): PublicDocsClassification {
   const normalized = normalizeRoute(route);
-  const isBundleOnlyCandidate = candidate.sources.has('bundle') && !candidate.sources.has('site_meta') && !candidate.sources.has('nav_drawer');
+  const isBundleCandidateWithoutRichNavigation = candidate.sources.has('bundle') && !candidate.sources.has('site_meta') && !candidate.sources.has('nav_drawer');
+  const isUnwitnessedBundleCandidate = isBundleCandidateWithoutRichNavigation && !candidate.sources.has('sitemap') && !candidate.sources.has('rendered_nav');
   if (candidate.redirectExternalUrl) return 'redirect';
   if (normalized.startsWith('/go/')) return 'go-link';
   if (/\.(png|jpg|jpeg|gif|svg|webp|css|js|xml|txt|json)$/i.test(normalized)) return 'asset';
-  if (isBundleOnlyCandidate && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
+  if (isBundleCandidateWithoutRichNavigation && (normalized === '/components' || normalized === '/styles' || normalized === '/foundations')) {
     return 'non-content-index';
   }
   if (normalized.startsWith('/develop/android')
@@ -137,7 +144,12 @@ function classifyPublicDocsRoute(
   }
   if (!isDocsPath(normalized, includeBlog)) return 'outside-public-docs';
   const metadataSource = bundleEntry ?? candidate;
-  if (isBundleOnlyCandidate && (!metadataSource.collectionId || !metadataSource.documentId)) return 'missing-extraction-metadata';
+  if (isUnwitnessedBundleCandidate && (!metadataSource.collectionId || !metadataSource.documentId)) return 'missing-extraction-metadata';
+  if (isBundleCandidateWithoutRichNavigation
+    && !metadataSource.exportedCarbonFileId
+    && (!metadataSource.collectionId || !metadataSource.documentId)) {
+    return 'missing-extraction-metadata';
+  }
   return 'public-docs';
 }
 
@@ -352,6 +364,8 @@ export function buildRoutePlan(params: {
 }): RoutePlanSummary {
   const { baseUrl, includeBlog, siteMeta, normalizedSiteMetaRoutes, bundleRoutes, sitemapPaths, renderedNavPaths = [] } = params;
   const candidates = new Map<string, RouteCandidate>();
+  const normalizedSitemapPaths = new Set(sitemapPaths.map(normalizeRoute));
+  const bundleOwnedSitemapPaths = new Set<string>();
 
   for (const route of normalizedSiteMetaRoutes) {
     const routeRecord = route as NormalizedRoute & {
@@ -395,9 +409,20 @@ export function buildRoutePlan(params: {
       tabSlugs: entry.tabs?.map((tab) => normalizeTabSlug(tab)),
       alternateSlugs: entry.alternateSlugs,
     });
+
+    const publishedPaths = bundlePublishedPaths(entry);
+    const hasCompleteSitemapCoverage = publishedPaths.length > 0
+      && publishedPaths.every((path) => normalizedSitemapPaths.has(path));
+    if (hasCompleteSitemapCoverage) {
+      addCandidate(candidates, entry.slug, 'sitemap');
+      for (const path of publishedPaths) bundleOwnedSitemapPaths.add(path);
+    }
   }
 
-  for (const path of sitemapPaths) addCandidate(candidates, path, 'sitemap');
+  for (const path of sitemapPaths) {
+    if (bundleOwnedSitemapPaths.has(normalizeRoute(path))) continue;
+    addCandidate(candidates, path, 'sitemap');
+  }
   for (const path of renderedNavPaths) addCandidate(candidates, path, 'rendered_nav');
 
   const acceptedRoutes: RoutePlanEntry[] = [];

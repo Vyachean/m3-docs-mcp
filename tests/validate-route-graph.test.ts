@@ -192,6 +192,41 @@ describe('validateRouteGraph', () => {
     expect(result.reasons).toEqual([]);
   });
 
+  it('accepts a parent-owned tab family with first-class virtual leaf nodes', async () => {
+    const parent = makeRouteNode({
+      route: '/components/switch',
+      canonicalRoute: '/components/switch',
+      tabs: [
+        { label: 'Overview', route: '/components/switch/overview', slug: 'overview', matchedSectionId: 'overview-section', matchReason: 'label' },
+        { label: 'Specs', route: '/components/switch/specs', slug: 'specs', matchedSectionId: 'specs-section', matchReason: 'label' },
+      ],
+      expectedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
+      generatedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
+      coverage: {
+        ...makeRouteNode().coverage,
+        expectedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
+        savedOutputPaths: ['components/switch/overview.md', 'components/switch/specs.md'],
+      },
+    });
+    const overviewLeaf = makeRouteNode({ route: '/components/switch/overview', canonicalRoute: '/components/switch/overview', tabs: [] });
+    const specsLeaf = makeRouteNode({
+      route: '/components/switch/specs',
+      canonicalRoute: '/components/switch/specs',
+      tabs: [],
+      expectedOutputPaths: ['components/switch/specs.md'],
+      generatedOutputPaths: ['components/switch/specs.md'],
+      coverage: {
+        ...makeRouteNode().coverage,
+        expectedOutputPaths: ['components/switch/specs.md'],
+        savedOutputPaths: ['components/switch/specs.md'],
+      },
+    });
+    await writeRouteGraph(makeGraph([parent, overviewLeaf, specsLeaf]), cacheDir);
+    const result = await validateRouteGraph({ cacheDir, requiredRoutes: ['/components/switch/overview', '/components/switch/specs'] });
+    expect(result.passed).toBe(true);
+    expect(result.reasons).toEqual([]);
+  });
+
   it('passes when all required routes resolve to exactly one covered node with source artifacts', async () => {
     const routes = ALL_COVERED_REQUIRED_ROUTES.map((route) => makeRouteNode({
       route,

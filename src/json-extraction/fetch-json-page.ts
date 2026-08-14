@@ -15,6 +15,68 @@ export type JsonRouteDescriptor = {
 
 type FetchLike = typeof fetch;
 
+const TRANSIENT_FETCH_RETRY_DELAYS_MS = [100, 300] as const;
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+async function waitForTransientRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return false;
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  return !signal?.aborted;
+}
+
+type FetchResponseWithRetryResult =
+  | { status: 'response'; response: Response }
+  | { status: 'network-error'; error: string };
+
+async function fetchResponseWithTransientRetry(params: {
+  url: string;
+  signal?: AbortSignal;
+  fetchImpl: FetchLike;
+  diagnostics: FetchDiagnostic[];
+  expectedKind: FetchDiagnostic['expectedKind'];
+  sourceRoute: string | null;
+}): Promise<FetchResponseWithRetryResult> {
+  const { url, signal, fetchImpl, diagnostics, expectedKind, sourceRoute } = params;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await fetchImpl(url, { signal });
+      const retryDelay = TRANSIENT_FETCH_RETRY_DELAYS_MS[attempt];
+      if (!response.ok && isTransientHttpStatus(response.status) && retryDelay !== undefined && !signal?.aborted) {
+        diagnostics.push(createFetchDiagnostic({
+          url,
+          expectedKind,
+          sourceRoute,
+          httpStatus: response.status,
+          contentType: response.headers?.get?.('content-type') ?? null,
+          outcome: 'http-error',
+          reason: `retrying transient candidate fetch after HTTP ${response.status} (attempt ${attempt + 1})`
+        }));
+        if (await waitForTransientRetry(retryDelay, signal)) continue;
+      }
+      return { status: 'response', response };
+    } catch (err) {
+      const networkError = err instanceof Error ? err.message : String(err);
+      const retryDelay = TRANSIENT_FETCH_RETRY_DELAYS_MS[attempt];
+      diagnostics.push(createFetchDiagnostic({
+        url,
+        expectedKind,
+        sourceRoute,
+        outcome: 'network-error',
+        networkError,
+        reason: retryDelay !== undefined && !signal?.aborted
+          ? `retrying transient candidate fetch after network error (attempt ${attempt + 1})`
+          : 'rejected: candidate fetch threw a network error'
+      }));
+      if (retryDelay !== undefined && !signal?.aborted && await waitForTransientRetry(retryDelay, signal)) continue;
+      return { status: 'network-error', error: networkError };
+    }
+  }
+}
+
 export async function fetchJsonPageBundle(
   baseUrl: string,
   carbonVersion: string,
@@ -111,7 +173,9 @@ export function buildDsdbResourceCandidateUrls(
   const lastSegment = normalized.split('/').filter(Boolean).at(-1) ?? '';
   const candidates = [
     normalized.startsWith('http://') || normalized.startsWith('https://') ? normalized : null,
-    resourceType === 'TOKEN_TABLE' && lastSegment ? `${dsdbBase}/TOKEN_TABLE.${lastSegment}.json` : null,
+    (resourceType === 'TOKEN_TABLE' || resourceType === 'TYPOGRAPHY') && lastSegment
+      ? `${dsdbBase}/${resourceType}.${lastSegment}.json`
+      : null,
     toGenericDsdbFilenameCandidate(dsdbBase, normalized),
     directPath
   ];
@@ -153,20 +217,11 @@ async function fetchJsonOrNull(
   diagnostics: FetchDiagnostic[],
   isLastCandidate: boolean
 ): Promise<unknown | null> {
-  let response: Response;
-  try {
-    response = await fetchImpl(url, { signal });
-  } catch (err) {
-    diagnostics.push(createFetchDiagnostic({
-      url,
-      expectedKind,
-      sourceRoute,
-      outcome: 'network-error',
-      networkError: err instanceof Error ? err.message : String(err),
-      reason: 'rejected: candidate fetch threw a network error'
-    }));
-    return null;
-  }
+  const fetched = await fetchResponseWithTransientRetry({
+    url, signal, fetchImpl, diagnostics, expectedKind, sourceRoute
+  });
+  if (fetched.status === 'network-error') return null;
+  const response = fetched.response;
   if (!response.ok) {
     diagnostics.push(createFetchDiagnostic({
       url,
@@ -225,7 +280,8 @@ function unique(values: Array<string | null | undefined>): string[] {
 export type PageDataFetchResult =
   | { status: 'ok'; url: string; httpStatus: number; data: unknown }
   | { status: 'http-error'; url: string; httpStatus: number }
-  | { status: 'fetch-error'; url: string; error: string };
+  | { status: 'fetch-error'; url: string; error: string }
+  | { status: 'not-available' };
 
 /**
  * Fetches page-data for a route already resolved to {collectionId, documentId} (via
@@ -234,24 +290,19 @@ export type PageDataFetchResult =
  */
 export async function fetchPageDataByReference(
   baseUrl: string,
-  reference: { collectionId: string; documentId: string },
+  reference: { collectionId?: string; documentId?: string },
   signal?: AbortSignal,
   fetchImpl: FetchLike = fetch,
   diagnostics: FetchDiagnostic[] = [],
   sourceRoute: string | null = null
 ): Promise<PageDataFetchResult> {
+  if (!reference.collectionId || !reference.documentId) return { status: 'not-available' };
   const url = `${baseUrl}/page-data/${reference.collectionId}/${reference.documentId}.json`;
-  let response: Response;
-  try {
-    response = await fetchImpl(url, { signal });
-  } catch (err) {
-    const networkError = err instanceof Error ? err.message : String(err);
-    diagnostics.push(createFetchDiagnostic({
-      url, expectedKind: 'page-data', sourceRoute, outcome: 'network-error', networkError,
-      reason: 'rejected: dedicated reference-based page-data fetch threw a network error'
-    }));
-    return { status: 'fetch-error', url, error: networkError };
-  }
+  const fetched = await fetchResponseWithTransientRetry({
+    url, signal, fetchImpl, diagnostics, expectedKind: 'page-data', sourceRoute
+  });
+  if (fetched.status === 'network-error') return { status: 'fetch-error', url, error: fetched.error };
+  const response = fetched.response;
   if (!response.ok) {
     diagnostics.push(createFetchDiagnostic({
       url, expectedKind: 'page-data', sourceRoute, httpStatus: response.status,
@@ -297,17 +348,11 @@ export async function fetchCarbonContentByReference(
 ): Promise<CarbonContentFetchResult> {
   if (!exportedCarbonFileId) return { status: 'not-available' };
   const url = `${baseUrl}/_dsm/content/m3/${carbonVersion}/${exportedCarbonFileId}`;
-  let response: Response;
-  try {
-    response = await fetchImpl(url, { signal });
-  } catch (err) {
-    const networkError = err instanceof Error ? err.message : String(err);
-    diagnostics.push(createFetchDiagnostic({
-      url, expectedKind: 'carbon-content', sourceRoute, outcome: 'network-error', networkError,
-      reason: 'rejected: dedicated reference-based carbon-content fetch threw a network error'
-    }));
-    return { status: 'fetch-error', url, error: networkError };
-  }
+  const fetched = await fetchResponseWithTransientRetry({
+    url, signal, fetchImpl, diagnostics, expectedKind: 'carbon-content', sourceRoute
+  });
+  if (fetched.status === 'network-error') return { status: 'fetch-error', url, error: fetched.error };
+  const response = fetched.response;
   if (!response.ok) {
     diagnostics.push(createFetchDiagnostic({
       url, expectedKind: 'carbon-content', sourceRoute, httpStatus: response.status,

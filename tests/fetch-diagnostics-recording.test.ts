@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createDsdbResourceFetcher,
   fetchCarbonContentByReference,
   fetchJsonPageBundle,
   fetchPageDataByReference,
@@ -33,6 +34,133 @@ function siteMetaJsText(paths: string[]): string {
   for (const p of paths) routes[`/${p.replace(/^\/+/, '')}`] = { public: true };
   return `window.site_meta = ${JSON.stringify({ routes })};`;
 }
+
+describe('bounded transient JSON retries', () => {
+  it('retries a transient page-data network error and succeeds', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error('connection reset'))
+      .mockResolvedValueOnce(jsonResponse({ title: 'Buttons' }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: '123' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics,
+      '/components/buttons'
+    );
+
+    expect(result.status).toBe('ok');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(diagnostics.some((entry) => entry.outcome === 'network-error' && entry.reason?.includes('retrying transient'))).toBe(true);
+    expect(diagnostics.at(-1)?.outcome).toBe('success');
+  });
+
+  it('retries a transient 503 DSDB resource response and succeeds', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, { ok: false, status: 503 }))
+      .mockResolvedValueOnce(jsonResponse({ system: { tokenSets: [] } }));
+    const fetchResource = createDsdbResourceFetcher(
+      'https://m3.material.io',
+      'cv-1',
+      [],
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      '/components/text-fields',
+      diagnostics
+    );
+
+    const result = await fetchResource('designSystems/ds/components/text-fields', 'TOKEN_TABLE');
+
+    expect(result).toEqual({ system: { tokenSets: [] } });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: 503 });
+    expect(diagnostics.at(-1)?.outcome).toBe('success');
+  });
+
+  it('retries a transient 429 Carbon response and succeeds', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, { ok: false, status: 429 }))
+      .mockResolvedValueOnce(jsonResponse({ sections: [] }));
+
+    const result = await fetchCarbonContentByReference(
+      'https://m3.material.io',
+      'cv-1',
+      'resource.json',
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('ok');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: 429 });
+  });
+
+  it.each([408, 425, 500])('retries transient HTTP %i responses', async (status) => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, { ok: false, status }))
+      .mockResolvedValueOnce(jsonResponse({ title: 'Recovered' }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: 'retry-boundary' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('ok');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: status });
+    expect(diagnostics[0]?.reason).toContain('retrying transient');
+  });
+
+  it('stops retrying when the signal aborts during the retry delay', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const controller = new AbortController();
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(async () => {
+        setTimeout(() => controller.abort(), 10);
+        return jsonResponse({}, { ok: false, status: 503 });
+      })
+      .mockResolvedValueOnce(jsonResponse({ title: 'Must not be fetched' }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: 'abort-retry' },
+      controller.signal,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('http-error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  it('does not retry a permanent 404 response', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}, { ok: false, status: 404 }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: 'missing' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('http-error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: 404 });
+  });
+});
 
 describe('FetchDiagnostic recording: fetchPageDataByReference', () => {
   it('records a success diagnostic for an ok JSON response', async () => {
@@ -80,8 +208,9 @@ describe('FetchDiagnostic recording: fetchPageDataByReference', () => {
       fetchImpl as unknown as typeof fetch,
       diagnostics
     );
-    expect(diagnostics).toHaveLength(1);
-    expect(diagnostics[0]).toMatchObject({ outcome: 'network-error', networkError: 'network down' });
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics.every((entry) => entry.outcome === 'network-error' && entry.networkError === 'network down')).toBe(true);
+    expect(diagnostics.at(-1)?.reason).toBe('rejected: candidate fetch threw a network error');
   });
 
   it('records a parse-error diagnostic when the response body is not valid JSON', async () => {

@@ -257,3 +257,51 @@ describe('buildRoutePlan', () => {
     }));
   });
 });
+
+
+describe('buildRoutePlan sitemap-backed bundle route families', () => {
+  it('treats complete sitemap tab coverage as public evidence for the canonical bundle parent', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes: [{
+        slug: 'components/buttons',
+        exportedCarbonFileId: 'buttons.json',
+        tabs: [{ label: 'Overview' }, { label: 'Specs' }]
+      }],
+      sitemapPaths: ['/components/buttons/overview', '/components/buttons/specs']
+    });
+
+    expect(plan.acceptedRoutes).toEqual([
+      expect.objectContaining({
+        route: '/components/buttons',
+        canonicalRoute: '/components/buttons',
+        sources: ['bundle', 'sitemap'],
+        exportedCarbonFileId: 'buttons.json',
+        tabs: ['Overview', 'Specs'],
+        tabSlugs: ['overview', 'specs']
+      })
+    ]);
+    expect(plan.staleRoutes).toEqual([]);
+  });
+
+  it('does not trust a bundle parent when its declared sitemap tab family is incomplete', () => {
+    const plan = buildRoutePlan({
+      baseUrl: 'https://m3.material.io',
+      includeBlog: false,
+      siteMeta: null,
+      normalizedSiteMetaRoutes: [],
+      bundleRoutes: [{
+        slug: 'components/buttons',
+        exportedCarbonFileId: 'buttons.json',
+        tabs: [{ label: 'Overview' }, { label: 'Specs' }]
+      }],
+      sitemapPaths: ['/components/buttons/overview']
+    });
+
+    expect(plan.acceptedRoutes).toEqual([]);
+    expect(plan.staleRoutes).toContainEqual(expect.objectContaining({ route: '/components/buttons/overview' }));
+  });
+});
