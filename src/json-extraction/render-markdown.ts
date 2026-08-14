@@ -452,11 +452,21 @@ function formatValueNode(v: unknown): string {
   return formatUnknownStructuredValue(v);
 }
 
-function formatResolvedValue(rv: Record<string, unknown>): string {
+function formatFontTrackingValue(value: unknown): string {
+  if (!isNonArrayObject(value) || typeof value.unit !== 'string') return '';
+  if (!Object.keys(value).every((key) => key === 'unit' || key === 'value')) return '';
+  if (value.value != null && (typeof value.value !== 'number' || !Number.isFinite(value.value))) return '';
+  const numericValue = value.value == null ? 0 : value.value;
+  return `${numericValue}${normalizeUnit(value.unit)}`;
+}
+
+function formatResolvedValue(rv: Record<string, unknown>, tokenValueType: string): string {
   if (!rv || rv['undefined'] === true) return '';
   const formatted = Object.entries(rv)
     .filter(([key]) => key !== 'undefined')
-    .map(([, value]) => formatValueNode(value))
+    .map(([key, value]) => tokenValueType === 'FONT_TRACKING' && key === 'fontTracking'
+      ? formatFontTrackingValue(value)
+      : formatValueNode(value))
     .filter(Boolean)
     .join(' ');
   return formatted || '[unresolved]';
@@ -527,10 +537,10 @@ export function renderTokenTableWithDiagnostics(
       const activeEntry = lightEntry ?? darkEntry;
       const aliases = activeEntry ? extractAliasChain(activeEntry.referenceTree, token.tokenName) : [];
       const renderedValues = [
-        lightEntry ? formatResolvedValue(lightEntry.resolvedValue) : '[unresolved]',
-        darkEntry ? formatResolvedValue(darkEntry.resolvedValue) : '[unresolved]',
-        lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue) : '',
-        darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue) : ''
+        lightEntry ? formatResolvedValue(lightEntry.resolvedValue, token.tokenValueType) : '[unresolved]',
+        darkEntry ? formatResolvedValue(darkEntry.resolvedValue, token.tokenValueType) : '[unresolved]',
+        lightHcEntry ? formatResolvedValue(lightHcEntry.resolvedValue, token.tokenValueType) : '',
+        darkHcEntry ? formatResolvedValue(darkHcEntry.resolvedValue, token.tokenValueType) : ''
       ];
       if (renderedValues[0] === '[unresolved]' || renderedValues[1] === '[unresolved]') unresolvedTokenCount += 1;
       for (const entry of [lightEntry, darkEntry, lightHcEntry, darkHcEntry]) {

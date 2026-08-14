@@ -57,6 +57,29 @@ export async function validateStructuredGraph(input: ValidateStructuredGraphInpu
   const reasons: string[] = [];
   const resourceById = new Map(resourceGraph.resources.map((resource) => [resource.resourceId, resource]));
   const tokenTableById = new Map(tokenTableGraph.tokenTables.map((tokenTable) => [tokenTable.resourceId, tokenTable]));
+  const blockingTokenValueReasons = new Set<string>([
+    'missing-alias-target',
+    'unsupported-value-type',
+    'parser-bug',
+    'unclassified',
+  ]);
+  const blockingTokenValues: string[] = [];
+  for (const tokenTable of tokenTableGraph.tokenTables) {
+    for (const tokenSet of tokenTable.tokenSets) {
+      for (const token of tokenSet.tokens) {
+        for (const value of token.values) {
+          if (value.resolved || !value.unresolvedReason || !blockingTokenValueReasons.has(value.unresolvedReason)) continue;
+          blockingTokenValues.push(`${token.tokenName}:${value.role}:${value.unresolvedReason}`);
+        }
+      }
+    }
+  }
+  if (blockingTokenValues.length > 0) {
+    const sample = blockingTokenValues.slice(0, 10).join(', ');
+    reasons.push(
+      `Token-table graph contains ${blockingTokenValues.length} parser/integrity unresolved value(s): ${sample}${blockingTokenValues.length > 10 ? `, and ${blockingTokenValues.length - 10} more` : ""}.`
+    );
+  }
 
   for (const resource of resourceGraph.resources) {
     if (resource.status !== 'unresolved') continue;

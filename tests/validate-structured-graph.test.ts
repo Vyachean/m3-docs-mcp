@@ -109,6 +109,57 @@ describe('validateStructuredGraph', () => {
     expect(result.reasons).toEqual([]);
   });
 
+  it('allows token values that are intentionally absent upstream', async () => {
+    await writeResourceGraph(makeResourceGraph(), cacheDir);
+    await writeTokenTableGraph(makeTokenTableGraph({
+      tokenTables: [{
+        resourceId: 'token-table:md.comp.switch',
+        resourceName: 'md.comp.switch',
+        requestedTokenSets: ['md.comp.switch.selected'],
+        tokenSets: [{
+          tokenSetName: 'md.comp.switch.selected',
+          displayName: 'Selected',
+          tokens: [{
+            tokenName: 'md.comp.switch.optional',
+            displayName: 'Optional',
+            aliases: [],
+            values: [{ role: 'light', value: null, resolved: false, unresolvedReason: 'upstream-empty' }],
+          }],
+        }],
+        routes: ['/components/switch/overview'],
+        unresolvedTokenCount: 1,
+      }],
+    }), cacheDir);
+    const result = await validateStructuredGraph({ cacheDir, requiredRoutes: REQUIRED_ROUTES });
+    expect(result.passed).toBe(true);
+  });
+
+  it('fails on token values the parser cannot represent', async () => {
+    await writeResourceGraph(makeResourceGraph(), cacheDir);
+    await writeTokenTableGraph(makeTokenTableGraph({
+      tokenTables: [{
+        resourceId: 'token-table:typography',
+        resourceName: 'typography',
+        requestedTokenSets: ['Type scale'],
+        tokenSets: [{
+          tokenSetName: 'md.ref.typeface',
+          displayName: 'Type scale',
+          tokens: [{
+            tokenName: 'md.ref.typeface.variable.wght-medium',
+            displayName: 'Variable medium wght',
+            aliases: [],
+            values: [{ role: 'light', value: null, resolved: false, unresolvedReason: 'unsupported-value-type' }],
+          }],
+        }],
+        routes: ['/styles/typography/type-scale-tokens'],
+        unresolvedTokenCount: 1,
+      }],
+    }), cacheDir);
+    const result = await validateStructuredGraph({ cacheDir, requiredRoutes: REQUIRED_ROUTES });
+    expect(result.passed).toBe(false);
+    expect(result.reasons.some((reason) => reason.includes('unsupported-value-type'))).toBe(true);
+  });
+
   // Regression: m3-docs-cache production failures — status-table resources for
   // /components/lists/overview, /components/switch/overview, and /components/buttons/overview
   // (designSystems/030656e0a1083ef1/components/<id>) were reported unresolved
