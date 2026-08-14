@@ -14,9 +14,6 @@ import { findArtifactsByKind, readArtifactIndex } from './raw-artifacts/artifact
  * tools. `manifest.json` is the entry point for the new raw-snapshot-first
  * cache: it records what raw artifacts/graph/markdown/coverage exist and
  * their health, without itself containing page content.
- *
- * Most count/health fields are unset/placeholder at this stage because the
- * graph builder and renderer described in later stages don't exist yet.
  */
 
 export const ManifestHealthSchema = z.union([
@@ -86,7 +83,7 @@ export type CreateCacheManifestInput = {
   generatedAt?: string;
 };
 
-/** Builds a validated cache schema v2 manifest, filling in placeholder defaults for fields not yet populated by the graph/renderer (later stages). */
+/** Builds a validated cache schema v2 manifest. */
 export function createCacheManifest(input: CreateCacheManifestInput): CacheManifest {
   return CacheManifestSchema.parse({
     schemaVersion: 2,
@@ -117,14 +114,13 @@ export async function readManifest(cacheDir = getDefaultCacheDir()): Promise<Cac
 }
 
 /**
- * Reads the canonical persisted owners summarized by manifest.counts.
+ * Returns the count summary of the canonical persisted owners that currently exist on disk.
  *
- * A complete cache snapshot has all graph files and index.json by the time the crawler writes
- * manifest.json. When those owners are not all available yet (for example, an isolated manifest
- * unit test), return null and preserve the caller-provided placeholder counts. Once a complete
- * persisted snapshot exists, its owners win over any crawl-time operation/reference counters.
+ * Missing or invalid owners contribute zero here; presence/schema validity remains the
+ * responsibility of the dedicated cache/graph/raw validators. Keeping count derivation here gives
+ * generation and manifest-consistency validation one definition for what every count means.
  */
-export async function readPersistedManifestCounts(cacheDir = getDefaultCacheDir()): Promise<ManifestCounts | null> {
+export async function readPersistedManifestCounts(cacheDir = getDefaultCacheDir()): Promise<ManifestCounts> {
   const [artifactIndex, routeGraph, pageGraph, tokenTableGraph, index] = await Promise.all([
     readArtifactIndex(cacheDir),
     readRouteGraph(cacheDir),
@@ -133,33 +129,19 @@ export async function readPersistedManifestCounts(cacheDir = getDefaultCacheDir(
     readIndex(cacheDir),
   ]);
 
-  if (!routeGraph || !pageGraph || !tokenTableGraph || !index) return null;
-
   return ManifestCountsSchema.parse({
     rawArtifacts: artifactIndex.artifacts.length,
-    routes: routeGraph.routes.length,
-    pages: pageGraph.pages.length,
-    markdownPages: index.pages.length,
+    routes: routeGraph?.routes.length ?? 0,
+    pages: pageGraph?.pages.length ?? 0,
+    markdownPages: index?.pages.length ?? 0,
     dsdbResources: findArtifactsByKind(artifactIndex, 'dsdb-resource').length,
-    tokenTables: tokenTableGraph.tokenTables.length,
+    tokenTables: tokenTableGraph?.tokenTables.length ?? 0,
   });
 }
 
-/**
- * Writes the cache schema v2 manifest to disk, replacing any existing manifest.
- *
- * When a complete persisted snapshot already exists, manifest counts are derived from its
- * canonical owners instead of trusting caller-supplied crawl-time counters. This keeps the
- * manifest a summary of what is actually persisted after artifact de-duplication and graph
- * reconciliation. Callers that intentionally construct a manifest before the rest of a snapshot
- * exists retain the provided placeholder counts.
- */
+/** Writes the validated cache schema v2 manifest supplied by its caller. */
 export async function writeManifest(manifest: CacheManifest, cacheDir = getDefaultCacheDir()): Promise<void> {
-  const persistedCounts = await readPersistedManifestCounts(cacheDir);
-  const manifestToWrite = CacheManifestSchema.parse({
-    ...manifest,
-    counts: persistedCounts ?? manifest.counts,
-  });
+  const validatedManifest = CacheManifestSchema.parse(manifest);
   await mkdir(cacheDir, { recursive: true });
-  await writeFile(manifestPath(cacheDir), `${JSON.stringify(manifestToWrite, null, 2)}\n`, 'utf8');
+  await writeFile(manifestPath(cacheDir), `${JSON.stringify(validatedManifest, null, 2)}\n`, 'utf8');
 }
