@@ -2,7 +2,7 @@ import { mkdtemp, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { manifestPath } from '../src/manifest.js';
+import { manifestPath, readManifest, writeManifest } from '../src/manifest.js';
 import { resourceGraphPath, writePageGraph, writeResourceGraph, writeTokenTableGraph } from '../src/graph/graph-store.js';
 import { writeArtifactIndex } from '../src/raw-artifacts/artifact-index.js';
 import { REQUIRED_PAGE_PATHS } from '../src/validation/validate-rendered-output.js';
@@ -64,6 +64,25 @@ describe('validateCacheV2', () => {
     expect(result.allPassed).toBe(false);
     expect(result.failedStages).toContain('manifest-health');
     expect(result.failedStages).toContain('cache-files');
+  });
+
+  it('fails when manifest counts disagree with the persisted snapshot', async () => {
+    await writeValidCacheV2Fixture(cacheDir);
+    const manifest = await readManifest(cacheDir);
+    if (!manifest) throw new Error('Fixture manifest is missing.');
+    await writeManifest({
+      ...manifest,
+      counts: {
+        ...manifest.counts,
+        routes: manifest.counts.routes + 1,
+      },
+    }, cacheDir);
+
+    const result = await validateCacheV2({ cacheDir, renderedOutputRebuildFn: stubRebuild });
+    expect(result.allPassed).toBe(false);
+    expect(result.failedStages).toContain('manifest-consistency');
+    const consistencyResult = result.results.find((entry) => entry.stage === 'manifest-consistency');
+    expect(consistencyResult?.reasons.some((reason) => reason.includes('manifest.counts.routes='))).toBe(true);
   });
 
   it('fails when a graph file is missing', async () => {
