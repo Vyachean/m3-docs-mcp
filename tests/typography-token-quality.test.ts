@@ -87,6 +87,30 @@ describe('current Material typography token values', () => {
     expect(rendered.diagnostics[0]?.unresolvedTokenCount).toBe(0);
   });
 
+  it('keeps an explicitly empty FONT_TRACKING payload unresolved without inventing zero', () => {
+    const system = systemWithResolvedValue('FONT_TRACKING', { fontTracking: {} });
+    const node = buildTokenTableNode({
+      resourceId: 'token-table:test',
+      resourceName: 'md.test',
+      system,
+      requestedTokenSets: ['Test Set'],
+    });
+    const rendered = renderTokenTableWithDiagnostics(system, ['Test Set']);
+
+    expect(node.tokenSets[0]?.tokens[0]?.values.find((value) => value.role === 'light')).toMatchObject({
+      resolved: false,
+      value: null,
+      unresolvedReason: 'upstream-empty',
+    });
+    expect(node.tokenSets[0]?.tokens[0]?.values.find((value) => value.role === 'dark')).toMatchObject({
+      resolved: false,
+      value: null,
+      unresolvedReason: 'upstream-empty',
+    });
+    expect(rendered.markdown).toContain('[unresolved]');
+    expect(rendered.markdown).not.toContain('0sp');
+  });
+
   it('does not generalize FONT_TRACKING zero omission to other value types', () => {
     const system = systemWithResolvedValue('DIMENSION', { dimension: { unit: 'DIPS' } });
     const rendered = renderTokenTableWithDiagnostics(system, ['Test Set']);
