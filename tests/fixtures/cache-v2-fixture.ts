@@ -124,15 +124,14 @@ function makeTokenTableNode(route: string, overrides: Partial<TokenTableNode> = 
 }
 
 export type CacheV2FixtureOptions = {
-  /** When false, omits the artifact index "artifacts" wrapper and writes a bare top-level array
-   *  directly, exercising the "current top-level array artifact index format" requirement. */
+  /** When true, writes the artifact index as the current bare top-level array format. */
   artifactIndexAsBareArray?: boolean;
 };
 
 /** Builds a fully valid cache v2 fixture on disk: every required file, a verified manifest, and
- *  graph entries for every REQUIRED_CACHE_VALIDATION_ROUTES route — enough for validateCacheV2 to
- *  pass end to end (given a stubbed rendered-output rebuild function, since no real raw page-data
- *  artifacts are decodable here). */
+ * graph entries for every REQUIRED_CACHE_VALIDATION_ROUTES route — enough for validateCacheV2 to
+ * pass end to end (given a stubbed rendered-output rebuild function, since no real raw page-data
+ * artifacts are decodable here). */
 export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV2FixtureOptions = {}): Promise<void> {
   await mkdir(cacheDir, { recursive: true });
 
@@ -154,7 +153,6 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
     },
     health: { rawSnapshot: 'verified', graph: 'verified', markdown: 'verified', coverage: 'verified' },
   };
-  await writeManifest(manifest, cacheDir);
 
   const artifacts: ArtifactRecord[] = REQUIRED_CACHE_VALIDATION_ROUTES.flatMap((route) => {
     const slug = specRouteSlug(route);
@@ -212,8 +210,24 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
     await writeFile(absolutePath, '# OK\n\nNo placeholders here.', 'utf8');
   }
 
+  const markdownPages = REQUIRED_PAGE_PATHS.map((relativePath) => {
+    const pagePath = relativePath.replace(/^pages\//, '');
+    return {
+      id: pagePath,
+      title: pagePath,
+      url: `https://m3.material.io/${pagePath.replace(/\.md$/, '')}`,
+      path: pagePath,
+      section: 'components',
+      headings: ['OK'],
+      capturedAt: GENERATED_AT,
+    };
+  });
   await mkdir(path.dirname(indexPath(cacheDir)), { recursive: true });
   await writeFile(indexPath(cacheDir), JSON.stringify({
+    source: 'https://m3.material.io/',
+    capturedAt: GENERATED_AT,
+    pageCount: markdownPages.length,
+    pages: markdownPages,
     coverageDiagnostics: {
       coverageHealth: 'verified',
       routeCoverageSummary: { failedRoutes: 0, unresolvedRoutes: 0, partialRoutes: 0, problematicExamples: [] },
@@ -223,4 +237,7 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
 
   await mkdir(path.join(cacheDir, 'diagnostics'), { recursive: true });
   await writeFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), JSON.stringify({ runId: 'fixture-run' }), 'utf8');
+
+  // Write last so writeManifest derives all six counts from the complete persisted snapshot.
+  await writeManifest(manifest, cacheDir);
 }
