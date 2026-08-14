@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { indexPath } from '../../src/cache.js';
-import { writeManifest, type CacheManifest } from '../../src/manifest.js';
+import { readPersistedManifestCounts, writeManifest, type CacheManifest } from '../../src/manifest.js';
 import { writeArtifactIndex, type ArtifactIndex } from '../../src/raw-artifacts/artifact-index.js';
 import type { ArtifactRecord } from '../../src/raw-artifacts/artifact-types.js';
 import {
@@ -135,25 +135,6 @@ export type CacheV2FixtureOptions = {
 export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV2FixtureOptions = {}): Promise<void> {
   await mkdir(cacheDir, { recursive: true });
 
-  const manifest: CacheManifest = {
-    schemaVersion: 2,
-    generatedAt: GENERATED_AT,
-    baseUrl: 'https://m3.material.io/',
-    carbonVersion: 'cv-1',
-    siteMetaHash: 'a'.repeat(64),
-    angularBundleHash: 'b'.repeat(64),
-    sitemapHash: 'c'.repeat(64),
-    counts: {
-      rawArtifacts: REQUIRED_CACHE_VALIDATION_ROUTES.length * 2,
-      routes: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      pages: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      markdownPages: REQUIRED_PAGE_PATHS.length,
-      dsdbResources: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      tokenTables: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-    },
-    health: { rawSnapshot: 'verified', graph: 'verified', markdown: 'verified', coverage: 'verified' },
-  };
-
   const artifacts: ArtifactRecord[] = REQUIRED_CACHE_VALIDATION_ROUTES.flatMap((route) => {
     const slug = specRouteSlug(route);
     return [
@@ -238,6 +219,16 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
   await mkdir(path.join(cacheDir, 'diagnostics'), { recursive: true });
   await writeFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), JSON.stringify({ runId: 'fixture-run' }), 'utf8');
 
-  // Write last so writeManifest derives all six counts from the complete persisted snapshot.
+  const manifest: CacheManifest = {
+    schemaVersion: 2,
+    generatedAt: GENERATED_AT,
+    baseUrl: 'https://m3.material.io/',
+    carbonVersion: 'cv-1',
+    siteMetaHash: 'a'.repeat(64),
+    angularBundleHash: 'b'.repeat(64),
+    sitemapHash: 'c'.repeat(64),
+    counts: await readPersistedManifestCounts(cacheDir),
+    health: { rawSnapshot: 'verified', graph: 'verified', markdown: 'verified', coverage: 'verified' },
+  };
   await writeManifest(manifest, cacheDir);
 }
