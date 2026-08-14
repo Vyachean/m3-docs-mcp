@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { indexPath } from '../src/cache.js';
 import { upsertArtifactRecord } from '../src/raw-artifacts/artifact-index.js';
 import { persistArtifact } from '../src/raw-artifacts/artifact-store.js';
-import { createCacheManifest, manifestPath, readManifest, writeManifest } from '../src/manifest.js';
+import { createCacheManifest, manifestPath, readManifest, readPersistedManifestCounts, writeManifest } from '../src/manifest.js';
 import { writeRouteGraph, writeResourceGraph, writeTokenTableGraph, writePageGraph } from '../src/graph/graph-store.js';
 import type { RouteGraph, RouteNode } from '../src/graph/graph-types.js';
 import { writeRendererReport } from '../src/rendered/renderer-report.js';
@@ -125,11 +125,13 @@ async function writePassingFixtures(): Promise<void> {
   }), 'utf8');
 
   // Write last so the manifest summarizes the actual persisted owners used by stage 8.
+  const counts = await readPersistedManifestCounts(cacheDir);
   await writeManifest(createCacheManifest({
     baseUrl: 'https://m3.material.io',
     carbonVersion: 'v1',
     siteMetaHash: siteMeta.sha256,
     angularBundleHash: bundle.sha256,
+    counts,
   }), cacheDir);
 }
 
