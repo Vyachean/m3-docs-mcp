@@ -1,0 +1,90 @@
+name: Apply manifest crawler patch
+
+on:
+  push:
+    branches:
+      - fix/manifest-count-consistency
+    paths:
+      - .github/workflows/apply-manifest-crawler-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/manifest-count-consistency
+          fetch-depth: 0
+
+      - name: Apply exact crawler replacements
+        shell: bash
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('src/crawler.ts')
+          text = path.read_text()
+
+          old_import = "import { createCacheManifest, writeManifest, type ManifestHealthSummary } from './manifest.js';"
+          new_import = "import { createCacheManifest, readPersistedManifestCounts, writeManifest, type ManifestHealthSummary } from './manifest.js';"
+          if text.count(old_import) != 1:
+              raise SystemExit(f'Expected exactly one manifest import match, got {text.count(old_import)}')
+          text = text.replace(old_import, new_import)
+
+          old_block = """  const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
+          const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
+          const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
+            baseUrl,
+            carbonVersion: carbonVersionForManifest,
+            siteMetaHash: siteMetaHashForManifest,
+            angularBundleHash: angularBundleHashForManifest,
+            sitemapHash: sitemapHashForManifest,
+            generatedAt: capturedAt,
+            counts: {
+              rawArtifacts: artifactRecords.length,
+              routes: routeCoverageBySourceRoute.size,
+              pages: pages.length,
+              markdownPages: pages.length,
+              dsdbResources: dsdbResourceArtifactCount,
+              tokenTables: tokenTableCount
+            },
+            health
+          });
+          """
+          new_block = """  const persistedManifestCounts = await readPersistedManifestCounts(cacheDir);
+          const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
+            baseUrl,
+            carbonVersion: carbonVersionForManifest,
+            siteMetaHash: siteMetaHashForManifest,
+            angularBundleHash: angularBundleHashForManifest,
+            sitemapHash: sitemapHashForManifest,
+            generatedAt: capturedAt,
+            counts: persistedManifestCounts,
+            health
+          });
+          """
+          if text.count(old_block) != 1:
+              raise SystemExit(f'Expected exactly one manifest block match, got {text.count(old_block)}')
+          text = text.replace(old_block, new_block)
+
+          path.write_text(text)
+          PY
+
+          grep -F "readPersistedManifestCounts" src/crawler.ts
+          if grep -Fq "rawArtifacts: artifactRecords.length" src/crawler.ts; then
+            echo "Old manifest operation count remains" >&2
+            exit 1
+          fi
+
+      - name: Commit patch and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-manifest-crawler-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/crawler.ts .github/workflows/apply-manifest-crawler-patch.yml
+          git commit -m "fix: derive crawler manifest counts from persisted owners"
+          git push origin HEAD:fix/manifest-count-consistency
