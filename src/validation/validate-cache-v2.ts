@@ -5,6 +5,7 @@ import { readPageGraph, readResourceGraph, readRouteGraph, readTokenTableGraph }
 import { readCacheDiagnosticsSummary, type CacheDiagnosticsSummary } from '../diagnostics/write-cache-diagnostics.js';
 import { validateCacheFiles } from './validate-cache-files.js';
 import { validateManifestHealth } from './validate-manifest-health.js';
+import { validateManifestConsistency } from './validate-manifest-consistency.js';
 import { validateArtifactIndex } from './validate-artifact-index.js';
 import { validateGraphFiles } from './validate-graph-files.js';
 import { validateRouteGraph } from './validate-route-graph.js';
@@ -87,6 +88,7 @@ export async function validateCacheV2(input: ValidateCacheV2Input = {}): Promise
   const results: CheckResult[] = await Promise.all([
     validateCacheFiles({ cacheDir }),
     validateManifestHealth({ cacheDir }),
+    validateManifestConsistency({ cacheDir }),
     validateArtifactIndex({ cacheDir }),
     validateGraphFiles({ cacheDir }),
     validateRouteGraph({ cacheDir, requiredRoutes }),
