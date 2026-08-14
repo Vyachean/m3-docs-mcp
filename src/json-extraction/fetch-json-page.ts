@@ -23,20 +23,8 @@ function isTransientHttpStatus(status: number): boolean {
 
 async function waitForTransientRetry(delayMs: number, signal?: AbortSignal): Promise<boolean> {
   if (signal?.aborted) return false;
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const finish = (value: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (signal) signal.removeEventListener('abort', onAbort);
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const onAbort = () => finish(false);
-    timer = setTimeout(() => finish(true), delayMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
+  await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+  return !signal?.aborted;
 }
 
 type FetchResponseWithRetryResult =

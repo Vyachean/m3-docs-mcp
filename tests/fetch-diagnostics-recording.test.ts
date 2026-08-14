@@ -100,6 +100,49 @@ describe('bounded transient JSON retries', () => {
     expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: 429 });
   });
 
+  it.each([408, 425, 500])('retries transient HTTP %i responses', async (status) => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, { ok: false, status }))
+      .mockResolvedValueOnce(jsonResponse({ title: 'Recovered' }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: 'retry-boundary' },
+      undefined,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('ok');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(diagnostics[0]).toMatchObject({ outcome: 'http-error', httpStatus: status });
+    expect(diagnostics[0]?.reason).toContain('retrying transient');
+  });
+
+  it('stops retrying when the signal aborts during the retry delay', async () => {
+    const diagnostics: FetchDiagnostic[] = [];
+    const controller = new AbortController();
+    const fetchImpl = vi.fn()
+      .mockImplementationOnce(async () => {
+        setTimeout(() => controller.abort(), 10);
+        return jsonResponse({}, { ok: false, status: 503 });
+      })
+      .mockResolvedValueOnce(jsonResponse({ title: 'Must not be fetched' }));
+
+    const result = await fetchPageDataByReference(
+      'https://m3.material.io',
+      { collectionId: 'ComponentsM3', documentId: 'abort-retry' },
+      controller.signal,
+      fetchImpl as unknown as typeof fetch,
+      diagnostics
+    );
+
+    expect(result.status).toBe('http-error');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it('does not retry a permanent 404 response', async () => {
     const diagnostics: FetchDiagnostic[] = [];
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({}, { ok: false, status: 404 }));
