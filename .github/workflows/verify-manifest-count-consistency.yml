@@ -14,6 +14,7 @@ concurrency:
   group: verify-manifest-count-consistency
   cancel-in-progress: true
 
+# Final gate includes the independent canonical-owner mapping regression test.
 jobs:
   verify:
     runs-on: ubuntu-latest
