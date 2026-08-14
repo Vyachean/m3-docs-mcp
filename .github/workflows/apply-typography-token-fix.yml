@@ -42,13 +42,34 @@ jobs:
 
           replaceExact(
             'src/graph/token-table-graph.ts',
+            `function classifyUnresolvedReason(\n  entries: DecodedContextTreeEntry[],\n  entry: DecodedContextTreeEntry | undefined,\n): UnresolvedReason {`,
+            `function classifyUnresolvedReason(\n  entries: DecodedContextTreeEntry[],\n  entry: DecodedContextTreeEntry | undefined,\n  tokenValueType: string,\n): UnresolvedReason {`,
+          );
+          replaceExact(
+            'src/graph/token-table-graph.ts',
+            `  if (entry.resolvedValue['undefined'] === true) return 'upstream-empty';\n  const meaningfulKeys = Object.keys(entry.resolvedValue).filter((k) => k !== 'undefined');`,
+            `  if (entry.resolvedValue['undefined'] === true) return 'upstream-empty';\n  const fontTracking = entry.resolvedValue['fontTracking'];\n  if (\n    tokenValueType === 'FONT_TRACKING' &&\n    isRecord(fontTracking) &&\n    Object.keys(fontTracking).length === 0\n  ) return 'upstream-empty';\n  const meaningfulKeys = Object.keys(entry.resolvedValue).filter((k) => k !== 'undefined');`,
+          );
+
+          replaceExact(
+            'src/graph/token-table-graph.ts',
             `function buildTokenValues(\n  entries: DecodedContextTreeEntry[],\n  idx: TagIndex\n): { values: TokenValueEntry[]; aliases: string[]; unresolved: boolean } {`,
             `function buildTokenValues(\n  entries: DecodedContextTreeEntry[],\n  idx: TagIndex,\n  tokenValueType: string,\n): { values: TokenValueEntry[]; aliases: string[]; unresolved: boolean } {`,
           );
           replaceExact(
             'src/graph/token-table-graph.ts',
+            `        const reason = classifyUnresolvedReason(entries, undefined);`,
+            `        const reason = classifyUnresolvedReason(entries, undefined, tokenValueType);`,
+          );
+          replaceExact(
+            'src/graph/token-table-graph.ts',
             `    const value = formatResolvedValue(entry.resolvedValue);`,
             `    const value = formatResolvedValue(entry.resolvedValue, tokenValueType);`,
+          );
+          replaceExact(
+            'src/graph/token-table-graph.ts',
+            `      const reason = classifyUnresolvedReason(entries, entry);`,
+            `      const reason = classifyUnresolvedReason(entries, entry, tokenValueType);`,
           );
           replaceExact(
             'src/graph/token-table-graph.ts',
