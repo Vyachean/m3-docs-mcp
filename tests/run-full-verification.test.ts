@@ -1,11 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { indexPath } from '../src/cache.js';
 import { upsertArtifactRecord } from '../src/raw-artifacts/artifact-index.js';
 import { persistArtifact } from '../src/raw-artifacts/artifact-store.js';
-import { createCacheManifest, manifestPath, writeManifest } from '../src/manifest.js';
+import { createCacheManifest, manifestPath, readManifest, writeManifest } from '../src/manifest.js';
 import { writeRouteGraph, writeResourceGraph, writeTokenTableGraph, writePageGraph } from '../src/graph/graph-store.js';
 import type { RouteGraph, RouteNode } from '../src/graph/graph-types.js';
 import { writeRendererReport } from '../src/rendered/renderer-report.js';
@@ -229,9 +229,16 @@ describe('runFullVerification', () => {
 
   it('stops at manifest-consistency when a completed snapshot has drifted manifest counts', async () => {
     await writePassingFixtures();
-    const manifest = JSON.parse(await readFile(manifestPath(cacheDir), 'utf8')) as { counts: { rawArtifacts: number } };
-    manifest.counts.rawArtifacts += 1;
-    await writeFile(manifestPath(cacheDir), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+    const manifest = await readManifest(cacheDir);
+    if (!manifest) throw new Error('Fixture manifest is missing.');
+    const driftedManifest = {
+      ...manifest,
+      counts: {
+        ...manifest.counts,
+        rawArtifacts: manifest.counts.rawArtifacts + 1,
+      },
+    };
+    await writeFile(manifestPath(cacheDir), `${JSON.stringify(driftedManifest, null, 2)}\n`, 'utf8');
 
     const verification = await runFullVerification({
       cacheDir,
