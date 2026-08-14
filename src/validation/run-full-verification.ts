@@ -7,29 +7,30 @@ import { validateStructuredGraph } from './validate-structured-graph.js';
 import { validateRenderedOutput, type ValidateRenderedOutputInput } from './validate-rendered-output.js';
 import { validateSearchIndex } from './validate-search-index.js';
 import { validateCoverageSummary, type CoverageMode } from './validate-coverage-summary.js';
+import { validateManifestConsistency } from './validate-manifest-consistency.js';
 import { failedCheck, type CheckResult } from './types.js';
 
 /**
- * Orchestrates the documented stage 1-7 `verify:cache:full` / `verify:cache:smoke` check pipeline
+ * Orchestrates the documented stage 1-8 `verify:cache:full` / `verify:cache:smoke` check pipeline
  * in the exact required order, stopping at the first hard failure (fail fast, preserve
- * diagnostics — see AGENTS.md / the stage 8 dispatch). Each stage is implemented as an
- * independently unit-testable `validate-*.ts` module; this module only sequences them and decides
- * when to stop early.
+ * diagnostics). Each stage is implemented as an independently unit-testable `validate-*.ts`
+ * module; this module only sequences them and decides when to stop early.
  *
  * Order (matches scripts/verify-full-cache-refresh.mjs's documented stage list):
- *   1. raw-snapshot       (validate-raw-snapshot.ts)
- *   2. route-graph        (validate-route-graph.ts)
- *   3. browser-oracle     (validate-browser-oracle.ts) — best-effort; see module doc
- *   4. structured-graph   (validate-structured-graph.ts)
- *   5. rendered-output    (validate-rendered-output.ts)
- *   6. search-index       (validate-search-index.ts)
- *   7. coverage-summary   (validate-coverage-summary.ts)
+ *   1. raw-snapshot          (validate-raw-snapshot.ts)
+ *   2. route-graph           (validate-route-graph.ts)
+ *   3. browser-oracle        (validate-browser-oracle.ts)
+ *   4. structured-graph      (validate-structured-graph.ts)
+ *   5. rendered-output       (validate-rendered-output.ts)
+ *   6. search-index          (validate-search-index.ts)
+ *   7. coverage-summary      (validate-coverage-summary.ts)
+ *   8. manifest-consistency  (validate-manifest-consistency.ts)
  *
- * Stage 3 (browser-oracle) is the one stage that may legitimately report `passed: true` with
- * `details.skipped: true` when no live browser/network is available. Stages 2 and 4's
- * fixed-required-route checks are full-mode only (smoke intentionally crawls a small page-budget
- * subset not guaranteed to include every required route); every other check in every stage is
- * enforced unconditionally regardless of mode. See `RunFullVerificationOptions.mode`.
+ * Stage 3 (browser-oracle) may report a clearly labelled skip only in smoke/degraded mode; full
+ * verification requires a real oracle pass. Stages 2 and 4's fixed-required-route checks are
+ * full-mode only because smoke intentionally crawls a small page-budget subset. Stage 8 is a
+ * cross-layer persisted-snapshot invariant and is enforced in both modes whenever the preceding
+ * stages reached it. See `RunFullVerificationOptions.mode`.
  */
 
 export type RunFullVerificationOptions = {
@@ -69,9 +70,8 @@ export async function runFullVerification(options: RunFullVerificationOptions = 
 
   // Smoke runs intentionally crawl a small page-budget subset (e.g. --max-pages 40) that is not
   // guaranteed to include every fixed required route, so the required-route checks in stages 2
-  // and 4 are full-mode only (mirrors the pre-existing script's assertRequiredPages, which was
-  // already gated to `mode === 'full'`). Schema/structural validity of the graph itself is still
-  // checked unconditionally via the empty requiredRoutes list.
+  // and 4 are full-mode only. Schema/structural validity of the graph itself is still checked
+  // unconditionally via the empty requiredRoutes list.
   const requiredRoutesForMode = mode === 'full' ? undefined : [];
 
   const stage2 = await validateRouteGraph({ cacheDir, requiredRoutes: requiredRoutesForMode });
@@ -120,6 +120,10 @@ export async function runFullVerification(options: RunFullVerificationOptions = 
 
   const stage7 = await validateCoverageSummary({ cacheDir, mode });
   results.push(stage7);
+  if (!stage7.passed) return finish(results);
+
+  const stage8 = await validateManifestConsistency({ cacheDir });
+  results.push(stage8);
   return finish(results);
 }
 

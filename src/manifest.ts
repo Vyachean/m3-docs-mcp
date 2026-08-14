@@ -1,7 +1,9 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { getDefaultCacheDir } from './cache.js';
+import { getDefaultCacheDir, readIndex } from './cache.js';
+import { readPageGraph, readRouteGraph, readTokenTableGraph } from './graph/graph-store.js';
+import { findArtifactsByKind, readArtifactIndex } from './raw-artifacts/artifact-index.js';
 
 /**
  * Cache schema v2 manifest (`manifest.json` at the cache directory root).
@@ -12,9 +14,6 @@ import { getDefaultCacheDir } from './cache.js';
  * tools. `manifest.json` is the entry point for the new raw-snapshot-first
  * cache: it records what raw artifacts/graph/markdown/coverage exist and
  * their health, without itself containing page content.
- *
- * Most count/health fields are unset/placeholder at this stage because the
- * graph builder and renderer described in later stages don't exist yet.
  */
 
 export const ManifestHealthSchema = z.union([
@@ -84,7 +83,7 @@ export type CreateCacheManifestInput = {
   generatedAt?: string;
 };
 
-/** Builds a validated cache schema v2 manifest, filling in placeholder defaults for fields not yet populated by the graph/renderer (later stages). */
+/** Builds a validated cache schema v2 manifest. */
 export function createCacheManifest(input: CreateCacheManifestInput): CacheManifest {
   return CacheManifestSchema.parse({
     schemaVersion: 2,
@@ -114,8 +113,35 @@ export async function readManifest(cacheDir = getDefaultCacheDir()): Promise<Cac
   }
 }
 
-/** Writes the cache schema v2 manifest to disk, replacing any existing manifest. */
+/**
+ * Returns the count summary of the canonical persisted owners that currently exist on disk.
+ *
+ * Missing or invalid owners contribute zero here; presence/schema validity remains the
+ * responsibility of the dedicated cache/graph/raw validators. Keeping count derivation here gives
+ * generation and manifest-consistency validation one definition for what every count means.
+ */
+export async function readPersistedManifestCounts(cacheDir = getDefaultCacheDir()): Promise<ManifestCounts> {
+  const [artifactIndex, routeGraph, pageGraph, tokenTableGraph, index] = await Promise.all([
+    readArtifactIndex(cacheDir),
+    readRouteGraph(cacheDir),
+    readPageGraph(cacheDir),
+    readTokenTableGraph(cacheDir),
+    readIndex(cacheDir),
+  ]);
+
+  return ManifestCountsSchema.parse({
+    rawArtifacts: artifactIndex.artifacts.length,
+    routes: routeGraph?.routes.length ?? 0,
+    pages: pageGraph?.pages.length ?? 0,
+    markdownPages: index?.pages.length ?? 0,
+    dsdbResources: findArtifactsByKind(artifactIndex, 'dsdb-resource').length,
+    tokenTables: tokenTableGraph?.tokenTables.length ?? 0,
+  });
+}
+
+/** Writes the validated cache schema v2 manifest supplied by its caller. */
 export async function writeManifest(manifest: CacheManifest, cacheDir = getDefaultCacheDir()): Promise<void> {
+  const validatedManifest = CacheManifestSchema.parse(manifest);
   await mkdir(cacheDir, { recursive: true });
-  await writeFile(manifestPath(cacheDir), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await writeFile(manifestPath(cacheDir), `${JSON.stringify(validatedManifest, null, 2)}\n`, 'utf8');
 }

@@ -127,7 +127,7 @@ For crawler, extraction, route-coverage, token-table, or cache-tooling work, use
 npm run verify:cache:full
 ```
 
-`verify:cache:full` builds the project, runs the built CLI against the live Material 3 site with an isolated temporary cache directory, uses production refresh settings (`--concurrency 6 --min-pages 150`, with no `--force`, no `--max-pages`, and no `--include-blog`), then checks that the resulting cache reports verified coverage, zero failed/unresolved/partial route coverage, required component pages, and no unresolved token-table placeholders in generated specs pages.
+`verify:cache:full` builds the project, runs the built CLI against the live Material 3 site with an isolated temporary cache directory, uses production refresh settings (`--concurrency 6 --min-pages 150`, with no `--force`, no `--max-pages`, and no `--include-blog`), then checks that the resulting cache reports verified coverage, zero failed/unresolved/partial route coverage, required component pages, no unresolved token-table placeholders in generated specs pages, and manifest counts that match their persisted artifact/graph/index owners.
 
 On failure, it preserves the temp cache directory and prints:
 
@@ -240,7 +240,12 @@ The cache directory now has three layers, written in this order during a crawl:
 what exists: `generatedAt`, `baseUrl`, `carbonVersion`, `siteMetaHash`, `angularBundleHash`,
 `sitemapHash`, `counts` (`rawArtifacts`, `routes`, `pages`, `markdownPages`, `dsdbResources`,
 `tokenTables`), and a `health` summary (`rawSnapshot`, `graph`, `markdown`, `coverage`, each one of
-`unverified` / `verified` / `partial` / `degraded` / `failed`). It sits alongside, not instead of,
+`unverified` / `verified` / `partial` / `degraded` / `failed`). The six counts describe the final
+persisted snapshot after artifact de-duplication and graph reconciliation: `rawArtifacts` and
+`dsdbResources` come from `raw/artifact-index.json`, `routes` from `graph/routes.json`, `pages` from
+`graph/pages.json`, `markdownPages` from `index.json`, and `tokenTables` from
+`graph/token-tables.json`. Crawl-time persistence attempts/reference occurrences remain diagnostics;
+they are not alternate manifest count semantics. The manifest sits alongside, not instead of,
 `index.json`.
 
 A renderer diagnostics report (`diagnostics/renderer-report.json`) records, per route, unsupported
@@ -312,7 +317,7 @@ same reason.
 `npm run verify:cache:full` (and the lighter `npm run verify:cache:smoke`) build the project, run
 the built CLI's `update` command into an isolated temporary cache directory with `--promote-partial`
 (so the verify run's first-ever crawl actually promotes instead of being skipped by the
-first-cache partial-promotion safeguard), then run a strict superset of 7 ordered validation stages
+first-cache partial-promotion safeguard), then run a strict superset of 8 ordered validation stages
 (`src/validation/run-full-verification.ts`) against the resulting cache:
 
 1. **raw-snapshot** (`validate-raw-snapshot.ts`) — site shell / site_meta / Angular bundle /
@@ -330,8 +335,10 @@ first-cache partial-promotion safeguard), then run a strict superset of 7 ordere
    a `search_structured_docs` structured-search check against the documentation graph.
 7. **coverage-summary** (`validate-coverage-summary.ts`) — `coverageHealth` plus zero
    problematic/unresolved/failed route counts.
+8. **manifest-consistency** (`validate-manifest-consistency.ts`) — all six `manifest.counts` values
+   match their canonical persisted artifact-index/graph/index owners.
 
-`verify:cache:smoke` runs the same 7 stages with a small `--max-pages` budget, skips the
+`verify:cache:smoke` runs the same 8 stages with a small `--max-pages` budget, skips the
 fixed-required-route checks in stages 2 and 4 (a small page budget is not guaranteed to include
 every required route), and runs the browser oracle non-strictly (a capture failure is reported as a
 skipped pass, not a failure); every other check in every stage still runs unconditionally. Treat

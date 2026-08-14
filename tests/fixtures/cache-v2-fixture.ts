@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { indexPath } from '../../src/cache.js';
-import { writeManifest, type CacheManifest } from '../../src/manifest.js';
+import { readPersistedManifestCounts, writeManifest, type CacheManifest } from '../../src/manifest.js';
 import { writeArtifactIndex, type ArtifactIndex } from '../../src/raw-artifacts/artifact-index.js';
 import type { ArtifactRecord } from '../../src/raw-artifacts/artifact-types.js';
 import {
@@ -124,37 +124,16 @@ function makeTokenTableNode(route: string, overrides: Partial<TokenTableNode> = 
 }
 
 export type CacheV2FixtureOptions = {
-  /** When false, omits the artifact index "artifacts" wrapper and writes a bare top-level array
-   *  directly, exercising the "current top-level array artifact index format" requirement. */
+  /** When true, writes the artifact index as the current bare top-level array format. */
   artifactIndexAsBareArray?: boolean;
 };
 
 /** Builds a fully valid cache v2 fixture on disk: every required file, a verified manifest, and
- *  graph entries for every REQUIRED_CACHE_VALIDATION_ROUTES route — enough for validateCacheV2 to
- *  pass end to end (given a stubbed rendered-output rebuild function, since no real raw page-data
- *  artifacts are decodable here). */
+ * graph entries for every REQUIRED_CACHE_VALIDATION_ROUTES route — enough for validateCacheV2 to
+ * pass end to end (given a stubbed rendered-output rebuild function, since no real raw page-data
+ * artifacts are decodable here). */
 export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV2FixtureOptions = {}): Promise<void> {
   await mkdir(cacheDir, { recursive: true });
-
-  const manifest: CacheManifest = {
-    schemaVersion: 2,
-    generatedAt: GENERATED_AT,
-    baseUrl: 'https://m3.material.io/',
-    carbonVersion: 'cv-1',
-    siteMetaHash: 'a'.repeat(64),
-    angularBundleHash: 'b'.repeat(64),
-    sitemapHash: 'c'.repeat(64),
-    counts: {
-      rawArtifacts: REQUIRED_CACHE_VALIDATION_ROUTES.length * 2,
-      routes: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      pages: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      markdownPages: REQUIRED_PAGE_PATHS.length,
-      dsdbResources: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-      tokenTables: REQUIRED_CACHE_VALIDATION_ROUTES.length,
-    },
-    health: { rawSnapshot: 'verified', graph: 'verified', markdown: 'verified', coverage: 'verified' },
-  };
-  await writeManifest(manifest, cacheDir);
 
   const artifacts: ArtifactRecord[] = REQUIRED_CACHE_VALIDATION_ROUTES.flatMap((route) => {
     const slug = specRouteSlug(route);
@@ -212,8 +191,24 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
     await writeFile(absolutePath, '# OK\n\nNo placeholders here.', 'utf8');
   }
 
+  const markdownPages = REQUIRED_PAGE_PATHS.map((relativePath) => {
+    const pagePath = relativePath.replace(/^pages\//, '');
+    return {
+      id: pagePath,
+      title: pagePath,
+      url: `https://m3.material.io/${pagePath.replace(/\.md$/, '')}`,
+      path: pagePath,
+      section: 'components',
+      headings: ['OK'],
+      capturedAt: GENERATED_AT,
+    };
+  });
   await mkdir(path.dirname(indexPath(cacheDir)), { recursive: true });
   await writeFile(indexPath(cacheDir), JSON.stringify({
+    source: 'https://m3.material.io/',
+    capturedAt: GENERATED_AT,
+    pageCount: markdownPages.length,
+    pages: markdownPages,
     coverageDiagnostics: {
       coverageHealth: 'verified',
       routeCoverageSummary: { failedRoutes: 0, unresolvedRoutes: 0, partialRoutes: 0, problematicExamples: [] },
@@ -223,4 +218,17 @@ export async function writeValidCacheV2Fixture(cacheDir: string, options: CacheV
 
   await mkdir(path.join(cacheDir, 'diagnostics'), { recursive: true });
   await writeFile(path.join(cacheDir, 'diagnostics', 'latest-update.json'), JSON.stringify({ runId: 'fixture-run' }), 'utf8');
+
+  const manifest: CacheManifest = {
+    schemaVersion: 2,
+    generatedAt: GENERATED_AT,
+    baseUrl: 'https://m3.material.io/',
+    carbonVersion: 'cv-1',
+    siteMetaHash: 'a'.repeat(64),
+    angularBundleHash: 'b'.repeat(64),
+    sitemapHash: 'c'.repeat(64),
+    counts: await readPersistedManifestCounts(cacheDir),
+    health: { rawSnapshot: 'verified', graph: 'verified', markdown: 'verified', coverage: 'verified' },
+  };
+  await writeManifest(manifest, cacheDir);
 }

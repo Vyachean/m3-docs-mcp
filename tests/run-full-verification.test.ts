@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { indexPath } from '../src/cache.js';
 import { upsertArtifactRecord } from '../src/raw-artifacts/artifact-index.js';
 import { persistArtifact } from '../src/raw-artifacts/artifact-store.js';
-import { createCacheManifest, writeManifest } from '../src/manifest.js';
+import { createCacheManifest, manifestPath, readManifest, readPersistedManifestCounts, writeManifest } from '../src/manifest.js';
 import { writeRouteGraph, writeResourceGraph, writeTokenTableGraph, writePageGraph } from '../src/graph/graph-store.js';
 import type { RouteGraph, RouteNode } from '../src/graph/graph-types.js';
 import { writeRendererReport } from '../src/rendered/renderer-report.js';
@@ -95,13 +95,6 @@ async function writePassingFixtures(): Promise<void> {
   const bundle = await persistArtifact({ kind: 'angular-bundle', pathParts: ['main.abc.js'], sourceUrl: 'https://m3.material.io/main.abc.js', content: 'carbonVersion', sourceMethod: 'static-plan' }, cacheDir);
   await upsertArtifactRecord(bundle, cacheDir);
 
-  await writeManifest(createCacheManifest({
-    baseUrl: 'https://m3.material.io',
-    carbonVersion: 'v1',
-    siteMetaHash: siteMeta.sha256,
-    angularBundleHash: bundle.sha256,
-  }), cacheDir);
-
   const routeGraph: RouteGraph = {
     schemaVersion: 1,
     generatedAt: '2026-06-01T00:00:00.000Z',
@@ -130,6 +123,16 @@ async function writePassingFixtures(): Promise<void> {
       routeCoverage: [],
     },
   }), 'utf8');
+
+  // Write last so the manifest summarizes the actual persisted owners used by stage 8.
+  const counts = await readPersistedManifestCounts(cacheDir);
+  await writeManifest(createCacheManifest({
+    baseUrl: 'https://m3.material.io',
+    carbonVersion: 'v1',
+    siteMetaHash: siteMeta.sha256,
+    angularBundleHash: bundle.sha256,
+    counts,
+  }), cacheDir);
 }
 
 describe('runFullVerification', () => {
@@ -154,6 +157,7 @@ describe('runFullVerification', () => {
       'rendered-output',
       'search-index',
       'coverage-summary',
+      'manifest-consistency',
     ]);
     expect(verification.results.find((r) => r.stage === 'browser-oracle')?.details?.skipped).toBe(false);
     expect(verification.allPassed).toBe(true);
@@ -180,6 +184,7 @@ describe('runFullVerification', () => {
     const oracleResult = verification.results.find((r) => r.stage === 'browser-oracle');
     expect(oracleResult?.passed).toBe(true);
     expect(oracleResult?.details?.skipped).toBe(true);
+    expect(verification.results.at(-1)?.stage).toBe('manifest-consistency');
   });
 
   it('stops after stage 1 (raw-snapshot) when it fails, never reaching later stages', async () => {
@@ -222,6 +227,31 @@ describe('runFullVerification', () => {
     expect(verification.allPassed).toBe(false);
     expect(verification.firstFailedStage).toBe('structured-graph');
     expect(verification.results.map((r) => r.stage)).toEqual(['raw-snapshot', 'route-graph', 'browser-oracle', 'structured-graph']);
+  });
+
+  it('stops at manifest-consistency when a completed snapshot has drifted manifest counts', async () => {
+    await writePassingFixtures();
+    const manifest = await readManifest(cacheDir);
+    if (!manifest) throw new Error('Fixture manifest is missing.');
+    const driftedManifest = {
+      ...manifest,
+      counts: {
+        ...manifest.counts,
+        rawArtifacts: manifest.counts.rawArtifacts + 1,
+      },
+    };
+    await writeFile(manifestPath(cacheDir), `${JSON.stringify(driftedManifest, null, 2)}\n`, 'utf8');
+
+    const verification = await runFullVerification({
+      cacheDir,
+      mode: 'full',
+      browserOracleCaptureFn: EMPTY_BROWSER_ORACLE_CAPTURE_FN,
+      searchIndexStore: { searchDocs: async () => [{}] },
+      renderedOutputRebuildFn: PASSING_REBUILD_FN,
+    });
+    expect(verification.allPassed).toBe(false);
+    expect(verification.firstFailedStage).toBe('manifest-consistency');
+    expect(verification.results.at(-1)?.stage).toBe('manifest-consistency');
   });
 
   it('runs the injected browser-oracle capture function when skipBrowserOracle is not set', async () => {

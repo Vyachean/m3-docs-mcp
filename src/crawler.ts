@@ -37,7 +37,7 @@ import { upsertArtifactRecords } from './raw-artifacts/artifact-index.js';
 import { createFetchDiagnostic, type FetchDiagnostic } from './raw-artifacts/fetch-diagnostics.js';
 import { writeFetchReport } from './raw-artifacts/fetch-report.js';
 import { sha256Hex } from './raw-artifacts/hash.js';
-import { createCacheManifest, writeManifest, type ManifestHealthSummary } from './manifest.js';
+import { createCacheManifest, readPersistedManifestCounts, writeManifest, type ManifestHealthSummary } from './manifest.js';
 import { validateRawSnapshot } from './validation/validate-raw-snapshot.js';
 import { validateStructuredGraph } from './validation/validate-structured-graph.js';
 import { validateRenderedOutput } from './validation/validate-rendered-output.js';
@@ -2967,8 +2967,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
   // rendered-output/coverage-summary) against what was just written. Non-strict callers keep only
   // the first-pass approximation (cheap, no extra validation pass, not required to be accurate
   // for smoke/dev runs).
-  const dsdbResourceArtifactCount = artifactRecords.filter((r) => r.kind === 'dsdb-resource').length;
-  const tokenTableCount = Array.from(collectedTokenTablesByPagePath.values()).reduce((sum, list) => sum + list.length, 0);
+  const persistedManifestCounts = await readPersistedManifestCounts(cacheDir);
   const buildManifest = (health: ManifestHealthSummary) => createCacheManifest({
     baseUrl,
     carbonVersion: carbonVersionForManifest,
@@ -2976,14 +2975,7 @@ async function crawlIntoCache(cacheDir: string, options: CrawlOptions, previousI
     angularBundleHash: angularBundleHashForManifest,
     sitemapHash: sitemapHashForManifest,
     generatedAt: capturedAt,
-    counts: {
-      rawArtifacts: artifactRecords.length,
-      routes: routeCoverageBySourceRoute.size,
-      pages: pages.length,
-      markdownPages: pages.length,
-      dsdbResources: dsdbResourceArtifactCount,
-      tokenTables: tokenTableCount
-    },
+    counts: persistedManifestCounts,
     health
   });
 

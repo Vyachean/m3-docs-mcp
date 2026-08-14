@@ -6,19 +6,20 @@ import path from 'node:path';
 import { runFullVerification } from '../dist/validation/run-full-verification.js';
 
 /**
- * Runs the documented 1-7 ordered verification pipeline (src/validation/run-full-verification.ts)
+ * Runs the documented 1-8 ordered verification pipeline (src/validation/run-full-verification.ts)
  * against a freshly-crawled cache built by the built CLI's `update` command.
  *
  * Order (each stage implemented as an independently unit-tested src/validation/*.ts module):
- *   1. raw-snapshot      — site shell / site_meta / Angular bundle / carbonVersion present+hashed
- *   2. route-graph        — no missing artifacts / no ambiguous-unresolved required routes
- *   3. browser-oracle     — live Playwright capture vs. raw snapshot/graph (best-effort, logged)
- *   4. structured-graph   — no unresolved required DSDB/token/status resources, no unknown chunks
- *   5. rendered-output    — renderer-report requiredRouteFailures empty, no token placeholders,
- *                           required generated pages present on disk
- *   6. search-index       — MaterialDocsStore.searchDocs smoke proxy (no persisted index file
- *                           exists in this repo yet — see validate-search-index.ts module doc)
- *   7. coverage-summary   — coverageDiagnostics.coverageHealth + zero problematic route counts
+ *   1. raw-snapshot          — site shell / site_meta / Angular bundle / carbonVersion present+hashed
+ *   2. route-graph           — no missing artifacts / no ambiguous-unresolved required routes
+ *   3. browser-oracle        — live Playwright capture vs. raw snapshot/graph (best-effort, logged)
+ *   4. structured-graph      — no unresolved required DSDB/token/status resources, no unknown chunks
+ *   5. rendered-output       — renderer-report requiredRouteFailures empty, no token placeholders,
+ *                              required generated pages present on disk
+ *   6. search-index          — MaterialDocsStore.searchDocs smoke proxy (no persisted index file
+ *                              exists in this repo yet — see validate-search-index.ts module doc)
+ *   7. coverage-summary      — coverageDiagnostics.coverageHealth + zero problematic route counts
+ *   8. manifest-consistency  — manifest counts match final artifact/index/graph persisted owners
  *
  * This script's job is solely to: run the built CLI into a fresh temp cache dir, call
  * runFullVerification in order, and turn the result into clear console diagnostics + a process
