@@ -1,0 +1,31 @@
+name: Inspect residual dependency vulnerabilities
+
+on:
+  push:
+    branches:
+      - audit/dependency-security
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - name: Apply safe lock refresh for inspection
+        shell: bash
+        run: npm audit fix --package-lock-only || true
+      - run: npm ci
+      - name: Dependency ownership
+        shell: bash
+        run: |
+          npm ls typed-rest-client qs hono @hono/node-server fast-uri ip-address vitest @vitest/coverage-v8 || true
+          npm outdated --json || true
+      - name: Runtime audit after refresh
+        shell: bash
+        run: npm audit --omit=dev --json || true
+      - name: Full audit after refresh
+        shell: bash
+        run: npm audit --json || true
