@@ -9,36 +9,45 @@ const JSON_GLOB = 'src/json-extraction/**/*.ts';
 const REPORT_DIR = 'reports/mutation-shards';
 
 const shards = {
-  'json-content': [
-    'src/json-extraction/classify-json-response.ts',
-    'src/json-extraction/extract-content-page.ts',
-    'src/json-extraction/extract-dsdb-resource.ts',
-    'src/json-extraction/extract-page-data.ts',
-    'src/json-extraction/json-bundle.ts'
-  ],
-  'json-schema-markdown': [
-    'src/json-extraction/schemas.ts',
-    'src/json-extraction/render-markdown.ts'
-  ],
+  'json-classify-response': ['src/json-extraction/classify-json-response.ts'],
+  'json-content-page': ['src/json-extraction/extract-content-page.ts'],
+  'json-dsdb-resource': ['src/json-extraction/extract-dsdb-resource.ts'],
+  'json-page-data': ['src/json-extraction/extract-page-data.ts'],
+  'json-bundle': ['src/json-extraction/json-bundle.ts'],
+  'json-schemas': ['src/json-extraction/schemas.ts'],
+  'json-render-markdown': ['src/json-extraction/render-markdown.ts'],
   'json-network': [
     'src/json-extraction/capture-network-json.ts',
     'src/json-extraction/fetch-json-page.ts',
     'src/json-extraction/fetch-site-meta.ts'
   ],
   'json-diagnostics': ['src/json-extraction/diagnostics.ts'],
-  'json-routing': [
-    'src/json-extraction/normalize-routes.ts',
-    'src/json-extraction/page-reference-resolver.ts',
-    'src/json-extraction/route-graph.ts'
-  ],
+  'json-normalize-routes': ['src/json-extraction/normalize-routes.ts'],
+  'json-page-reference': ['src/json-extraction/page-reference-resolver.ts'],
+  'json-route-graph': ['src/json-extraction/route-graph.ts'],
   'core-cache': ['src/cache.ts'],
   'core-store-mcp': ['src/store.ts', 'src/mcp-server.ts'],
   'core-options-utils': ['src/options.ts', 'src/crawler-utils.ts']
 };
 
+const jsonShards = [
+  'json-classify-response',
+  'json-content-page',
+  'json-dsdb-resource',
+  'json-page-data',
+  'json-bundle',
+  'json-schemas',
+  'json-render-markdown',
+  'json-network',
+  'json-diagnostics',
+  'json-normalize-routes',
+  'json-page-reference',
+  'json-route-graph'
+];
+
 const suites = {
-  'json-extraction': ['json-content', 'json-schema-markdown', 'json-network', 'json-diagnostics', 'json-routing'],
-  full: ['json-content', 'json-schema-markdown', 'json-network', 'json-diagnostics', 'json-routing', 'core-cache', 'core-store-mcp', 'core-options-utils']
+  'json-extraction': jsonShards,
+  full: [...jsonShards, 'core-cache', 'core-store-mcp', 'core-options-utils']
 };
 
 const [command, ...args] = process.argv.slice(2);
