@@ -1,0 +1,52 @@
+name: Full mutation
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+  pull_request:
+    paths:
+      - 'src/cache.ts'
+      - 'src/crawler.ts'
+      - 'src/crawler-utils.ts'
+      - 'src/options.ts'
+      - 'src/store.ts'
+      - 'src/mcp-server.ts'
+      - 'stryker.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/full-mutation.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/cache.ts'
+      - 'src/crawler.ts'
+      - 'src/crawler-utils.ts'
+      - 'src/options.ts'
+      - 'src/store.ts'
+      - 'src/mcp-server.ts'
+      - 'stryker.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/full-mutation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-mutation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:mutation:full
