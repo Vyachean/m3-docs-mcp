@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import process from 'node:process';
 
@@ -177,7 +177,6 @@ async function runShard(suiteName, name) {
       });
     });
   } finally {
-    const { rm } = await import('node:fs/promises');
     await rm(configPath, { force: true });
   }
 }
