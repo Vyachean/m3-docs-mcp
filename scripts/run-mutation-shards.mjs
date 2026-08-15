@@ -10,7 +10,6 @@ const REPORT_DIR = 'reports/mutation-shards';
 
 const shards = {
   'json-content': {
-    config: JSON_CONFIG,
     mutate: [
       'src/json-extraction/classify-json-response.ts',
       'src/json-extraction/extract-content-page.ts',
@@ -28,7 +27,6 @@ const shards = {
     ]
   },
   'json-schema-markdown': {
-    config: JSON_CONFIG,
     mutate: [
       'src/json-extraction/schemas.ts',
       'src/json-extraction/render-markdown.ts'
@@ -44,7 +42,6 @@ const shards = {
     ]
   },
   'json-network': {
-    config: JSON_CONFIG,
     mutate: [
       'src/json-extraction/capture-network-json.ts',
       'src/json-extraction/fetch-json-page.ts',
@@ -60,7 +57,6 @@ const shards = {
     ]
   },
   'json-diagnostics': {
-    config: JSON_CONFIG,
     mutate: ['src/json-extraction/diagnostics.ts'],
     testFiles: [
       'tests/build-graph-status-tables.test.ts',
@@ -73,7 +69,6 @@ const shards = {
     ]
   },
   'json-routing': {
-    config: JSON_CONFIG,
     mutate: [
       'src/json-extraction/normalize-routes.ts',
       'src/json-extraction/page-reference-resolver.ts',
@@ -86,7 +81,6 @@ const shards = {
     ]
   },
   'core-cache': {
-    config: FULL_CONFIG,
     mutate: ['src/cache.ts'],
     testFiles: [
       'tests/cache.test.ts',
@@ -99,7 +93,6 @@ const shards = {
     ]
   },
   'core-store-mcp': {
-    config: FULL_CONFIG,
     mutate: ['src/store.ts', 'src/mcp-server.ts'],
     testFiles: [
       'tests/mcp-server.test.ts',
@@ -109,7 +102,6 @@ const shards = {
     ]
   },
   'core-options-utils': {
-    config: FULL_CONFIG,
     mutate: ['src/options.ts', 'src/crawler-utils.ts'],
     testFiles: [
       'tests/crawler-utils.test.ts',
@@ -124,35 +116,43 @@ const suites = {
   full: ['json-content', 'json-schema-markdown', 'json-network', 'json-diagnostics', 'json-routing', 'core-cache', 'core-store-mcp', 'core-options-utils']
 };
 
-const [command, arg] = process.argv.slice(2);
+const [command, ...args] = process.argv.slice(2);
 const scopes = await verifyShardDefinitions();
 
 switch (command) {
   case 'check':
     console.log(`Mutation shard definitions are complete: ${Object.keys(shards).length} shard(s).`);
     break;
-  case 'shard':
-    assertKnownShard(arg);
-    process.exitCode = await runShard(arg);
+  case 'shard': {
+    const [suiteName, shardName] = args;
+    assertShardInSuite(suiteName, shardName);
+    process.exitCode = await runShard(suiteName, shardName);
     break;
-  case 'aggregate':
-    assertKnownSuite(arg);
-    process.exitCode = await enforceAggregateScore(arg, suites[arg], scopes[configForSuite(arg)].config);
+  }
+  case 'aggregate': {
+    const [suiteName] = args;
+    assertKnownSuite(suiteName);
+    process.exitCode = await enforceAggregateScore(suiteName, suites[suiteName], scopes[configForSuite(suiteName)].config);
     break;
-  case 'suite':
-    assertKnownSuite(arg);
-    process.exitCode = await runSuite(arg, suites[arg], scopes[configForSuite(arg)].config);
+  }
+  case 'suite': {
+    const [suiteName] = args;
+    assertKnownSuite(suiteName);
+    process.exitCode = await runSuite(suiteName, suites[suiteName], scopes[configForSuite(suiteName)].config);
     break;
+  }
   default:
-    throw new Error('Usage: run-mutation-shards.mjs check | shard <name> | aggregate <suite> | suite <suite>');
-}
-
-function assertKnownShard(name) {
-  if (!name || !shards[name]) throw new Error(`Unknown mutation shard: ${name ?? '(missing)'}`);
+    throw new Error('Usage: run-mutation-shards.mjs check | shard <suite> <name> | aggregate <suite> | suite <suite>');
 }
 
 function assertKnownSuite(name) {
   if (!name || !suites[name]) throw new Error(`Unknown mutation suite: ${name ?? '(missing)'}`);
+}
+
+function assertShardInSuite(suiteName, shardName) {
+  assertKnownSuite(suiteName);
+  if (!shardName || !shards[shardName]) throw new Error(`Unknown mutation shard: ${shardName ?? '(missing)'}`);
+  if (!suites[suiteName].includes(shardName)) throw new Error(`Mutation shard ${shardName} does not belong to suite ${suiteName}.`);
 }
 
 function configForSuite(name) {
@@ -160,7 +160,7 @@ function configForSuite(name) {
 }
 
 async function verifyShardDefinitions() {
-  const expectedJsonFiles = await listJsonExtractionSourceFiles();
+  const expectedJsonFiles = await listTypeScriptFiles('src/json-extraction');
   const configScopes = {
     [JSON_CONFIG]: await readMutationConfigScope(JSON_CONFIG, expectedJsonFiles),
     [FULL_CONFIG]: await readMutationConfigScope(FULL_CONFIG, expectedJsonFiles)
@@ -168,28 +168,34 @@ async function verifyShardDefinitions() {
 
   for (const [suiteName, configPath] of [['json-extraction', JSON_CONFIG], ['full', FULL_CONFIG]]) {
     const suiteFiles = suites[suiteName].flatMap((name) => shards[name].mutate).sort();
+    const configScope = configScopes[configPath];
     assertUnique(suiteFiles, `${suiteName} mutation targets`);
-    assertSameSet(suiteFiles, configScopes[configPath].mutate, `${suiteName} mutation targets`);
-  }
+    assertSameSet(suiteFiles, configScope.mutate, `${suiteName} mutation targets`);
 
-  for (const [name, shard] of Object.entries(shards)) {
-    if (shard.mutate.length === 0 || shard.testFiles.length === 0) {
-      throw new Error(`Mutation shard ${name} must own both production files and test files.`);
+    for (const name of suites[suiteName]) {
+      const shard = shards[name];
+      if (shard.mutate.length === 0 || shard.testFiles.length === 0) {
+        throw new Error(`Mutation shard ${name} must own both production files and test files.`);
+      }
+      assertSubset(shard.mutate, configScope.mutate, `${suiteName}/${name} mutation targets`);
+      assertSubset(shard.testFiles, configScope.testFiles, `${suiteName}/${name} test files`);
+      await Promise.all([...shard.mutate, ...shard.testFiles].map(assertFileExists));
     }
-    const configScope = configScopes[shard.config];
-    assertSubset(shard.mutate, configScope.mutate, `${name} mutation targets`);
-    assertSubset(shard.testFiles, configScope.testFiles, `${name} test files`);
-    await Promise.all([...shard.mutate, ...shard.testFiles, shard.config].map(assertFileExists));
+    await assertFileExists(configPath);
   }
 
   return configScopes;
 }
 
-async function listJsonExtractionSourceFiles() {
-  return (await readdir('src/json-extraction', { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-    .map((entry) => `src/json-extraction/${entry.name}`)
-    .sort();
+async function listTypeScriptFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const path = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...await listTypeScriptFiles(path));
+    else if (entry.isFile() && entry.name.endsWith('.ts')) files.push(path);
+  }
+  return files.sort();
 }
 
 async function readMutationConfigScope(path, jsonFiles) {
@@ -224,7 +230,7 @@ function assertUnique(values, label) {
 function assertSubset(actual, expected, label) {
   const expectedSet = new Set(expected);
   const extra = actual.filter((value) => !expectedSet.has(value));
-  if (extra.length > 0) throw new Error(`${label} are outside the base Stryker config: ${extra.join(', ')}`);
+  if (extra.length > 0) throw new Error(`${label} are outside the canonical suite config: ${extra.join(', ')}`);
 }
 
 function assertSameSet(actual, expected, label) {
@@ -242,31 +248,31 @@ async function runSuite(suiteName, names, baseConfig) {
   await mkdir(REPORT_DIR, { recursive: true });
 
   for (const name of names) {
-    const exitCode = await runShard(name);
+    const exitCode = await runShard(suiteName, name);
     if (exitCode !== 0) return exitCode;
   }
 
   return enforceAggregateScore(suiteName, names, baseConfig);
 }
 
-async function runShard(name) {
+async function runShard(suiteName, name) {
   const shard = shards[name];
-  const baseConfig = JSON.parse(await readFile(shard.config, 'utf8'));
-  const configPath = `.stryker-shard-${name}.json`;
+  const baseConfig = JSON.parse(await readFile(configForSuite(suiteName), 'utf8'));
+  const configPath = `.stryker-shard-${suiteName}-${name}.json`;
   const reportPath = `${REPORT_DIR}/${name}.json`;
   const shardConfig = {
     ...baseConfig,
     reporters: ['progress', 'clear-text', 'json'],
     mutate: shard.mutate,
     testFiles: shard.testFiles,
-    tempDirName: `.stryker-tmp-${name}`,
+    tempDirName: `.stryker-tmp-${suiteName}-${name}`,
     thresholds: { ...baseConfig.thresholds, break: 0 },
     jsonReporter: { fileName: reportPath }
   };
 
   await mkdir(REPORT_DIR, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(shardConfig, null, 2)}\n`);
-  console.log(`[mutation:${name}] mutate=${shard.mutate.length} testFiles=${shard.testFiles.length}`);
+  console.log(`[mutation:${suiteName}/${name}] mutate=${shard.mutate.length} testFiles=${shard.testFiles.length}`);
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   try {
@@ -275,11 +281,11 @@ async function runShard(name) {
       child.on('error', reject);
       child.on('exit', (code, signal) => {
         if (signal) {
-          console.error(`[mutation:${name}] terminated by ${signal}`);
+          console.error(`[mutation:${suiteName}/${name}] terminated by ${signal}`);
           resolve(1);
           return;
         }
-        console.log(`[mutation:${name}] exit=${code ?? 1}`);
+        console.log(`[mutation:${suiteName}/${name}] exit=${code ?? 1}`);
         resolve(code ?? 1);
       });
     });
