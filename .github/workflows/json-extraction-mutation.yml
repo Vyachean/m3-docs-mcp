@@ -50,7 +50,7 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run test:mutation:shard -- ${{ matrix.shard }}
+      - run: npm run test:mutation:shard -- json-extraction ${{ matrix.shard }}
       - if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
