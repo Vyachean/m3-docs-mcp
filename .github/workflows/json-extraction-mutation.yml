@@ -3,10 +3,13 @@ name: JSON extraction mutation
 on:
   workflow_dispatch:
   pull_request:
-    paths:
+    paths: &json-mutation-risk-paths
       - 'src/json-extraction/**'
       - 'tests/**'
       - 'stryker-json-extraction.config.json'
+      - 'vitest.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.test.json'
       - 'scripts/run-mutation-shards.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -14,14 +17,7 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'src/json-extraction/**'
-      - 'tests/**'
-      - 'stryker-json-extraction.config.json'
-      - 'scripts/run-mutation-shards.mjs'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/json-extraction-mutation.yml'
+    paths: *json-mutation-risk-paths
 
 permissions:
   contents: read
