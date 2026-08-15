@@ -6,6 +6,19 @@
   "mutate": [
     "src/json-extraction/**/*.ts"
   ],
+  "testFiles": [
+    "tests/json-extraction.test.ts",
+    "tests/tolerant-decoders.test.ts",
+    "tests/docs-values.test.ts",
+    "tests/normalize-routes.test.ts",
+    "tests/page-reference-resolver.test.ts",
+    "tests/fetch-page-data-by-reference.test.ts",
+    "tests/fetch-site-meta.test.ts",
+    "tests/fetch-diagnostics-recording.test.ts",
+    "tests/markdown-extraction-regression.test.ts",
+    "tests/token-resolution-classify.test.ts",
+    "tests/typography-token-quality.test.ts"
+  ],
   "coverageAnalysis": "perTest",
   "thresholds": {
     "high": 80,
