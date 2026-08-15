@@ -3,20 +3,28 @@ name: Cache verification
 on:
   workflow_dispatch:
   pull_request:
-    paths:
+    paths: &cache-risk-paths
       - 'src/cache.ts'
       - 'src/crawler.ts'
+      - 'src/crawl-priority.ts'
       - 'src/crawler-utils.ts'
       - 'src/options.ts'
       - 'src/store.ts'
       - 'src/mcp-server.ts'
+      - 'src/index.ts'
       - 'src/types.ts'
+      - 'src/progress.ts'
+      - 'src/update-logger.ts'
+      - 'src/route-coverage.ts'
       - 'src/json-extraction/**'
       - 'src/raw-artifacts/**'
       - 'src/graph/**'
+      - 'src/rendered/**'
+      - 'src/browser-oracle/**'
+      - 'src/mcp-tools/**'
+      - 'src/diagnostics/**'
       - 'src/validation/**'
       - 'src/manifest.ts'
-      - 'src/markdown-renderer.ts'
       - 'scripts/verify-full-cache-refresh.mjs'
       - 'package.json'
       - 'package-lock.json'
@@ -24,24 +32,7 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'src/cache.ts'
-      - 'src/crawler.ts'
-      - 'src/crawler-utils.ts'
-      - 'src/options.ts'
-      - 'src/store.ts'
-      - 'src/mcp-server.ts'
-      - 'src/types.ts'
-      - 'src/json-extraction/**'
-      - 'src/raw-artifacts/**'
-      - 'src/graph/**'
-      - 'src/validation/**'
-      - 'src/manifest.ts'
-      - 'src/markdown-renderer.ts'
-      - 'scripts/verify-full-cache-refresh.mjs'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/cache-verification.yml'
+    paths: *cache-risk-paths
 
 permissions:
   contents: read
