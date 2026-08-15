@@ -37,11 +37,18 @@ jobs:
       fail-fast: false
       matrix:
         shard:
-          - json-content
-          - json-schema-markdown
+          - json-classify-response
+          - json-content-page
+          - json-dsdb-resource
+          - json-page-data
+          - json-bundle
+          - json-schemas
+          - json-render-markdown
           - json-network
           - json-diagnostics
-          - json-routing
+          - json-normalize-routes
+          - json-page-reference
+          - json-route-graph
           - core-cache
           - core-store-mcp
           - core-options-utils
