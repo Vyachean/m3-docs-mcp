@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import process from 'node:process';
 
@@ -60,14 +60,8 @@ switch (command) {
     process.exitCode = await enforceAggregateScore(suiteName, suites[suiteName], scopes[configForSuite(suiteName)].config);
     break;
   }
-  case 'suite': {
-    const [suiteName] = args;
-    assertKnownSuite(suiteName);
-    process.exitCode = await runSuite(suiteName, suites[suiteName], scopes[configForSuite(suiteName)].config);
-    break;
-  }
   default:
-    throw new Error('Usage: run-mutation-shards.mjs check | shard <suite> <name> | aggregate <suite> | suite <suite>');
+    throw new Error('Usage: run-mutation-shards.mjs check | shard <suite> <name> | aggregate <suite>');
 }
 
 function assertKnownSuite(name) {
@@ -150,18 +144,6 @@ function assertSameSet(actual, expected, label) {
   }
 }
 
-async function runSuite(suiteName, names, baseConfig) {
-  await rm(REPORT_DIR, { recursive: true, force: true });
-  await mkdir(REPORT_DIR, { recursive: true });
-
-  for (const name of names) {
-    const exitCode = await runShard(suiteName, name);
-    if (exitCode !== 0) return exitCode;
-  }
-
-  return enforceAggregateScore(suiteName, names, baseConfig);
-}
-
 async function runShard(suiteName, name) {
   const baseConfig = JSON.parse(await readFile(configForSuite(suiteName), 'utf8'));
   const configPath = `.stryker-shard-${suiteName}-${name}.json`;
@@ -177,7 +159,7 @@ async function runShard(suiteName, name) {
 
   await mkdir(REPORT_DIR, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(shardConfig, null, 2)}\n`);
-  console.log(`[mutation:${suiteName}/${name}] mutate=${shards[name].length} canonicalTestFiles=${baseConfig.testFiles?.length ?? 0}`);
+  console.log(`[mutation:${suiteName}/${name}] mutate=${shards[name].length}; test discovery inherited from ${configForSuite(suiteName)}`);
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   try {
@@ -195,6 +177,7 @@ async function runShard(suiteName, name) {
       });
     });
   } finally {
+    const { rm } = await import('node:fs/promises');
     await rm(configPath, { force: true });
   }
 }
