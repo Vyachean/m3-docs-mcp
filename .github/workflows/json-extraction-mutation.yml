@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'src/json-extraction/**'
+      - 'tests/**'
       - 'stryker-json-extraction.config.json'
       - 'scripts/run-mutation-shards.mjs'
       - 'package.json'
@@ -15,6 +16,7 @@ on:
       - main
     paths:
       - 'src/json-extraction/**'
+      - 'tests/**'
       - 'stryker-json-extraction.config.json'
       - 'scripts/run-mutation-shards.mjs'
       - 'package.json'
@@ -30,6 +32,15 @@ concurrency:
 
 jobs:
   mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - json-content
+          - json-schema-markdown
+          - json-network
+          - json-diagnostics
+          - json-routing
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -39,4 +50,28 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run test:mutation:json-extraction
+      - run: npm run test:mutation:shard -- ${{ matrix.shard }}
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-json-${{ matrix.shard }}
+          path: reports/mutation-shards/${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    if: ${{ always() }}
+    needs: mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-json-*
+          path: reports/mutation-shards
+          merge-multiple: true
+      - run: npm run test:mutation:aggregate -- json-extraction
