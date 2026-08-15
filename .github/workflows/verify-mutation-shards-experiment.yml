@@ -1,0 +1,62 @@
+name: Verify full mutation shards experiment
+
+on:
+  push:
+    branches:
+      - experiment/practical-mutation-shards
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-full-mutation-shards-experiment
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - json-content
+          - json-schema-markdown
+          - json-network
+          - json-diagnostics
+          - json-routing
+          - core-cache
+          - core-store-mcp
+          - core-options-utils
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:mutation:shard -- ${{ matrix.shard }}
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-full-${{ matrix.shard }}
+          path: reports/mutation-shards/${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    if: ${{ always() }}
+    needs: mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-full-*
+          path: reports/mutation-shards
+          merge-multiple: true
+      - run: npm run test:mutation:aggregate -- full
