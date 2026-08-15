@@ -9,106 +9,31 @@ const JSON_GLOB = 'src/json-extraction/**/*.ts';
 const REPORT_DIR = 'reports/mutation-shards';
 
 const shards = {
-  'json-content': {
-    mutate: [
-      'src/json-extraction/classify-json-response.ts',
-      'src/json-extraction/extract-content-page.ts',
-      'src/json-extraction/extract-dsdb-resource.ts',
-      'src/json-extraction/extract-page-data.ts',
-      'src/json-extraction/json-bundle.ts'
-    ],
-    testFiles: [
-      'tests/build-renderer-report.test.ts',
-      'tests/docs-values.test.ts',
-      'tests/json-extraction.test.ts',
-      'tests/markdown-renderer-from-raw.test.ts',
-      'tests/mcp-output.test.ts',
-      'tests/tolerant-decoders.test.ts'
-    ]
-  },
-  'json-schema-markdown': {
-    mutate: [
-      'src/json-extraction/schemas.ts',
-      'src/json-extraction/render-markdown.ts'
-    ],
-    testFiles: [
-      'tests/build-graph-token-tables.test.ts',
-      'tests/json-extraction.test.ts',
-      'tests/mcp-output.test.ts',
-      'tests/token-resolution-classify.test.ts',
-      'tests/token-table.test.ts',
-      'tests/tolerant-decoders.test.ts',
-      'tests/typography-token-quality.test.ts'
-    ]
-  },
-  'json-network': {
-    mutate: [
-      'src/json-extraction/capture-network-json.ts',
-      'src/json-extraction/fetch-json-page.ts',
-      'src/json-extraction/fetch-site-meta.ts'
-    ],
-    testFiles: [
-      'tests/fetch-diagnostics-recording.test.ts',
-      'tests/fetch-page-data-by-reference.test.ts',
-      'tests/fetch-site-meta.test.ts',
-      'tests/json-extraction.test.ts',
-      'tests/progress-concurrency.test.ts',
-      'tests/route-graph.test.ts'
-    ]
-  },
-  'json-diagnostics': {
-    mutate: ['src/json-extraction/diagnostics.ts'],
-    testFiles: [
-      'tests/build-graph-status-tables.test.ts',
-      'tests/cache.test.ts',
-      'tests/diagnostics.test.ts',
-      'tests/json-extraction.test.ts',
-      'tests/markdown-renderer-from-raw.test.ts',
-      'tests/markdown-renderer-switch-alias-rebuild.test.ts',
-      'tests/markdown-renderer-tab-rebuild.test.ts'
-    ]
-  },
-  'json-routing': {
-    mutate: [
-      'src/json-extraction/normalize-routes.ts',
-      'src/json-extraction/page-reference-resolver.ts',
-      'src/json-extraction/route-graph.ts'
-    ],
-    testFiles: [
-      'tests/normalize-routes.test.ts',
-      'tests/page-reference-resolver.test.ts',
-      'tests/route-graph.test.ts'
-    ]
-  },
-  'core-cache': {
-    mutate: ['src/cache.ts'],
-    testFiles: [
-      'tests/cache.test.ts',
-      'tests/mcp-server.test.ts',
-      'tests/mcp-tools.test.ts',
-      'tests/store.test.ts',
-      'tests/update-logger.test.ts',
-      'tests/validate-coverage-summary.test.ts',
-      'tests/validate-manifest-consistency.test.ts'
-    ]
-  },
-  'core-store-mcp': {
-    mutate: ['src/store.ts', 'src/mcp-server.ts'],
-    testFiles: [
-      'tests/mcp-server.test.ts',
-      'tests/mcp-tools.test.ts',
-      'tests/store-refresh.test.ts',
-      'tests/store.test.ts'
-    ]
-  },
-  'core-options-utils': {
-    mutate: ['src/options.ts', 'src/crawler-utils.ts'],
-    testFiles: [
-      'tests/crawler-utils.test.ts',
-      'tests/options.test.ts',
-      'tests/progress-concurrency.test.ts'
-    ]
-  }
+  'json-content': [
+    'src/json-extraction/classify-json-response.ts',
+    'src/json-extraction/extract-content-page.ts',
+    'src/json-extraction/extract-dsdb-resource.ts',
+    'src/json-extraction/extract-page-data.ts',
+    'src/json-extraction/json-bundle.ts'
+  ],
+  'json-schema-markdown': [
+    'src/json-extraction/schemas.ts',
+    'src/json-extraction/render-markdown.ts'
+  ],
+  'json-network': [
+    'src/json-extraction/capture-network-json.ts',
+    'src/json-extraction/fetch-json-page.ts',
+    'src/json-extraction/fetch-site-meta.ts'
+  ],
+  'json-diagnostics': ['src/json-extraction/diagnostics.ts'],
+  'json-routing': [
+    'src/json-extraction/normalize-routes.ts',
+    'src/json-extraction/page-reference-resolver.ts',
+    'src/json-extraction/route-graph.ts'
+  ],
+  'core-cache': ['src/cache.ts'],
+  'core-store-mcp': ['src/store.ts', 'src/mcp-server.ts'],
+  'core-options-utils': ['src/options.ts', 'src/crawler-utils.ts']
 };
 
 const suites = {
@@ -167,21 +92,10 @@ async function verifyShardDefinitions() {
   };
 
   for (const [suiteName, configPath] of [['json-extraction', JSON_CONFIG], ['full', FULL_CONFIG]]) {
-    const suiteFiles = suites[suiteName].flatMap((name) => shards[name].mutate).sort();
-    const configScope = configScopes[configPath];
+    const suiteFiles = suites[suiteName].flatMap((name) => shards[name]).sort();
     assertUnique(suiteFiles, `${suiteName} mutation targets`);
-    assertSameSet(suiteFiles, configScope.mutate, `${suiteName} mutation targets`);
-
-    for (const name of suites[suiteName]) {
-      const shard = shards[name];
-      if (shard.mutate.length === 0 || shard.testFiles.length === 0) {
-        throw new Error(`Mutation shard ${name} must own both production files and test files.`);
-      }
-      assertSubset(shard.mutate, configScope.mutate, `${suiteName}/${name} mutation targets`);
-      assertSubset(shard.testFiles, configScope.testFiles, `${suiteName}/${name} test files`);
-      await Promise.all([...shard.mutate, ...shard.testFiles].map(assertFileExists));
-    }
-    await assertFileExists(configPath);
+    assertSameSet(suiteFiles, configScopes[configPath].mutate, `${suiteName} mutation targets`);
+    await Promise.all([...suiteFiles, configPath].map(assertFileExists));
   }
 
   return configScopes;
@@ -212,25 +126,18 @@ async function readMutationConfigScope(path, jsonFiles) {
 
   return {
     config,
-    mutate: [...new Set(included.filter((target) => !excluded.has(target)))].sort(),
-    testFiles: [...new Set(config.testFiles ?? [])].sort()
+    mutate: [...new Set(included.filter((target) => !excluded.has(target)))].sort()
   };
 }
 
 async function assertFileExists(path) {
   const file = await stat(path);
-  if (!file.isFile()) throw new Error(`Expected file for mutation shard does not exist: ${path}`);
+  if (!file.isFile()) throw new Error(`Expected mutation file does not exist: ${path}`);
 }
 
 function assertUnique(values, label) {
   const duplicates = values.filter((value, index) => values.indexOf(value) !== index);
   if (duplicates.length > 0) throw new Error(`${label} contain duplicates: ${[...new Set(duplicates)].join(', ')}`);
-}
-
-function assertSubset(actual, expected, label) {
-  const expectedSet = new Set(expected);
-  const extra = actual.filter((value) => !expectedSet.has(value));
-  if (extra.length > 0) throw new Error(`${label} are outside the canonical suite config: ${extra.join(', ')}`);
 }
 
 function assertSameSet(actual, expected, label) {
@@ -256,15 +163,13 @@ async function runSuite(suiteName, names, baseConfig) {
 }
 
 async function runShard(suiteName, name) {
-  const shard = shards[name];
   const baseConfig = JSON.parse(await readFile(configForSuite(suiteName), 'utf8'));
   const configPath = `.stryker-shard-${suiteName}-${name}.json`;
   const reportPath = `${REPORT_DIR}/${name}.json`;
   const shardConfig = {
     ...baseConfig,
     reporters: ['progress', 'clear-text', 'json'],
-    mutate: shard.mutate,
-    testFiles: shard.testFiles,
+    mutate: shards[name],
     tempDirName: `.stryker-tmp-${suiteName}-${name}`,
     thresholds: { ...baseConfig.thresholds, break: 0 },
     jsonReporter: { fileName: reportPath }
@@ -272,7 +177,7 @@ async function runShard(suiteName, name) {
 
   await mkdir(REPORT_DIR, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(shardConfig, null, 2)}\n`);
-  console.log(`[mutation:${suiteName}/${name}] mutate=${shard.mutate.length} testFiles=${shard.testFiles.length}`);
+  console.log(`[mutation:${suiteName}/${name}] mutate=${shards[name].length} canonicalTestFiles=${baseConfig.testFiles?.length ?? 0}`);
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   try {
