@@ -25,6 +25,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - run: npm run test:mutation:shards:check
       - run: npm test
       - run: npm run build
       - run: npm run test:coverage
