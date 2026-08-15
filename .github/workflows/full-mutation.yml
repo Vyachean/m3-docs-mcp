@@ -4,6 +4,27 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 3 * * *'
+  pull_request:
+    paths: &full-mutation-risk-paths
+      - 'src/cache.ts'
+      - 'src/crawler-utils.ts'
+      - 'src/options.ts'
+      - 'src/store.ts'
+      - 'src/mcp-server.ts'
+      - 'tests/**'
+      - 'stryker.config.json'
+      - 'stryker-json-extraction.config.json'
+      - 'vitest.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.test.json'
+      - 'scripts/run-mutation-shards.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/full-mutation.yml'
+  push:
+    branches:
+      - main
+    paths: *full-mutation-risk-paths
 
 permissions:
   contents: read
