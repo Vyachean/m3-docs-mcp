@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { materialPageId, materialPagePath, normalizeMaterialUrl, sectionFromPagePath } from '../src/crawler-utils.js';
+import {
+  materialPageId,
+  materialPagePath,
+  normalizeMaterialPublicDocPath,
+  normalizeMaterialUrl,
+  sectionFromPagePath
+} from '../src/crawler-utils.js';
 
 const baseUrl = 'https://m3.material.io';
 
@@ -23,14 +29,53 @@ describe('normalizeMaterialUrl', () => {
     expect(normalizeMaterialUrl('//example.com/components/dialogs', baseUrl)).toBeNull();
   });
 
-  it('rejects downloadable and asset URLs only when the skipped extension is the final path extension', () => {
-    expect(normalizeMaterialUrl('/assets/dialogs.png', baseUrl)).toBeNull();
-    expect(normalizeMaterialUrl('/specs/dialogs.pdf', baseUrl)).toBeNull();
+  it('rejects each downloadable/asset extension only when it is the final path extension', () => {
+    for (const extension of ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'pdf', 'zip', 'xml', 'json', 'txt']) {
+      expect(normalizeMaterialUrl(`/assets/file.${extension}`, baseUrl)).toBeNull();
+      expect(normalizeMaterialUrl(`/assets/file.${extension.toUpperCase()}`, baseUrl)).toBeNull();
+    }
     expect(normalizeMaterialUrl('/components/json-viewer/overview', baseUrl)).toBe('https://m3.material.io/components/json-viewer/overview');
+    expect(normalizeMaterialUrl('/components/file.json/overview', baseUrl)).toBe('https://m3.material.io/components/file.json/overview');
   });
 
   it('returns null for invalid URLs', () => {
     expect(normalizeMaterialUrl('http://[invalid', baseUrl)).toBeNull();
+  });
+});
+
+describe('normalizeMaterialPublicDocPath', () => {
+  it('normalizes duplicate and trailing slashes while keeping documentation paths', () => {
+    expect(normalizeMaterialPublicDocPath('/components//buttons/overview/', baseUrl)).toBe('/components/buttons/overview');
+    expect(normalizeMaterialPublicDocPath('styles/color/roles', `${baseUrl}/components/buttons`)).toBe('/styles/color/roles');
+    expect(normalizeMaterialPublicDocPath('/', baseUrl)).toBe('/');
+  });
+
+  it('rejects all known non-document path prefixes', () => {
+    const rejected = [
+      '/assets/icon',
+      '/static/chunk',
+      '/_dsm/data/page',
+      '/m3/pages/internal',
+      '/favicon',
+      '/favicon-anything',
+      '/manifest',
+      '/manifest-anything',
+      '/robots.txt',
+      '/robots.txt-extra',
+      '/sitemap',
+      '/sitemap-index'
+    ];
+    for (const path of rejected) expect(normalizeMaterialPublicDocPath(path, baseUrl)).toBeNull();
+  });
+
+  it('does not reject documentation paths that merely contain a reserved word later in the path', () => {
+    expect(normalizeMaterialPublicDocPath('/components/assets/overview', baseUrl)).toBe('/components/assets/overview');
+    expect(normalizeMaterialPublicDocPath('/foundations/manifest/overview', baseUrl)).toBe('/foundations/manifest/overview');
+  });
+
+  it('preserves URL rejection from normalizeMaterialUrl', () => {
+    expect(normalizeMaterialPublicDocPath('https://example.com/components/buttons', baseUrl)).toBeNull();
+    expect(normalizeMaterialPublicDocPath('/assets/icon.svg', baseUrl)).toBeNull();
   });
 });
 
