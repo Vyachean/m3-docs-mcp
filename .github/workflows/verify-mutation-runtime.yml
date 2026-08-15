@@ -5,6 +5,10 @@ on:
     branches:
       - fix/practical-verification-ci
 
+concurrency:
+  group: verify-mutation-runtime
+  cancel-in-progress: true
+
 jobs:
   json-extraction-mutation:
     runs-on: ubuntu-24.04
