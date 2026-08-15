@@ -8,40 +8,72 @@ const FULL_CONFIG = 'stryker.config.json';
 const JSON_GLOB = 'src/json-extraction/**/*.ts';
 const REPORT_DIR = 'reports/mutation-shards';
 
+const wholeFile = (path) => ({ path });
+const lineRange = (path, startLine, endLine = null) => ({ path, startLine, endLine });
+
+const CONTENT_PAGE = 'src/json-extraction/extract-content-page.ts';
+const SCHEMAS = 'src/json-extraction/schemas.ts';
+const RENDER_MARKDOWN = 'src/json-extraction/render-markdown.ts';
+const PAGE_REFERENCE = 'src/json-extraction/page-reference-resolver.ts';
+
 const shards = {
-  'json-classify-response': ['src/json-extraction/classify-json-response.ts'],
-  'json-content-page': ['src/json-extraction/extract-content-page.ts'],
-  'json-dsdb-resource': ['src/json-extraction/extract-dsdb-resource.ts'],
-  'json-page-data': ['src/json-extraction/extract-page-data.ts'],
-  'json-bundle': ['src/json-extraction/json-bundle.ts'],
-  'json-schemas': ['src/json-extraction/schemas.ts'],
-  'json-render-markdown': ['src/json-extraction/render-markdown.ts'],
+  'json-classify-response': [wholeFile('src/json-extraction/classify-json-response.ts')],
+  'json-content-page-1': [lineRange(CONTENT_PAGE, 1, 83)],
+  'json-content-page-2': [lineRange(CONTENT_PAGE, 84, 166)],
+  'json-content-page-3': [lineRange(CONTENT_PAGE, 167, 249)],
+  'json-content-page-4': [lineRange(CONTENT_PAGE, 250)],
+  'json-dsdb-resource': [wholeFile('src/json-extraction/extract-dsdb-resource.ts')],
+  'json-page-data': [wholeFile('src/json-extraction/extract-page-data.ts')],
+  'json-bundle': [wholeFile('src/json-extraction/json-bundle.ts')],
+  'json-schemas-1': [lineRange(SCHEMAS, 1, 174)],
+  'json-schemas-2': [lineRange(SCHEMAS, 175, 348)],
+  'json-schemas-3': [lineRange(SCHEMAS, 349)],
+  'json-render-markdown-1': [lineRange(RENDER_MARKDOWN, 1, 136)],
+  'json-render-markdown-2': [lineRange(RENDER_MARKDOWN, 137, 272)],
+  'json-render-markdown-3': [lineRange(RENDER_MARKDOWN, 273, 408)],
+  'json-render-markdown-4': [lineRange(RENDER_MARKDOWN, 409, 544)],
+  'json-render-markdown-5': [lineRange(RENDER_MARKDOWN, 545, 680)],
+  'json-render-markdown-6': [lineRange(RENDER_MARKDOWN, 681)],
   'json-network': [
-    'src/json-extraction/capture-network-json.ts',
-    'src/json-extraction/fetch-json-page.ts',
-    'src/json-extraction/fetch-site-meta.ts'
+    wholeFile('src/json-extraction/capture-network-json.ts'),
+    wholeFile('src/json-extraction/fetch-json-page.ts'),
+    wholeFile('src/json-extraction/fetch-site-meta.ts')
   ],
-  'json-diagnostics': ['src/json-extraction/diagnostics.ts'],
-  'json-normalize-routes': ['src/json-extraction/normalize-routes.ts'],
-  'json-page-reference': ['src/json-extraction/page-reference-resolver.ts'],
-  'json-route-graph': ['src/json-extraction/route-graph.ts'],
-  'core-cache': ['src/cache.ts'],
-  'core-store-mcp': ['src/store.ts', 'src/mcp-server.ts'],
-  'core-options-utils': ['src/options.ts', 'src/crawler-utils.ts']
+  'json-diagnostics': [wholeFile('src/json-extraction/diagnostics.ts')],
+  'json-normalize-routes': [wholeFile('src/json-extraction/normalize-routes.ts')],
+  'json-page-reference-1': [lineRange(PAGE_REFERENCE, 1, 141)],
+  'json-page-reference-2': [lineRange(PAGE_REFERENCE, 142, 282)],
+  'json-page-reference-3': [lineRange(PAGE_REFERENCE, 283)],
+  'json-route-graph': [wholeFile('src/json-extraction/route-graph.ts')],
+  'core-cache': [wholeFile('src/cache.ts')],
+  'core-store-mcp': [wholeFile('src/store.ts'), wholeFile('src/mcp-server.ts')],
+  'core-options-utils': [wholeFile('src/options.ts'), wholeFile('src/crawler-utils.ts')]
 };
 
 const jsonShards = [
   'json-classify-response',
-  'json-content-page',
+  'json-content-page-1',
+  'json-content-page-2',
+  'json-content-page-3',
+  'json-content-page-4',
   'json-dsdb-resource',
   'json-page-data',
   'json-bundle',
-  'json-schemas',
-  'json-render-markdown',
+  'json-schemas-1',
+  'json-schemas-2',
+  'json-schemas-3',
+  'json-render-markdown-1',
+  'json-render-markdown-2',
+  'json-render-markdown-3',
+  'json-render-markdown-4',
+  'json-render-markdown-5',
+  'json-render-markdown-6',
   'json-network',
   'json-diagnostics',
   'json-normalize-routes',
-  'json-page-reference',
+  'json-page-reference-1',
+  'json-page-reference-2',
+  'json-page-reference-3',
   'json-route-graph'
 ];
 
@@ -94,14 +126,18 @@ async function verifyShardDefinitions() {
     [FULL_CONFIG]: await readMutationConfigScope(FULL_CONFIG, expectedJsonFiles)
   };
 
+  const allShardPaths = [...new Set(Object.values(shards).flat().map(({ path }) => path))];
+  await Promise.all([...allShardPaths, JSON_CONFIG, FULL_CONFIG].map(assertFileExists));
+  const lineCounts = new Map(await Promise.all(allShardPaths.map(async (path) => [path, await sourceLineCount(path)])));
+
   for (const [suiteName, configPath] of [['json-extraction', JSON_CONFIG], ['full', FULL_CONFIG]]) {
-    const suiteFiles = suites[suiteName].flatMap((name) => shards[name]).sort();
-    assertUnique(suiteFiles, `${suiteName} mutation targets`);
-    assertSameSet(suiteFiles, configScopes[configPath].mutate, `${suiteName} mutation targets`);
-    await Promise.all([...suiteFiles, configPath].map(assertFileExists));
+    const expectedFiles = configScopes[configPath].mutate;
+    const descriptors = suites[suiteName].flatMap((name) => shards[name]);
+    assertSameSet([...new Set(descriptors.map(({ path }) => path))].sort(), expectedFiles, `${suiteName} mutation target files`);
+    verifyCompleteRanges(suiteName, descriptors, expectedFiles, lineCounts);
   }
 
-  return configScopes;
+  return { ...configScopes, lineCounts };
 }
 
 async function listTypeScriptFiles(directory) {
@@ -123,8 +159,8 @@ async function readMutationConfigScope(path, jsonFiles) {
   for (const target of config.mutate ?? []) {
     if (target === JSON_GLOB) included.push(...jsonFiles);
     else if (target.startsWith('!')) excluded.add(target.slice(1));
-    else if (!target.includes('*')) included.push(target);
-    else throw new Error(`Unsupported mutation glob in ${path}: ${target}`);
+    else if (!target.includes('*') && !target.includes(':')) included.push(target);
+    else throw new Error(`Unsupported canonical mutation target in ${path}: ${target}`);
   }
 
   return {
@@ -138,9 +174,50 @@ async function assertFileExists(path) {
   if (!file.isFile()) throw new Error(`Expected mutation file does not exist: ${path}`);
 }
 
-function assertUnique(values, label) {
-  const duplicates = values.filter((value, index) => values.indexOf(value) !== index);
-  if (duplicates.length > 0) throw new Error(`${label} contain duplicates: ${[...new Set(duplicates)].join(', ')}`);
+async function sourceLineCount(path) {
+  const source = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
+  if (source.length === 0) throw new Error(`Mutation target is empty: ${path}`);
+  const withoutFinalNewline = source.endsWith('\n') ? source.slice(0, -1) : source;
+  return withoutFinalNewline.split('\n').length;
+}
+
+function verifyCompleteRanges(suiteName, descriptors, expectedFiles, lineCounts) {
+  for (const path of expectedFiles) {
+    const fileDescriptors = descriptors.filter((descriptor) => descriptor.path === path);
+    const lineCount = lineCounts.get(path);
+    if (!lineCount) throw new Error(`Missing line count for mutation target: ${path}`);
+
+    const wholeFileDescriptors = fileDescriptors.filter(({ startLine, endLine }) => startLine === undefined && endLine === undefined);
+    if (wholeFileDescriptors.length > 0) {
+      if (wholeFileDescriptors.length !== 1 || fileDescriptors.length !== 1) {
+        throw new Error(`${suiteName} mutation target ${path} mixes or duplicates whole-file and ranged shards.`);
+      }
+      continue;
+    }
+
+    const ranges = fileDescriptors.map(({ startLine, endLine }) => {
+      if (!Number.isInteger(startLine) || startLine < 1) throw new Error(`${suiteName} mutation target ${path} has invalid start line: ${startLine}`);
+      const resolvedEnd = endLine === null ? lineCount : endLine;
+      if (!Number.isInteger(resolvedEnd) || resolvedEnd < startLine || resolvedEnd > lineCount) {
+        throw new Error(`${suiteName} mutation target ${path} has invalid range ${startLine}-${resolvedEnd}; file has ${lineCount} lines.`);
+      }
+      return { startLine, endLine: resolvedEnd };
+    }).sort((a, b) => a.startLine - b.startLine);
+
+    if (ranges.length === 0 || ranges[0].startLine !== 1) {
+      throw new Error(`${suiteName} mutation ranges for ${path} must start at line 1.`);
+    }
+    for (let index = 1; index < ranges.length; index += 1) {
+      const previous = ranges[index - 1];
+      const current = ranges[index];
+      if (current.startLine !== previous.endLine + 1) {
+        throw new Error(`${suiteName} mutation ranges for ${path} have a gap or overlap between ${previous.endLine} and ${current.startLine}.`);
+      }
+    }
+    if (ranges.at(-1)?.endLine !== lineCount) {
+      throw new Error(`${suiteName} mutation ranges for ${path} stop before EOF (${ranges.at(-1)?.endLine}/${lineCount}).`);
+    }
+  }
 }
 
 function assertSameSet(actual, expected, label) {
@@ -153,14 +230,24 @@ function assertSameSet(actual, expected, label) {
   }
 }
 
+function materializeMutationTargets(name) {
+  return shards[name].map(({ path, startLine, endLine }) => {
+    if (startLine === undefined && endLine === undefined) return path;
+    const lineCount = scopes.lineCounts.get(path);
+    const resolvedEnd = endLine === null ? lineCount : endLine;
+    return `${path}:${startLine}-${resolvedEnd}`;
+  });
+}
+
 async function runShard(suiteName, name) {
   const baseConfig = JSON.parse(await readFile(configForSuite(suiteName), 'utf8'));
   const configPath = `.stryker-shard-${suiteName}-${name}.json`;
   const reportPath = `${REPORT_DIR}/${name}.json`;
+  const mutationTargets = materializeMutationTargets(name);
   const shardConfig = {
     ...baseConfig,
     reporters: ['progress', 'clear-text', 'json'],
-    mutate: shards[name],
+    mutate: mutationTargets,
     tempDirName: `.stryker-tmp-${suiteName}-${name}`,
     thresholds: { ...baseConfig.thresholds, break: 0 },
     jsonReporter: { fileName: reportPath }
@@ -168,7 +255,7 @@ async function runShard(suiteName, name) {
 
   await mkdir(REPORT_DIR, { recursive: true });
   await writeFile(configPath, `${JSON.stringify(shardConfig, null, 2)}\n`);
-  console.log(`[mutation:${suiteName}/${name}] mutate=${shards[name].length}; test discovery inherited from ${configForSuite(suiteName)}`);
+  console.log(`[mutation:${suiteName}/${name}] mutate=${mutationTargets.join(', ')}; test discovery inherited from ${configForSuite(suiteName)}`);
 
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   try {
