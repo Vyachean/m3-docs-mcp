@@ -2,6 +2,7 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import process from 'node:process';
+import ts from 'typescript';
 
 const JSON_CONFIG = 'stryker-json-extraction.config.json';
 const FULL_CONFIG = 'stryker.config.json';
@@ -12,28 +13,25 @@ const wholeFile = (path) => ({ path });
 const lineRange = (path, startLine, endLine = null) => ({ path, startLine, endLine });
 
 const CONTENT_PAGE = 'src/json-extraction/extract-content-page.ts';
-const SCHEMAS = 'src/json-extraction/schemas.ts';
 const RENDER_MARKDOWN = 'src/json-extraction/render-markdown.ts';
 const PAGE_REFERENCE = 'src/json-extraction/page-reference-resolver.ts';
 
 const shards = {
   'json-classify-response': [wholeFile('src/json-extraction/classify-json-response.ts')],
-  'json-content-page-1': [lineRange(CONTENT_PAGE, 1, 83)],
-  'json-content-page-2': [lineRange(CONTENT_PAGE, 84, 166)],
-  'json-content-page-3': [lineRange(CONTENT_PAGE, 167, 249)],
-  'json-content-page-4': [lineRange(CONTENT_PAGE, 250)],
+  'json-content-page-1': [lineRange(CONTENT_PAGE, 1, 139)],
+  'json-content-page-2': [lineRange(CONTENT_PAGE, 140, 249)],
+  'json-content-page-3': [lineRange(CONTENT_PAGE, 250)],
   'json-dsdb-resource': [wholeFile('src/json-extraction/extract-dsdb-resource.ts')],
   'json-page-data': [wholeFile('src/json-extraction/extract-page-data.ts')],
   'json-bundle': [wholeFile('src/json-extraction/json-bundle.ts')],
-  'json-schemas-1': [lineRange(SCHEMAS, 1, 174)],
-  'json-schemas-2': [lineRange(SCHEMAS, 175, 348)],
-  'json-schemas-3': [lineRange(SCHEMAS, 349)],
-  'json-render-markdown-1': [lineRange(RENDER_MARKDOWN, 1, 136)],
-  'json-render-markdown-2': [lineRange(RENDER_MARKDOWN, 137, 272)],
-  'json-render-markdown-3': [lineRange(RENDER_MARKDOWN, 273, 408)],
-  'json-render-markdown-4': [lineRange(RENDER_MARKDOWN, 409, 544)],
-  'json-render-markdown-5': [lineRange(RENDER_MARKDOWN, 545, 680)],
-  'json-render-markdown-6': [lineRange(RENDER_MARKDOWN, 681)],
+  'json-schemas': [wholeFile('src/json-extraction/schemas.ts')],
+  'json-render-markdown-1': [lineRange(RENDER_MARKDOWN, 1, 142)],
+  'json-render-markdown-2': [lineRange(RENDER_MARKDOWN, 143, 279)],
+  'json-render-markdown-3': [lineRange(RENDER_MARKDOWN, 280, 408)],
+  'json-render-markdown-4': [lineRange(RENDER_MARKDOWN, 409, 495)],
+  'json-render-markdown-5': [lineRange(RENDER_MARKDOWN, 496, 587)],
+  'json-render-markdown-6': [lineRange(RENDER_MARKDOWN, 588, 668)],
+  'json-render-markdown-7': [lineRange(RENDER_MARKDOWN, 669)],
   'json-network': [
     wholeFile('src/json-extraction/capture-network-json.ts'),
     wholeFile('src/json-extraction/fetch-json-page.ts'),
@@ -41,9 +39,9 @@ const shards = {
   ],
   'json-diagnostics': [wholeFile('src/json-extraction/diagnostics.ts')],
   'json-normalize-routes': [wholeFile('src/json-extraction/normalize-routes.ts')],
-  'json-page-reference-1': [lineRange(PAGE_REFERENCE, 1, 141)],
-  'json-page-reference-2': [lineRange(PAGE_REFERENCE, 142, 282)],
-  'json-page-reference-3': [lineRange(PAGE_REFERENCE, 283)],
+  'json-page-reference-1': [lineRange(PAGE_REFERENCE, 1, 133)],
+  'json-page-reference-2': [lineRange(PAGE_REFERENCE, 134, 286)],
+  'json-page-reference-3': [lineRange(PAGE_REFERENCE, 287)],
   'json-route-graph': [wholeFile('src/json-extraction/route-graph.ts')],
   'core-cache': [wholeFile('src/cache.ts')],
   'core-store-mcp': [wholeFile('src/store.ts'), wholeFile('src/mcp-server.ts')],
@@ -55,19 +53,17 @@ const jsonShards = [
   'json-content-page-1',
   'json-content-page-2',
   'json-content-page-3',
-  'json-content-page-4',
   'json-dsdb-resource',
   'json-page-data',
   'json-bundle',
-  'json-schemas-1',
-  'json-schemas-2',
-  'json-schemas-3',
+  'json-schemas',
   'json-render-markdown-1',
   'json-render-markdown-2',
   'json-render-markdown-3',
   'json-render-markdown-4',
   'json-render-markdown-5',
   'json-render-markdown-6',
+  'json-render-markdown-7',
   'json-network',
   'json-diagnostics',
   'json-normalize-routes',
@@ -128,13 +124,14 @@ async function verifyShardDefinitions() {
 
   const allShardPaths = [...new Set(Object.values(shards).flat().map(({ path }) => path))];
   await Promise.all([...allShardPaths, JSON_CONFIG, FULL_CONFIG].map(assertFileExists));
-  const lineCounts = new Map(await Promise.all(allShardPaths.map(async (path) => [path, await sourceLineCount(path)])));
+  const sourceMetadata = new Map(await Promise.all(allShardPaths.map(async (path) => [path, await readSourceMetadata(path)])));
+  const lineCounts = new Map([...sourceMetadata].map(([path, metadata]) => [path, metadata.lineCount]));
 
   for (const [suiteName, configPath] of [['json-extraction', JSON_CONFIG], ['full', FULL_CONFIG]]) {
     const expectedFiles = configScopes[configPath].mutate;
     const descriptors = suites[suiteName].flatMap((name) => shards[name]);
     assertSameSet([...new Set(descriptors.map(({ path }) => path))].sort(), expectedFiles, `${suiteName} mutation target files`);
-    verifyCompleteRanges(suiteName, descriptors, expectedFiles, lineCounts);
+    verifyCompleteRanges(suiteName, descriptors, expectedFiles, sourceMetadata);
   }
 
   return { ...configScopes, lineCounts };
@@ -174,18 +171,22 @@ async function assertFileExists(path) {
   if (!file.isFile()) throw new Error(`Expected mutation file does not exist: ${path}`);
 }
 
-async function sourceLineCount(path) {
+async function readSourceMetadata(path) {
   const source = (await readFile(path, 'utf8')).replace(/\r\n/g, '\n');
   if (source.length === 0) throw new Error(`Mutation target is empty: ${path}`);
   const withoutFinalNewline = source.endsWith('\n') ? source.slice(0, -1) : source;
-  return withoutFinalNewline.split('\n').length;
+  return {
+    lineCount: withoutFinalNewline.split('\n').length,
+    sourceFile: ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  };
 }
 
-function verifyCompleteRanges(suiteName, descriptors, expectedFiles, lineCounts) {
+function verifyCompleteRanges(suiteName, descriptors, expectedFiles, sourceMetadata) {
   for (const path of expectedFiles) {
     const fileDescriptors = descriptors.filter((descriptor) => descriptor.path === path);
-    const lineCount = lineCounts.get(path);
-    if (!lineCount) throw new Error(`Missing line count for mutation target: ${path}`);
+    const metadata = sourceMetadata.get(path);
+    if (!metadata) throw new Error(`Missing source metadata for mutation target: ${path}`);
+    const { lineCount, sourceFile } = metadata;
 
     const wholeFileDescriptors = fileDescriptors.filter(({ startLine, endLine }) => startLine === undefined && endLine === undefined);
     if (wholeFileDescriptors.length > 0) {
@@ -216,6 +217,24 @@ function verifyCompleteRanges(suiteName, descriptors, expectedFiles, lineCounts)
     }
     if (ranges.at(-1)?.endLine !== lineCount) {
       throw new Error(`${suiteName} mutation ranges for ${path} stop before EOF (${ranges.at(-1)?.endLine}/${lineCount}).`);
+    }
+
+    assertTopLevelSafeBoundaries(suiteName, path, ranges, sourceFile);
+  }
+}
+
+function assertTopLevelSafeBoundaries(suiteName, path, ranges, sourceFile) {
+  for (const range of ranges.slice(0, -1)) {
+    const boundaryLine = range.endLine;
+    const crossingStatement = sourceFile.statements.find((statement) => {
+      const startLine = sourceFile.getLineAndCharacterOfPosition(statement.getStart(sourceFile)).line + 1;
+      const lastPosition = Math.max(statement.getStart(sourceFile), statement.getEnd() - 1);
+      const endLine = sourceFile.getLineAndCharacterOfPosition(lastPosition).line + 1;
+      return startLine <= boundaryLine && endLine > boundaryLine;
+    });
+    if (crossingStatement) {
+      const kind = ts.SyntaxKind[crossingStatement.kind] ?? String(crossingStatement.kind);
+      throw new Error(`${suiteName} mutation boundary after ${path}:${boundaryLine} splits top-level ${kind}; range shards must split only between top-level statements.`);
     }
   }
 }
