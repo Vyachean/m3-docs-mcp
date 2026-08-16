@@ -36,19 +36,17 @@ jobs:
           - json-content-page-1
           - json-content-page-2
           - json-content-page-3
-          - json-content-page-4
           - json-dsdb-resource
           - json-page-data
           - json-bundle
-          - json-schemas-1
-          - json-schemas-2
-          - json-schemas-3
+          - json-schemas
           - json-render-markdown-1
           - json-render-markdown-2
           - json-render-markdown-3
           - json-render-markdown-4
           - json-render-markdown-5
           - json-render-markdown-6
+          - json-render-markdown-7
           - json-network
           - json-diagnostics
           - json-normalize-routes
