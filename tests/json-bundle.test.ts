@@ -118,7 +118,6 @@ describe('buildJsonPageBundleFromResponses', () => {
 
     expect(buildJsonPageBundleFromResponses([], {
       pageCanonId: 'context-canon',
-      routeMetadata: { pageCanonId: 'route-canon' },
       documentId: 'context-document',
       routeMetadata: { pageCanonId: 'route-canon', documentId: 'route-document' }
     }).pageCanonId).toBe('context-canon');
