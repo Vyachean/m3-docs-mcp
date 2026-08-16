@@ -31,14 +31,16 @@ describe('classifyResponseType', () => {
     expect(classifyResponseType(url, { title: 'Page', documentId: 'doc-id' })).toBe('content-page');
     expect(classifyResponseType(url, { title: 'Page', slug: 'components/buttons' })).toBe('content-page');
     expect(classifyResponseType(url, { title: 'Page', pathname: '/components/buttons' })).toBe('content-page');
-    expect(classifyResponseType(url, { title: 'Page' })).toBe('content-page');
+    expect(classifyResponseType(url, { title: 'Page' })).toBe('page-metadata');
     expect(classifyResponseType('https://m3.material.io/unclassified.json', { title: 'Page' })).toBe('page-metadata');
   });
 
-  it('recognizes page metadata from each public metadata field', () => {
+  it('recognizes page metadata from extractor-supported metadata fields', () => {
     const url = 'https://m3.material.io/unclassified.json';
     expect(classifyResponseType(url, { pageCanonId: 'page-id' })).toBe('page-metadata');
-    expect(classifyResponseType(url, { pathname: '/components/buttons' })).toBe('page-metadata');
+    expect(classifyResponseType(url, { path: '/components/buttons' })).toBe('page-metadata');
+    expect(classifyResponseType(url, { pageContext: { slug: 'components/buttons' } })).toBe('page-metadata');
+    expect(classifyResponseType(url, { result: { pageContext: { pathname: '/components/buttons' } } })).toBe('page-metadata');
     expect(classifyResponseType(url, { title: 'Buttons' })).toBe('page-metadata');
   });
 
