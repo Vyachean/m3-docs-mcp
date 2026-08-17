@@ -348,7 +348,7 @@ describe('parseContentPage alias contract', () => {
     const decoded = parseContentPage({
       wrapper: {
         arbitrary: [
-          { unrelated: true },
+          42,
           { heading: 'Discovered', blocks: [] }
         ]
       }
