@@ -81,8 +81,10 @@ describe('DSDB resource decoder boundary', () => {
     const malformed = { libraryModuleType: 42, resourceName: { invalid: true } };
     const decoded = decodeResourceChunk(malformed);
 
-    expect(decoded).toEqual(expect.objectContaining({ _unsupported: true }));
-    expect('_unsupported' in decoded && decoded.issues.length).toBeGreaterThan(0);
+    expect(decoded).toEqual(expect.objectContaining({
+      _unsupported: true,
+      issues: expect.arrayContaining([expect.any(String)])
+    }));
     expect(extractRequestedTokenSets(malformed)).toEqual([]);
     expect(extractResourceName(malformed)).toBeNull();
 
@@ -117,18 +119,16 @@ describe('STATUS_TABLE rendering contract', () => {
     expect(fetchResource).toHaveBeenCalledWith('design/status/buttons', 'STATUS_TABLE');
     expect(rendered).toContain('| Platform | Status |');
     expect(rendered).toContain('| Android | Available |');
-    expect(diagnostic).toMatchObject({
-      resourceChunksRequested: 1,
-      resourceChunksResolved: 1,
-      resourceChunksDecoded: 1,
-      resourceChunksRendered: 1,
-      statusTablesRequested: 1,
-      statusTablesResolved: 1,
-      statusTablesDecoded: 1,
-      statusTablesRendered: 1,
-      statusTablesRenderedAsPlaceholder: 0,
-      unresolvedResourceCount: 0
-    });
+    expect(diagnostic.resourceChunksRequested).toBe(1);
+    expect(diagnostic.resourceChunksResolved).toBe(1);
+    expect(diagnostic.resourceChunksDecoded).toBe(1);
+    expect(diagnostic.resourceChunksRendered).toBe(1);
+    expect(diagnostic.statusTablesRequested).toBe(1);
+    expect(diagnostic.statusTablesResolved).toBe(1);
+    expect(diagnostic.statusTablesDecoded).toBe(1);
+    expect(diagnostic.statusTablesRendered).toBe(1);
+    expect(diagnostic.statusTablesRenderedAsPlaceholder).toBe(0);
+    expect(diagnostic.unresolvedResourceCount).toBe(0);
     expect(diagnostic.statusTableDiagnostics).toEqual([
       {
         resourceName: 'design/status/buttons',
@@ -141,7 +141,7 @@ describe('STATUS_TABLE rendering contract', () => {
     ]);
   });
 
-  it('does not fetch without a resource name and records the missing-resource placeholder', async () => {
+  it('does not fetch without a resource name and records a missing-resource placeholder', async () => {
     const chunk = decodeResourceChunk({ libraryModuleType: 'STATUS_TABLE' });
     const diagnostic = emptyPageDiagnostic();
     const fetchResource = vi.fn(async () => ({ headers: ['Ignored'], rows: [['Ignored']] }));
@@ -151,15 +151,13 @@ describe('STATUS_TABLE rendering contract', () => {
     expect(fetchResource).not.toHaveBeenCalled();
     expect(rendered).toContain('missing-status-table-resource');
     expect(rendered).toContain('"resource":null');
-    expect(diagnostic).toMatchObject({
-      resourceChunksRequested: 1,
-      resourceChunksPlaceholder: 1,
-      statusTablesRequested: 1,
-      statusTablesResolved: 0,
-      statusTablesRenderedAsPlaceholder: 1,
-      unsupportedStatusTableSchemaCount: 0,
-      unresolvedResourceCount: 1
-    });
+    expect(diagnostic.resourceChunksRequested).toBe(1);
+    expect(diagnostic.resourceChunksPlaceholder).toBe(1);
+    expect(diagnostic.statusTablesRequested).toBe(1);
+    expect(diagnostic.statusTablesResolved).toBe(0);
+    expect(diagnostic.statusTablesRenderedAsPlaceholder).toBe(1);
+    expect(diagnostic.unsupportedStatusTableSchemaCount).toBe(0);
+    expect(diagnostic.unresolvedResourceCount).toBe(1);
     expect(diagnostic.unknownResourceTypes).toEqual(['STATUS_TABLE']);
     expect(diagnostic.statusTableDiagnostics).toEqual([
       {
@@ -187,16 +185,14 @@ describe('STATUS_TABLE rendering contract', () => {
     );
 
     expect(rendered).toContain('unknown-status-table-schema');
-    expect(diagnostic).toMatchObject({
-      resourceChunksRequested: 1,
-      resourceChunksResolved: 1,
-      resourceChunksPlaceholder: 1,
-      statusTablesRequested: 1,
-      statusTablesResolved: 1,
-      statusTablesRenderedAsPlaceholder: 1,
-      unsupportedStatusTableSchemaCount: 1,
-      unresolvedResourceCount: 1
-    });
+    expect(diagnostic.resourceChunksRequested).toBe(1);
+    expect(diagnostic.resourceChunksResolved).toBe(1);
+    expect(diagnostic.resourceChunksPlaceholder).toBe(1);
+    expect(diagnostic.statusTablesRequested).toBe(1);
+    expect(diagnostic.statusTablesResolved).toBe(1);
+    expect(diagnostic.statusTablesRenderedAsPlaceholder).toBe(1);
+    expect(diagnostic.unsupportedStatusTableSchemaCount).toBe(1);
+    expect(diagnostic.unresolvedResourceCount).toBe(1);
     expect(diagnostic.statusTableDiagnostics).toEqual([
       {
         resourceName: 'design/status/buttons',
@@ -211,7 +207,7 @@ describe('STATUS_TABLE rendering contract', () => {
 });
 
 describe('unknown DSDB resource rendering', () => {
-  it('preserves an explicit unknown module type in diagnostics and placeholder content', async () => {
+  it('preserves an explicit unknown module type without performing IO', async () => {
     const chunk = decodeResourceChunk({
       libraryModuleType: 'EXPERIMENTAL_GRID',
       resourceName: 'design/experimental/grid'
@@ -230,7 +226,7 @@ describe('unknown DSDB resource rendering', () => {
     expect(diagnostic.unresolvedResourceCount).toBe(1);
   });
 
-  it('uses UNKNOWN_RESOURCE for an untyped chunk without reporting it as an upstream type', async () => {
+  it('uses UNKNOWN_RESOURCE for an untyped chunk without inventing an upstream type', async () => {
     const chunk = decodeResourceChunk({ resourceName: 'design/unknown/resource' });
     const diagnostic = emptyPageDiagnostic();
 
@@ -268,7 +264,7 @@ describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
     expect(diagnostic.unresolvedResourceCount).toBe(1);
   });
 
-  it('distinguishes a missing token resource from a resolved unsupported schema', async () => {
+  it('distinguishes a missing resource from a resolved unsupported token schema', async () => {
     const chunk = decodeResourceChunk({
       libraryModuleType: 'TOKEN_TABLE',
       resourceName: 'design/token/buttons',
@@ -278,15 +274,14 @@ describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
     const missingDiagnostic = emptyPageDiagnostic();
     const missingRendered = await renderDsdbResourceChunk(chunk, async () => null, missingDiagnostic);
     expect(missingRendered).toContain('missing-token-system');
-    expect(missingDiagnostic).toMatchObject({
-      tokenTables: 1,
-      tokenTablesResolved: undefined,
-      tokenTablesUnsupportedSchema: undefined,
-      tokenTablesRenderedAsPlaceholder: 1,
-      resourceChunksRequested: 1,
-      resourceChunksPlaceholder: 1,
-      unresolvedResourceCount: 1
-    });
+    expect(missingDiagnostic.tokenTables).toBe(1);
+    expect(missingDiagnostic.tokenTablesResolved).toBeUndefined();
+    expect(missingDiagnostic.tokenTablesUnsupportedSchema).toBeUndefined();
+    expect(missingDiagnostic.tokenTablesRenderedAsPlaceholder).toBe(1);
+    expect(missingDiagnostic.resourceChunksRequested).toBe(1);
+    expect(missingDiagnostic.resourceChunksResolved).toBeUndefined();
+    expect(missingDiagnostic.resourceChunksPlaceholder).toBe(1);
+    expect(missingDiagnostic.unresolvedResourceCount).toBe(1);
     expect(missingDiagnostic.missingRequestedTokenSets).toEqual(['Divider - Common']);
     expect(missingDiagnostic.tokenTablePlaceholderReasons).toEqual(['missing-token-system']);
 
@@ -297,16 +292,14 @@ describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
       unsupportedDiagnostic
     );
     expect(unsupportedRendered).toContain('missing-token-system');
-    expect(unsupportedDiagnostic).toMatchObject({
-      tokenTables: 1,
-      tokenTablesResolved: 1,
-      tokenTablesUnsupportedSchema: 1,
-      tokenTablesRenderedAsPlaceholder: 1,
-      resourceChunksRequested: 1,
-      resourceChunksResolved: 1,
-      resourceChunksPlaceholder: 1,
-      unresolvedResourceCount: 1
-    });
+    expect(unsupportedDiagnostic.tokenTables).toBe(1);
+    expect(unsupportedDiagnostic.tokenTablesResolved).toBe(1);
+    expect(unsupportedDiagnostic.tokenTablesUnsupportedSchema).toBe(1);
+    expect(unsupportedDiagnostic.tokenTablesRenderedAsPlaceholder).toBe(1);
+    expect(unsupportedDiagnostic.resourceChunksRequested).toBe(1);
+    expect(unsupportedDiagnostic.resourceChunksResolved).toBe(1);
+    expect(unsupportedDiagnostic.resourceChunksPlaceholder).toBe(1);
+    expect(unsupportedDiagnostic.unresolvedResourceCount).toBe(1);
     expect(unsupportedDiagnostic.missingRequestedTokenSets).toEqual(['Divider - Common']);
     expect(unsupportedDiagnostic.tokenTablePlaceholderReasons).toEqual(['missing-token-system']);
   });
@@ -326,17 +319,15 @@ describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
     expect(fetchResource).toHaveBeenCalledWith('design/token/buttons', 'TOKEN_TABLE');
     expect(rendered).toContain('### Divider - Common');
     expect(rendered).not.toContain('## Design Tokens');
-    expect(diagnostic).toMatchObject({
-      tokenTables: 1,
-      tokenTablesResolved: 1,
-      tokenTablesDecoded: 1,
-      tokenTablesRendered: 1,
-      resourceChunksRequested: 1,
-      resourceChunksResolved: 1,
-      resourceChunksDecoded: 1,
-      resourceChunksRendered: 1,
-      unresolvedResourceCount: 0
-    });
+    expect(diagnostic.tokenTables).toBe(1);
+    expect(diagnostic.tokenTablesResolved).toBe(1);
+    expect(diagnostic.tokenTablesDecoded).toBe(1);
+    expect(diagnostic.tokenTablesRendered).toBe(1);
+    expect(diagnostic.resourceChunksRequested).toBe(1);
+    expect(diagnostic.resourceChunksResolved).toBe(1);
+    expect(diagnostic.resourceChunksDecoded).toBe(1);
+    expect(diagnostic.resourceChunksRendered).toBe(1);
+    expect(diagnostic.unresolvedResourceCount).toBe(0);
     expect(diagnostic.missingRequestedTokenSets).toEqual([]);
     expect(diagnostic.tokenContextDiagnostics).toHaveLength(1);
     expect(diagnostic.tokenContextDiagnostics[0]).toEqual(
@@ -397,7 +388,7 @@ describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
     expect(diagnostic.unresolvedResourceCount).toBe(0);
   });
 
-  it('uses a placeholder when a valid decoded system has nothing renderable and no missing-set note', async () => {
+  it('uses a placeholder when a decoded system has nothing renderable and no missing-set note', async () => {
     const chunk = decodeResourceChunk({
       libraryModuleType: 'TOKEN_TABLE',
       resourceName: 'design/token/buttons'
