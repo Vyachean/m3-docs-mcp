@@ -242,9 +242,9 @@ describe('unknown DSDB resource rendering', () => {
 });
 
 describe('TOKEN_TABLE and TYPOGRAPHY rendering contract', () => {
-  it('fails before IO when a token resource has no resource name', async () => {
+  it('fails before IO when a token-system resource has no resource name', async () => {
     const chunk = decodeResourceChunk({
-      libraryModuleType: 'TOKEN_TABLE',
+      libraryModuleType: 'TYPOGRAPHY',
       moduleConfiguration: { tokenSets: ['Divider - Common'] }
     });
     const diagnostic = emptyPageDiagnostic();
