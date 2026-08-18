@@ -62,7 +62,7 @@ function indexFor(pages: MaterialPage[]): MaterialIndex {
   };
 }
 
-async function seed(pages: MaterialPage[]): Promise<MaterialDocsStore> {
+async function seed(pages: MaterialPage[]): Promise<InstanceType<typeof MaterialDocsStore>> {
   await writeIndex(indexFor(pages), cacheDir);
   for (const page of pages) await writePage(page, cacheDir);
   return new MaterialDocsStore(cacheDir);
