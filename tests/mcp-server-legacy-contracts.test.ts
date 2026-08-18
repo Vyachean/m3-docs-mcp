@@ -2,24 +2,28 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
 type ToolSchema = Record<string, ZodTypeAny>;
-type ToolResult = { content: Array<{ type: 'text'; text: string }> };
+type ToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>();
   const schemas = new Map<string, ToolSchema>();
+  const outputSchemas = new Map<string, ZodTypeAny | undefined>();
   const stores: Array<Record<string, unknown>> = [];
-  return { handlers, schemas, stores };
+  return { handlers, schemas, outputSchemas, stores };
 });
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: class {
-    tool(
+    registerTool(
       name: string,
-      _description: string,
-      schema: ToolSchema,
+      config: { inputSchema: ToolSchema; outputSchema?: ZodTypeAny },
       handler: (args: Record<string, unknown>) => Promise<ToolResult>
     ) {
-      mocks.schemas.set(name, schema);
+      mocks.schemas.set(name, config.inputSchema);
+      mocks.outputSchemas.set(name, config.outputSchema);
       mocks.handlers.set(name, handler);
     }
 
@@ -97,14 +101,33 @@ async function callTool(name: string, args: Record<string, unknown>) {
     Object.entries(schema!).map(([key, value]) => [key, value.parse(args[key])])
   );
   const result = await handler!(parsedArgs);
-  return JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  const textPayload = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  expect(result.structuredContent).toEqual(textPayload);
+  return textPayload;
 }
 
 describe('serveMcp legacy compatibility contracts', () => {
   beforeEach(() => {
     mocks.handlers.clear();
     mocks.schemas.clear();
+    mocks.outputSchemas.clear();
     mocks.stores.length = 0;
+  });
+
+  it('keeps declared object output schemas on compatibility tools', async () => {
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    for (const name of [
+      'search_material_docs',
+      'get_material_page',
+      'get_component_docs',
+      'list_material_components',
+      'material_docs_cache_status',
+      'material_docs_cache_diagnostics',
+      'refresh_material_docs'
+    ]) {
+      expect(mocks.outputSchemas.get(name)).toBeDefined();
+    }
   });
 
   it('preserves the public page payload and source URL mapping', async () => {

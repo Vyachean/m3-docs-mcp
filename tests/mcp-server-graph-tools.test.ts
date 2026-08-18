@@ -2,11 +2,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
 
 type ToolSchema = Record<string, ZodTypeAny>;
-type ToolResult = { content: Array<{ type: 'text'; text: string }> };
+type ToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+type ToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: ToolSchema;
+  outputSchema?: ZodTypeAny;
+};
 
 const mocks = vi.hoisted(() => {
   const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>();
-  const toolDefinitions: Array<{ name: string; schema: ToolSchema }> = [];
+  const toolDefinitions: ToolDefinition[] = [];
   const createdStores: object[] = [];
   const context = { marker: 'graph-context' };
   const loadGraphToolContext = vi.fn(async (_cacheDir: string) => context);
@@ -19,6 +28,7 @@ const mocks = vi.hoisted(() => {
     createdStores,
     context,
     loadGraphToolContext,
+    getComponentOverview: syncTool('get_component_overview'),
     listRoutes: syncTool('list_routes'),
     getRoute: syncTool('get_route'),
     getPage: asyncTool('get_page'),
@@ -35,13 +45,12 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: class {
-    tool(
+    registerTool(
       name: string,
-      _description: string,
-      schema: ToolSchema,
+      config: { description: string; inputSchema: ToolSchema; outputSchema?: ZodTypeAny },
       handler: (args: Record<string, unknown>) => Promise<ToolResult>
     ) {
-      mocks.toolDefinitions.push({ name, schema });
+      mocks.toolDefinitions.push({ name, ...config });
       mocks.toolHandlers.set(name, handler);
     }
 
@@ -66,6 +75,7 @@ vi.mock('../src/store.js', () => ({
 }));
 
 vi.mock('../src/mcp-tools/context.js', () => ({ loadGraphToolContext: mocks.loadGraphToolContext }));
+vi.mock('../src/mcp-tools/get-component-overview.js', () => ({ getComponentOverview: mocks.getComponentOverview }));
 vi.mock('../src/mcp-tools/list-routes.js', () => ({ listRoutes: mocks.listRoutes }));
 vi.mock('../src/mcp-tools/get-route.js', () => ({ getRoute: mocks.getRoute }));
 vi.mock('../src/mcp-tools/get-page.js', () => ({ getPage: mocks.getPage }));
@@ -80,10 +90,14 @@ vi.mock('../src/mcp-tools/search-structured-docs.js', () => ({ searchStructuredD
 
 const { serveMcp } = await import('../src/mcp-server.js');
 
-function schemaFor(toolName: string): ToolSchema {
+function definitionFor(toolName: string): ToolDefinition {
   const definition = mocks.toolDefinitions.find((tool) => tool.name === toolName);
   expect(definition).toBeDefined();
-  return definition!.schema;
+  return definition!;
+}
+
+function schemaFor(toolName: string): ToolSchema {
+  return definitionFor(toolName).inputSchema;
 }
 
 async function callTool(name: string, args: Record<string, unknown>) {
@@ -94,7 +108,9 @@ async function callTool(name: string, args: Record<string, unknown>) {
     Object.entries(schema).map(([key, value]) => [key, value.parse(args[key])])
   );
   const result = await handler!(parsedArgs);
-  return JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  const textPayload = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  expect(result.structuredContent).toEqual(textPayload);
+  return textPayload;
 }
 
 describe('serveMcp graph-oriented tool boundary', () => {
@@ -103,6 +119,7 @@ describe('serveMcp graph-oriented tool boundary', () => {
     mocks.toolDefinitions.length = 0;
     mocks.createdStores.length = 0;
     mocks.loadGraphToolContext.mockClear();
+    mocks.getComponentOverview.mockClear();
     mocks.listRoutes.mockClear();
     mocks.getRoute.mockClear();
     mocks.getPage.mockClear();
@@ -120,6 +137,9 @@ describe('serveMcp graph-oriented tool boundary', () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
     const store = mocks.createdStores[0];
     expect(store).toBeDefined();
+
+    await expect(callTool('get_component_overview', { componentName: ' Buttons ' })).resolves.toEqual({ tool: 'get_component_overview' });
+    expect(mocks.getComponentOverview).toHaveBeenCalledWith(mocks.context, 'Buttons');
 
     await expect(callTool('list_routes', {
       section: ' components ',
@@ -180,12 +200,37 @@ describe('serveMcp graph-oriented tool boundary', () => {
     await expect(callTool('search_structured_docs', { query: ' button tokens ', limit: 9 })).resolves.toEqual({ tool: 'search_structured_docs' });
     expect(mocks.searchStructuredDocs).toHaveBeenCalledWith(mocks.context, 'button tokens', 9);
 
-    expect(mocks.loadGraphToolContext).toHaveBeenCalledTimes(11);
+    expect(mocks.loadGraphToolContext).toHaveBeenCalledTimes(12);
     expect(mocks.loadGraphToolContext).toHaveBeenCalledWith('/cache');
+  });
+
+  it('declares structured output schemas for graph tools', async () => {
+    await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    for (const name of [
+      'get_component_overview',
+      'search_structured_docs',
+      'list_routes',
+      'get_route',
+      'get_page',
+      'get_component_tokens',
+      'get_component_tabs',
+      'get_component_resources',
+      'get_route_artifacts',
+      'get_raw_artifact',
+      'explain_route_coverage',
+      'explain_resource_resolution'
+    ]) {
+      expect(definitionFor(name).outputSchema).toBeDefined();
+    }
   });
 
   it('enforces graph-tool defaults and meaningful public input bounds', async () => {
     await serveMcp({ cacheDir: '/cache', autoUpdate: false });
+
+    const overviewSchema = schemaFor('get_component_overview');
+    expect(overviewSchema.componentName.safeParse(' Buttons ').data).toBe('Buttons');
+    expect(overviewSchema.componentName.safeParse('   ').success).toBe(false);
 
     const listRoutesSchema = schemaFor('list_routes');
     expect(listRoutesSchema.section.safeParse('   ').success).toBe(false);
