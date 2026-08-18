@@ -1,0 +1,91 @@
+name: JSON extraction mutation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &json-mutation-risk-paths
+      - 'src/json-extraction/**'
+      - 'stryker-json-extraction.config.json'
+      - 'vitest.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.test.json'
+      - 'scripts/run-mutation-shards.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/json-extraction-mutation.yml'
+  push:
+    branches:
+      - main
+    paths: *json-mutation-risk-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: json-extraction-mutation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - json-classify-response
+          - json-content-page-1
+          - json-content-page-2
+          - json-content-page-3
+          - json-dsdb-resource
+          - json-page-data
+          - json-bundle
+          - json-schemas
+          - json-render-markdown-1
+          - json-render-markdown-2
+          - json-render-markdown-3
+          - json-render-markdown-4
+          - json-render-markdown-5
+          - json-render-markdown-6
+          - json-render-markdown-7
+          - json-network
+          - json-diagnostics
+          - json-normalize-routes
+          - json-page-reference-1
+          - json-page-reference-2
+          - json-page-reference-3
+          - json-route-graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run test:mutation:shard -- json-extraction ${{ matrix.shard }}
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-json-${{ matrix.shard }}
+          path: reports/mutation-shards/${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    if: ${{ always() }}
+    needs: mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-json-*
+          path: reports/mutation-shards
+          merge-multiple: true
+      - run: npm run test:mutation:aggregate -- json-extraction

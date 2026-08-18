@@ -1,0 +1,56 @@
+name: Cache verification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: &cache-risk-paths
+      - 'src/cache.ts'
+      - 'src/crawler.ts'
+      - 'src/crawl-priority.ts'
+      - 'src/crawler-utils.ts'
+      - 'src/options.ts'
+      - 'src/store.ts'
+      - 'src/mcp-server.ts'
+      - 'src/index.ts'
+      - 'src/types.ts'
+      - 'src/progress.ts'
+      - 'src/update-logger.ts'
+      - 'src/route-coverage.ts'
+      - 'src/json-extraction/**'
+      - 'src/raw-artifacts/**'
+      - 'src/graph/**'
+      - 'src/rendered/**'
+      - 'src/browser-oracle/**'
+      - 'src/mcp-tools/**'
+      - 'src/diagnostics/**'
+      - 'src/validation/**'
+      - 'src/manifest.ts'
+      - 'scripts/verify-full-cache-refresh.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/cache-verification.yml'
+  push:
+    branches:
+      - main
+    paths: *cache-risk-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-verification-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-cache:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run verify:cache:full
