@@ -9,6 +9,13 @@ import { serveMcp } from '../src/mcp-server.js';
 
 const tempDirs: string[] = [];
 
+type TextContent = { type: 'text'; text: string };
+
+function isTextContent(value: unknown): value is TextContent {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return 'type' in value && value.type === 'text' && 'text' in value && typeof value.text === 'string';
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
@@ -65,10 +72,11 @@ describe('MCP protocol surface', () => {
         recommendedRoutes: []
       });
 
-      const text = result.content.find((entry) => entry.type === 'text');
-      expect(text?.type).toBe('text');
-      if (text?.type !== 'text') throw new Error('Expected text compatibility payload');
-      expect(JSON.parse(text.text)).toEqual(result.structuredContent);
+      expect(Array.isArray(result.content)).toBe(true);
+      if (!Array.isArray(result.content)) throw new Error('Expected MCP content array');
+      const text = result.content.find(isTextContent);
+      expect(text).toBeDefined();
+      expect(JSON.parse(text?.text ?? '{}')).toEqual(result.structuredContent);
     } finally {
       await client.close();
       await configuredServer!.close();
