@@ -21,7 +21,7 @@ program.command('serve')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-age-hours <hours>', 'Mark cache as stale when it is older than this value', String(DEFAULT_CACHE_MAX_AGE_HOURS))
   .option('--startup-max-pages <number>', 'Maximum pages to crawl during automatic startup refresh', '250')
-  .option('--startup-concurrency <number>', `Maximum concurrent Playwright pages during automatic startup refresh, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
+  .option('--startup-concurrency <number>', `Maximum concurrent crawl workers during automatic startup refresh, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--no-auto-update', 'Disable automatic cache refresh on server startup')
   .action(async (options) => {
     await serveMcp({
@@ -38,11 +38,12 @@ program.command('update')
   .option('--cache-dir <path>', 'Cache directory')
   .option('--max-pages <number>', 'Limit the crawl to this many source routes (smoke/limited run). Omit for a full refresh with no source-route limit.')
   .option('--min-pages <number>', 'Minimum accepted page count before replacing the existing cache', '10')
-  .option('--concurrency <number>', `Maximum concurrent Playwright pages, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
+  .option('--concurrency <number>', `Maximum concurrent crawl workers, up to ${MAX_CRAWL_CONCURRENCY}`, '1')
   .option('--force', 'Replace the existing cache even when the new crawl has fewer pages or many failures')
   .option('--promote-partial', 'Promote a limited/partial crawl (e.g. with --max-pages) even when no previous cache exists or the previous cache was a full verified run. Off by default to avoid silently replacing a complete cache with a smoke-sized one.')
   .option('--strict-graph', 'Fail promotion if the documentation graph, renderer report, manifest, or no-network validation stages (raw-snapshot/structured-graph/rendered-output/coverage-summary) fail, instead of logging and continuing. Off by default; used by verify:cache:full for production promotion.')
-  .option('--headed', 'Run browser in headed mode')
+  .option('--allow-browser-fallback', 'Enable Playwright browser network/DOM fallback when deterministic JSON extraction cannot cover a route')
+  .option('--headed', 'Run the explicitly enabled browser fallback in headed mode')
   .option('--include-blog', 'Include blog, news, and article routes in the crawl (excluded by default)')
   .option('--log-dir <path>', 'Directory for update log files (default: <cache-dir>/logs)')
   .option('--verbose', 'Enable verbose/debug log output in the log file')
@@ -66,6 +67,7 @@ program.command('update')
         minPageCount,
         concurrency,
         headless: !options.headed,
+        allowBrowserFallback: options.allowBrowserFallback ?? false,
         force: options.force,
         promotePartial: options.promotePartial ?? false,
         strictGraph: options.strictGraph ?? false,
@@ -112,7 +114,7 @@ program.command('update')
   });
 
 program.command('install-browser')
-  .description('Install the Playwright Chromium browser used by the crawler')
+  .description('Install Playwright Chromium for browser-oracle verification and optional fallback')
   .option('--with-deps', 'Also install Playwright system dependencies on supported Linux distributions')
   .action(async (options) => {
     await installPlaywrightChromium(options.withDeps);
