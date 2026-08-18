@@ -44,7 +44,7 @@ const MCP_SERVER_INSTRUCTIONS = [
 ].join(' ');
 
 function jsonResult<T extends object>(value: T) {
-  const structuredContent: Record<string, unknown> = { ...value };
+  const structuredContent: Record<string, unknown> = Object.fromEntries(Object.entries(value));
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
     structuredContent,
