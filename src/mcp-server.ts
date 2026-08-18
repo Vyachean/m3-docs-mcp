@@ -7,6 +7,7 @@ import { RouteCoverageStatusSchema } from './graph/graph-types.js';
 import { loadGraphToolContext } from './mcp-tools/context.js';
 import { explainResourceResolution } from './mcp-tools/explain-resource-resolution.js';
 import { explainRouteCoverage } from './mcp-tools/explain-route-coverage.js';
+import { getComponentOverview } from './mcp-tools/get-component-overview.js';
 import { getComponentResources } from './mcp-tools/get-component-resources.js';
 import { getComponentTabs } from './mcp-tools/get-component-tabs.js';
 import { getComponentTokens } from './mcp-tools/get-component-tokens.js';
@@ -15,13 +16,39 @@ import { DEFAULT_PREVIEW_CHARS, getRawArtifact } from './mcp-tools/get-raw-artif
 import { getRoute } from './mcp-tools/get-route.js';
 import { getRouteArtifacts } from './mcp-tools/get-route-artifacts.js';
 import { listRoutes } from './mcp-tools/list-routes.js';
+import {
+  CompatibilityObjectOutputSchema,
+  ExplainObjectOutputSchema,
+  GetComponentOverviewOutputSchema,
+  GetComponentResourcesOutputSchema,
+  GetComponentTabsOutputSchema,
+  GetComponentTokensOutputSchema,
+  GetPageOutputSchema,
+  GetRawArtifactOutputSchema,
+  GetRouteArtifactsOutputSchema,
+  GetRouteOutputSchema,
+  ListRoutesOutputSchema,
+  SearchStructuredDocsOutputSchema,
+} from './mcp-tools/output-schemas.js';
 import { searchStructuredDocs } from './mcp-tools/search-structured-docs.js';
 import { parseBoundedPositiveIntegerOption, parsePositiveIntegerOption, parsePositiveNumberOption } from './options.js';
 import { MaterialDocsStore } from './store.js';
 import type { CacheDiagnostics, CacheStatus, CrawlProgress, SearchResult } from './types.js';
 
-function jsonText(value: unknown) {
-  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+const MCP_SERVER_INSTRUCTIONS = [
+  'Use graph-oriented tools as the primary Material 3 documentation interface.',
+  'For a specific component, start with get_component_overview, then call only the focused follow-up tools you need, such as get_page or get_component_tokens.',
+  'Use search_structured_docs for route, section, token, and resource discovery. Use search_material_docs only for broad full-text compatibility search.',
+  'Use get_page for normal page guidance. Use get_raw_artifact, explain_route_coverage, explain_resource_resolution, and material_docs_cache_diagnostics only for troubleshooting or provenance.',
+  'Read tools report cache/graph availability explicitly; do not guess Material guidance when the requested data is unavailable.',
+].join(' ');
+
+function jsonResult<T extends object>(value: T) {
+  const structuredContent = { ...value };
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(structuredContent, null, 2) }],
+    structuredContent,
+  };
 }
 
 type StartupRefreshState = {
@@ -37,7 +64,7 @@ type StartupRefreshState = {
 
 type CacheAvailability = {
   status: CacheStatus;
-  unavailable: ReturnType<typeof jsonText> | null;
+  unavailable: ReturnType<typeof jsonResult> | null;
 };
 
 export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: number; autoUpdate?: boolean; startupMaxPages?: number; startupConcurrency?: number } = {}): Promise<void> {
@@ -48,7 +75,10 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
   const startupConcurrency = parseBoundedPositiveIntegerOption('M3_DOCS_STARTUP_CONCURRENCY', options.startupConcurrency ?? process.env.M3_DOCS_STARTUP_CONCURRENCY, 1, MAX_CRAWL_CONCURRENCY);
   const store = new MaterialDocsStore(cacheDir);
   const startupRefresh = createStartupRefreshController(store, startupMaxPages, startupConcurrency);
-  const server = new McpServer({ name: 'm3-docs-mcp', version: '0.1.0' });
+  const server = new McpServer(
+    { name: 'm3-docs-mcp', version: '0.1.0' },
+    { instructions: MCP_SERVER_INSTRUCTIONS }
+  );
 
   if (autoUpdate) {
     startupRefresh.refreshIfNeeded(maxAgeHours).catch((error: unknown) => {
@@ -56,32 +86,146 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     });
   }
 
-  server.tool('search_material_docs', 'Search locally cached official Material 3 documentation from m3.material.io. If the cache is missing or stale, the server starts a refresh in the background instead of blocking this tool call.', {
-    query: z.string().trim().min(1),
-    limit: z.number().int().min(1).max(25).default(10)
+  server.registerTool('get_component_overview', {
+    description: 'Primary component entry point. Return a compact Material 3 component summary with available routes, tabs, token-table counts, resource counts, and recommended follow-up routes. Start here for component-specific tasks before requesting full page/token/resource payloads.',
+    inputSchema: {
+      componentName: z.string().trim().min(1)
+    },
+    outputSchema: GetComponentOverviewOutputSchema
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(getComponentOverview(context, componentName));
+  });
+
+  server.registerTool('search_structured_docs', {
+    description: 'Primary structured discovery tool. Search routes, page sections/chunks, token names/display names/aliases, and resource names from the Material 3 documentation graph. Prefer this over Markdown full-text search for component/spec/token/resource questions.',
+    inputSchema: {
+      query: z.string().trim().min(1),
+      limit: z.number().int().min(1).max(100).default(20)
+    },
+    outputSchema: SearchStructuredDocsOutputSchema
+  }, async ({ query, limit }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(searchStructuredDocs(context, query, limit));
+  });
+
+  server.registerTool('list_routes', {
+    description: 'Primary route catalog. List Material 3 documentation routes with optional section/coverage/search filters. Compact by default and suitable for choosing a get_page target.',
+    inputSchema: {
+      section: z.string().trim().min(1).optional(),
+      coverageStatus: RouteCoverageStatusSchema.optional(),
+      search: z.string().trim().min(1).optional(),
+      limit: z.number().int().min(1).max(500).default(100)
+    },
+    outputSchema: ListRoutesOutputSchema
+  }, async ({ section, coverageStatus, search, limit }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(listRoutes(context, { section, coverageStatus, search, limit }));
+  });
+
+  server.registerTool('get_route', {
+    description: 'Return one route\'s canonical route, aliases, references, tabs, source artifacts, and coverage metadata from the structured documentation graph.',
+    inputSchema: {
+      route: z.string().trim().min(1)
+    },
+    outputSchema: GetRouteOutputSchema
+  }, async ({ route }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(getRoute(context, route));
+  });
+
+  server.registerTool('get_page', {
+    description: 'Primary exact-page tool. Return one Material 3 documentation page as compact structured sections/chunks/resources/tokens by default, Markdown when explicitly requested, or raw provenance metadata without raw content.',
+    inputSchema: {
+      route: z.string().trim().min(1),
+      view: z.union([z.literal('structured'), z.literal('markdown'), z.literal('raw-summary')]).default('structured'),
+      maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
+    },
+    outputSchema: GetPageOutputSchema
+  }, async ({ route, view, maxMarkdownChars }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(await getPage(context, store, { route, view, maxMarkdownChars }));
+  });
+
+  server.registerTool('get_component_tokens', {
+    description: 'Return full decoded token/status tables for a Material 3 component, including real token names, aliases, resolved values, roles, and unresolved counts. Use get_component_overview first when you only need to know whether token data exists.',
+    inputSchema: {
+      componentName: z.string().trim().min(1)
+    },
+    outputSchema: GetComponentTokensOutputSchema
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(getComponentTokens(context, componentName));
+  });
+
+  server.registerTool('get_component_tabs', {
+    description: 'Return tabs per route for a Material 3 component. Use when tab/virtual-route structure matters; get_component_overview already returns a compact tab summary.',
+    inputSchema: {
+      componentName: z.string().trim().min(1)
+    },
+    outputSchema: GetComponentTabsOutputSchema
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(getComponentTabs(context, componentName));
+  });
+
+  server.registerTool('get_component_resources', {
+    description: 'Return full resources (images, videos, token tables, status tables) referenced by a Material 3 component. Use get_component_overview first when counts are sufficient.',
+    inputSchema: {
+      componentName: z.string().trim().min(1)
+    },
+    outputSchema: GetComponentResourcesOutputSchema
+  }, async ({ componentName }) => {
+    const context = await loadGraphToolContext(cacheDir);
+    return jsonResult(getComponentResources(context, componentName));
+  });
+
+  server.registerTool('material_docs_cache_status', {
+    description: 'Return local Material 3 documentation cache and background refresh status. Use when cache readiness/freshness itself matters; normal read tools already report unavailable data explicitly.',
+    inputSchema: {},
+    outputSchema: CompatibilityObjectOutputSchema
+  }, async () => {
+    return jsonResult({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), autoUpdate });
+  });
+
+  server.registerTool('search_material_docs', {
+    description: 'Compatibility/full-text tool. Search rendered Markdown from the local Material 3 cache. Use for broad prose discovery when search_structured_docs is insufficient; prefer structured graph tools for component/spec/token/resource facts.',
+    inputSchema: {
+      query: z.string().trim().min(1),
+      limit: z.number().int().min(1).max(25).default(10)
+    },
+    outputSchema: CompatibilityObjectOutputSchema
   }, async ({ query, limit }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'results', []);
     if (unavailable) return unavailable;
-    return jsonText({ cache: status, refresh: startupRefresh.state(), results: (await store.searchDocs(query, limit)).map(toSearchResultPayload) });
+    return jsonResult({ cache: status, refresh: startupRefresh.state(), results: (await store.searchDocs(query, limit)).map(toSearchResultPayload) });
   });
 
-  server.tool('get_material_page', 'Return one cached Material 3 documentation page by cache path or source URL. Does not block on long cache refreshes.', {
-    pathOrUrl: z.string().trim().min(1)
+  server.registerTool('get_material_page', {
+    description: 'Compatibility/Markdown tool. Return one cached rendered Material 3 page by cache path or source URL. Prefer get_page for route-based structured guidance and provenance-aware access.',
+    inputSchema: {
+      pathOrUrl: z.string().trim().min(1)
+    },
+    outputSchema: CompatibilityObjectOutputSchema
   }, async ({ pathOrUrl }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'page', null);
     if (unavailable) return unavailable;
-    return jsonText({ cache: status, refresh: startupRefresh.state(), page: toPagePayload(await store.getPage(pathOrUrl)) });
+    return jsonResult({ cache: status, refresh: startupRefresh.state(), page: toPagePayload(await store.getPage(pathOrUrl)) });
   });
 
-  server.tool('get_component_docs', 'Return all cached Material 3 documentation pages matching a component name. Does not block on long cache refreshes.', {
-    componentName: z.string().trim().min(1),
-    includeMarkdown: z.boolean().default(false),
-    maxPages: z.number().int().min(1).max(25).default(10),
-    maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
+  server.registerTool('get_component_docs', {
+    description: 'Compatibility/Markdown component tool. Return cached rendered pages matching a component name. Prefer get_component_overview plus focused graph tools for new agent workflows.',
+    inputSchema: {
+      componentName: z.string().trim().min(1),
+      includeMarkdown: z.boolean().default(false),
+      maxPages: z.number().int().min(1).max(25).default(10),
+      maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
+    },
+    outputSchema: CompatibilityObjectOutputSchema
   }, async ({ componentName, includeMarkdown, maxPages, maxMarkdownChars }) => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'pages', []);
     if (unavailable) return unavailable;
-    return jsonText({
+    return jsonResult({
       cache: status,
       refresh: startupRefresh.state(),
       component: componentName,
@@ -89,39 +233,27 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     });
   });
 
-  server.tool('list_material_components', 'List component slugs discovered in the cached Material 3 documentation. Does not block on long cache refreshes.', {}, async () => {
+  server.registerTool('list_material_components', {
+    description: 'Compatibility helper. List component slugs discovered in rendered Markdown. Prefer get_component_overview when you already know the component and list_routes/search_structured_docs for structured discovery.',
+    inputSchema: {},
+    outputSchema: CompatibilityObjectOutputSchema
+  }, async () => {
     const { status, unavailable } = await cacheAvailability(store, startupRefresh.state(), maxAgeHours, 'components', []);
     if (unavailable) return unavailable;
-    return jsonText({ cache: status, refresh: startupRefresh.state(), components: await store.listComponents() });
+    return jsonResult({ cache: status, refresh: startupRefresh.state(), components: await store.listComponents() });
   });
 
-  server.tool('material_docs_cache_status', 'Return local Material 3 documentation cache and background refresh status.', {}, async () => {
-    return jsonText({ status: await store.getStatus(maxAgeHours), refresh: startupRefresh.state(), autoUpdate });
-  });
-
-  server.tool('material_docs_cache_diagnostics', 'Return explicit Material 3 cache diagnostics from diagnostics/latest-update.json. Summary-only by default.', {
-    summaryOnly: z.boolean().default(true),
-    route: z.string().trim().min(1).optional(),
-    path: z.string().trim().min(1).optional(),
-    failedOnly: z.boolean().default(false),
-    skippedOnly: z.boolean().default(false),
-    limit: z.number().int().min(1).max(200).default(25),
-    includeFullDiagnostics: z.boolean().default(false)
-  }, async ({ summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics }) => {
-    return jsonText({
-      cache: await store.getStatus(maxAgeHours),
-      refresh: startupRefresh.state(),
-      diagnostics: filterDiagnostics(await store.getDiagnostics(), { summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics })
-    });
-  });
-
-  server.tool('refresh_material_docs', 'Refresh the local Material 3 documentation cache from m3.material.io using the deterministic JSON-based pipeline. Browser fallback is disabled by default. This is an explicit long-running operation. Set force only when intentionally replacing an existing cache despite safety checks.', {
-    maxPages: z.number().int().min(1).max(1000).optional(),
-    concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
-    promotePartial: z.boolean().default(false),
-    force: z.boolean().default(false)
+  server.registerTool('refresh_material_docs', {
+    description: 'Maintenance tool. Refresh the local Material 3 documentation cache using the deterministic JSON-based pipeline. Browser fallback is disabled by default. This is an explicit long-running operation; set force only when intentionally replacing an existing cache despite safety checks.',
+    inputSchema: {
+      maxPages: z.number().int().min(1).max(1000).optional(),
+      concurrency: z.number().int().min(1).max(MAX_CRAWL_CONCURRENCY).default(1),
+      promotePartial: z.boolean().default(false),
+      force: z.boolean().default(false)
+    },
+    outputSchema: CompatibilityObjectOutputSchema
   }, async ({ maxPages, concurrency, promotePartial, force }) => {
-    return jsonText(await store.refresh({
+    return jsonResult(await store.refresh({
       maxPages,
       maxPagesExplicit: maxPages !== undefined,
       concurrency,
@@ -130,89 +262,70 @@ export async function serveMcp(options: { cacheDir?: string; maxAgeHours?: numbe
     }));
   });
 
-  server.tool('list_routes', 'List the Material 3 documentation route catalog from the documentation graph (graph/routes.json), with optional section/coverage/search filters. Compact by default; does not dump raw page content.', {
-    section: z.string().trim().min(1).optional(),
-    coverageStatus: RouteCoverageStatusSchema.optional(),
-    search: z.string().trim().min(1).optional(),
-    limit: z.number().int().min(1).max(500).default(100)
-  }, async ({ section, coverageStatus, search, limit }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(listRoutes(context, { section, coverageStatus, search, limit }));
+  server.registerTool('material_docs_cache_diagnostics', {
+    description: 'Troubleshooting tool. Return explicit cache/update diagnostics from diagnostics/latest-update.json. Summary-only by default; do not use for ordinary Material guidance.',
+    inputSchema: {
+      summaryOnly: z.boolean().default(true),
+      route: z.string().trim().min(1).optional(),
+      path: z.string().trim().min(1).optional(),
+      failedOnly: z.boolean().default(false),
+      skippedOnly: z.boolean().default(false),
+      limit: z.number().int().min(1).max(200).default(25),
+      includeFullDiagnostics: z.boolean().default(false)
+    },
+    outputSchema: CompatibilityObjectOutputSchema
+  }, async ({ summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics }) => {
+    return jsonResult({
+      cache: await store.getStatus(maxAgeHours),
+      refresh: startupRefresh.state(),
+      diagnostics: filterDiagnostics(await store.getDiagnostics(), { summaryOnly, route, path, failedOnly, skippedOnly, limit, includeFullDiagnostics })
+    });
   });
 
-  server.tool('get_route', 'Return route metadata (canonicalRoute, aliases, references, tabs, source artifacts, coverage status/originalStatus/sharedCoverageGroup) from the documentation graph (graph/routes.json) for a single route.', {
-    route: z.string().trim().min(1)
+  server.registerTool('get_route_artifacts', {
+    description: 'Troubleshooting/provenance tool. Return raw artifact ids, kinds, source URLs, hashes, and timestamps associated with a route; metadata only, not content.',
+    inputSchema: {
+      route: z.string().trim().min(1)
+    },
+    outputSchema: GetRouteArtifactsOutputSchema
   }, async ({ route }) => {
     const context = await loadGraphToolContext(cacheDir);
-    return jsonText(getRoute(context, route));
+    return jsonResult(getRouteArtifacts(context, route));
   });
 
-  server.tool('get_page', 'Return one documentation page in a chosen view: "structured" (sections/chunks/resources/tokens from graph/pages.json), "markdown" (the existing Markdown-compatible view), or "raw-summary" (artifact/provenance metadata, no raw content).', {
-    route: z.string().trim().min(1),
-    view: z.union([z.literal('structured'), z.literal('markdown'), z.literal('raw-summary')]).default('structured'),
-    maxMarkdownChars: z.number().int().min(200).max(100_000).default(20_000)
-  }, async ({ route, view, maxMarkdownChars }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(await getPage(context, store, { route, view, maxMarkdownChars }));
-  });
-
-  server.tool('get_component_tokens', 'Return token/status tables (real token names, values, roles, source artifacts) for a Material 3 component from the documentation graph (graph/token-tables.json).', {
-    componentName: z.string().trim().min(1)
-  }, async ({ componentName }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(getComponentTokens(context, componentName));
-  });
-
-  server.tool('get_component_tabs', 'Return tabs per route for a Material 3 component from the documentation graph (graph/routes.json).', {
-    componentName: z.string().trim().min(1)
-  }, async ({ componentName }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(getComponentTabs(context, componentName));
-  });
-
-  server.tool('get_component_resources', 'Return resources (images, videos, token tables, status tables) referenced by a Material 3 component\'s routes from the documentation graph (graph/resources.json).', {
-    componentName: z.string().trim().min(1)
-  }, async ({ componentName }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(getComponentResources(context, componentName));
-  });
-
-  server.tool('get_route_artifacts', 'Return the list of raw artifact ids/kinds/source URLs/hashes associated with a route (metadata only, not content).', {
-    route: z.string().trim().min(1)
-  }, async ({ route }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(getRouteArtifacts(context, route));
-  });
-
-  server.tool('get_raw_artifact', `Debug/provenance tool. Returns metadata for one raw artifact plus a truncated content preview (default ${DEFAULT_PREVIEW_CHARS} chars) with truncated:true, unless fullContent:true is passed and the artifact is below the size cap. Never dumps large raw JSON by default — use get_page/get_component_tokens for normal documentation tasks.`, {
-    artifactId: z.string().trim().min(1),
-    fullContent: z.boolean().default(false),
-    previewChars: z.number().int().min(100).max(20_000).default(DEFAULT_PREVIEW_CHARS)
+  server.registerTool('get_raw_artifact', {
+    description: `Troubleshooting/provenance tool. Return metadata for one raw artifact plus a truncated content preview (default ${DEFAULT_PREVIEW_CHARS} chars). Never dumps large raw JSON by default; use get_page/get_component_tokens for ordinary documentation tasks.`,
+    inputSchema: {
+      artifactId: z.string().trim().min(1),
+      fullContent: z.boolean().default(false),
+      previewChars: z.number().int().min(100).max(20_000).default(DEFAULT_PREVIEW_CHARS)
+    },
+    outputSchema: GetRawArtifactOutputSchema
   }, async ({ artifactId, fullContent, previewChars }) => {
     const context = await loadGraphToolContext(cacheDir);
-    return jsonText(await getRawArtifact(context, { artifactId, fullContent, previewChars }));
+    return jsonResult(await getRawArtifact(context, { artifactId, fullContent, previewChars }));
   });
 
-  server.tool('explain_route_coverage', 'Explain why a route has its current coverage status: reasons, shared coverage group members, original per-route status, and any policy-skip reason, from the documentation graph (graph/routes.json).', {
-    route: z.string().trim().min(1)
+  server.registerTool('explain_route_coverage', {
+    description: 'Troubleshooting tool. Explain why a route has its current coverage status, including shared coverage groups and original per-route status. Do not use for ordinary page reading.',
+    inputSchema: {
+      route: z.string().trim().min(1)
+    },
+    outputSchema: ExplainObjectOutputSchema
   }, async ({ route }) => {
     const context = await loadGraphToolContext(cacheDir);
-    return jsonText(explainRouteCoverage(context, route));
+    return jsonResult(explainRouteCoverage(context, route));
   });
 
-  server.tool('explain_resource_resolution', 'Explain a resource\'s resolved/unresolved status and which routes/chunks reference it, from the documentation graph (graph/resources.json).', {
-    resourceId: z.string().trim().min(1)
+  server.registerTool('explain_resource_resolution', {
+    description: 'Troubleshooting tool. Explain a resource\'s resolved/unresolved status and which routes/chunks reference it. Do not use for ordinary component/resource discovery.',
+    inputSchema: {
+      resourceId: z.string().trim().min(1)
+    },
+    outputSchema: ExplainObjectOutputSchema
   }, async ({ resourceId }) => {
     const context = await loadGraphToolContext(cacheDir);
-    return jsonText(explainResourceResolution(context, resourceId));
-  });
-
-  server.tool('search_structured_docs', 'Search the Material 3 documentation graph (routes, page sections/chunks, token names/display names/aliases, resource names) by query text, without parsing Markdown or raw JSON. Complements search_material_docs (Markdown full-text) with structured-fact search.', {
-    query: z.string().trim().min(1),
-    limit: z.number().int().min(1).max(100).default(20)
-  }, async ({ query, limit }) => {
-    const context = await loadGraphToolContext(cacheDir);
-    return jsonText(searchStructuredDocs(context, query, limit));
+    return jsonResult(explainResourceResolution(context, resourceId));
   });
 
   const transport = new StdioServerTransport();
@@ -460,7 +573,7 @@ async function cacheAvailability(store: MaterialDocsStore, refresh: StartupRefre
   if (status.hasCache) return { status, unavailable: null };
   return {
     status,
-    unavailable: jsonText({
+    unavailable: jsonResult({
       status,
       refresh,
       message: refresh.running
