@@ -16,11 +16,11 @@ import type { MaterialIndex } from '../types.js';
  * Shared read-only context for graph-oriented MCP tools (src/mcp-tools/*).
  *
  * Each tool's core logic function takes a `cacheDir` (or this context) and validated input, and
- * returns a JSON-able payload — `mcp-server.ts` only wires up `server.tool(...)` registration. All
- * graph/manifest/artifact-index files are re-validated through their zod schemas on every read
- * (graph-store.ts / artifact-index.ts already do this and return null/empty on failure), per
- * AGENTS.md: data written by our own zod-validated writers is still read back as unknown and
- * re-parsed, never blindly trusted or cast.
+ * returns a JSON-able payload — `mcp-server.ts` only wires up `server.registerTool(...)`
+ * registration, schemas, and transport-compatible results. All graph/manifest/artifact-index files
+ * are re-validated through their zod schemas on every read (graph-store.ts / artifact-index.ts
+ * already do this and return null/empty on failure), per AGENTS.md: data written by our own
+ * zod-validated writers is still read back as unknown and re-parsed, never blindly trusted or cast.
  */
 export type GraphToolContext = {
   cacheDir: string;
