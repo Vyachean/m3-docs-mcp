@@ -4,19 +4,22 @@ This repository provides the `material3` MCP server for reading the official Mat
 
 ## Using the MCP server
 
-When making Material 3 UI, UX, or design-guideline decisions in a project that has this MCP server configured:
+When making Material 3 UI, UX, component, token, or design-guideline decisions in a project that has this MCP server configured, use the structured documentation graph as the primary interface:
 
-1. Call `material_docs_cache_status` first.
-2. If a cache is available, call `search_material_docs` before making claims about Material 3 guidance.
-3. Use `get_material_page` for exact page content when search returns a relevant page.
-4. Use `get_component_docs` when the task concerns a specific Material component.
-5. If the cache is missing or a refresh is running, say that the local Material 3 docs are not ready instead of guessing.
+1. For a known Material component, start with `get_component_overview`. It returns the available routes, tabs, token/resource availability, and recommended routes without dumping full content.
+2. When the target component or route is not known, use `search_structured_docs`; use `list_routes` when you need route/coverage filtering.
+3. Use `get_page` for exact guidance from a chosen route. Its default `structured` view is preferred; request the `markdown` view only when prose context is needed.
+4. Use `get_component_tokens`, `get_component_tabs`, or `get_component_resources` only when the task needs those full focused payloads.
+5. Use `search_material_docs`, `get_material_page`, `get_component_docs`, and `list_material_components` as compatibility/full-text tools, not as the default path for structured component/spec/token work.
+6. Use `material_docs_cache_status` when cache readiness/freshness itself matters. Normal read tools already report when the graph/cache is unavailable, so a status call is not required before every documentation lookup.
+7. Use `get_route_artifacts`, `get_raw_artifact`, `explain_route_coverage`, `explain_resource_resolution`, and `material_docs_cache_diagnostics` only for troubleshooting, provenance, or extraction/coverage investigation.
+8. If the requested cache/graph data is unavailable, report that state or refresh it instead of guessing Material guidance.
 
 The official source is always `https://m3.material.io/`. Google implementation repositories are useful references, but they are not authoritative design-guideline sources for this project.
 
-The MCP server is considered useful only when core documentation pages expose real token names, resolved values, and status/spec data — not placeholder-only output. If `get_material_page` for a spec page returns only `Material resource placeholder:` lines, the cache is degraded and should be refreshed.
+The MCP server is considered useful only when core documentation pages expose real token names, resolved values, and status/spec data — not placeholder-only output. If structured component/spec data is unexpectedly missing, inspect `get_component_overview`/`get_page` first and use the troubleshooting tools only if the graph reports a coverage or resource-resolution problem.
 
-When the task concerns specific components, routes, or design tokens, prefer the graph-oriented tools (`list_routes`, `get_route`, `get_page`, `get_component_tokens`, `get_component_tabs`, `get_component_resources`, `get_route_artifacts`, `get_raw_artifact`, `explain_route_coverage`, `explain_resource_resolution`, `search_structured_docs`) over the Markdown-oriented tools — they read the structured documentation graph (`graph/*.json`) and return decoded token names/values/roles, real resource cross-references, and coverage facts directly, instead of requiring re-parsing of rendered Markdown or raw JSON. The original Markdown-oriented tools (`search_material_docs`, `get_material_page`, `get_component_docs`, `list_material_components`, `material_docs_cache_status`, `material_docs_cache_diagnostics`, `refresh_material_docs`) remain the right choice for full-text search and stay unchanged for compatibility — they are a derived, secondary view, not the source of truth for the graph-oriented tools.
+The original Markdown-oriented tools remain supported for compatibility and broad prose search. They read a derived, secondary view and must not be treated as the source of truth for graph-oriented facts.
 
 ## Cache architecture (schema v2)
 
