@@ -3,11 +3,24 @@ import type { ZodTypeAny } from 'zod';
 import type { CacheStatus, MaterialIndex, RefreshOptions, SearchResult } from '../src/types.js';
 
 type ToolSchema = Record<string, ZodTypeAny>;
+type ToolResult = {
+  content: Array<{ type: 'text'; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
+type ToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: ToolSchema;
+  outputSchema?: ZodTypeAny;
+};
 
 const mocks = vi.hoisted(() => {
-  const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>>();
-  const toolDefinitions: Array<{ name: string; description: string; schema: ToolSchema }> = [];
-  const serverConfigs: Array<{ name: string; version: string }> = [];
+  const toolHandlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolResult>>();
+  const toolDefinitions: ToolDefinition[] = [];
+  const serverConfigs: Array<{
+    config: { name: string; version: string };
+    options?: { instructions?: string };
+  }> = [];
   const connect = vi.fn(async (_transport: unknown) => undefined);
   const createdStores: MockStore[] = [];
   const nextStores: MockStore[] = [];
@@ -71,12 +84,16 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   McpServer: class {
-    constructor(config: { name: string; version: string }) {
-      mocks.serverConfigs.push(config);
+    constructor(config: { name: string; version: string }, options?: { instructions?: string }) {
+      mocks.serverConfigs.push({ config, options });
     }
 
-    tool(name: string, description: string, schema: ToolSchema, handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: 'text'; text: string }> }>) {
-      mocks.toolDefinitions.push({ name, description, schema });
+    registerTool(
+      name: string,
+      config: { description: string; inputSchema: ToolSchema; outputSchema?: ZodTypeAny },
+      handler: (args: Record<string, unknown>) => Promise<ToolResult>
+    ) {
+      mocks.toolDefinitions.push({ name, ...config });
       mocks.toolHandlers.set(name, handler);
     }
 
@@ -107,8 +124,10 @@ vi.mock('../src/store.js', () => ({
 
 const { serveMcp } = await import('../src/mcp-server.js');
 
-function parseToolResult(result: { content: Array<{ type: 'text'; text: string }> }) {
-  return JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+function parseToolResult(result: ToolResult) {
+  const textPayload = JSON.parse(result.content[0]?.text ?? '{}') as Record<string, unknown>;
+  expect(result.structuredContent).toEqual(textPayload);
+  return textPayload;
 }
 
 async function callTool(name: string, args: Record<string, unknown>) {
@@ -117,7 +136,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
   const definition = mocks.toolDefinitions.find((tool) => tool.name === name);
   expect(definition).toBeDefined();
   const parsedArgs = Object.fromEntries(
-    Object.entries(definition!.schema).map(([key, schema]) => [key, schema.parse(args[key])])
+    Object.entries(definition!.inputSchema).map(([key, schema]) => [key, schema.parse(args[key])])
   );
   return parseToolResult(await handler!(parsedArgs));
 }
@@ -125,7 +144,7 @@ async function callTool(name: string, args: Record<string, unknown>) {
 function schemaFor(toolName: string): ToolSchema {
   const definition = mocks.toolDefinitions.find((tool) => tool.name === toolName);
   expect(definition).toBeDefined();
-  return definition!.schema;
+  return definition!.inputSchema;
 }
 
 describe('serveMcp', () => {
@@ -142,36 +161,44 @@ describe('serveMcp', () => {
     delete process.env.M3_DOCS_STARTUP_CONCURRENCY;
   });
 
-  it('registers the server metadata, expected tools, and default cache directory', async () => {
+  it('registers agent guidance, primary tools first, output schemas, and the default cache directory', async () => {
     const store = mocks.makeStore();
     mocks.nextStores.push(store);
 
     await serveMcp({ autoUpdate: false });
 
-    expect(mocks.serverConfigs).toEqual([{ name: 'm3-docs-mcp', version: '0.1.0' }]);
+    expect(mocks.serverConfigs).toHaveLength(1);
+    expect(mocks.serverConfigs[0]?.config).toEqual({ name: 'm3-docs-mcp', version: '0.1.0' });
+    expect(mocks.serverConfigs[0]?.options?.instructions).toContain('graph-oriented tools as the primary');
+    expect(mocks.serverConfigs[0]?.options?.instructions).toContain('get_component_overview');
+    expect(mocks.serverConfigs[0]?.options?.instructions).toContain('troubleshooting');
     expect(store.cacheDir).toBe('/default-cache');
     expect(mocks.connect).toHaveBeenCalledTimes(1);
     expect(mocks.toolDefinitions.map((tool) => tool.name)).toEqual([
-      'search_material_docs',
-      'get_material_page',
-      'get_component_docs',
-      'list_material_components',
-      'material_docs_cache_status',
-      'material_docs_cache_diagnostics',
-      'refresh_material_docs',
+      'get_component_overview',
+      'search_structured_docs',
       'list_routes',
       'get_route',
       'get_page',
       'get_component_tokens',
       'get_component_tabs',
       'get_component_resources',
+      'material_docs_cache_status',
+      'search_material_docs',
+      'get_material_page',
+      'get_component_docs',
+      'list_material_components',
+      'refresh_material_docs',
+      'material_docs_cache_diagnostics',
       'get_route_artifacts',
       'get_raw_artifact',
       'explain_route_coverage',
-      'explain_resource_resolution',
-      'search_structured_docs'
+      'explain_resource_resolution'
     ]);
     expect(mocks.toolDefinitions.every((tool) => tool.description.length > 10)).toBe(true);
+    expect(mocks.toolDefinitions.every((tool) => tool.outputSchema !== undefined)).toBe(true);
+    expect(mocks.toolDefinitions.find((tool) => tool.name === 'search_material_docs')?.description).toContain('Compatibility/full-text tool');
+    expect(mocks.toolDefinitions.find((tool) => tool.name === 'get_raw_artifact')?.description).toContain('Troubleshooting/provenance tool');
   });
 
   it('uses environment options for startup refresh and disables it through M3_DOCS_AUTO_UPDATE', async () => {
