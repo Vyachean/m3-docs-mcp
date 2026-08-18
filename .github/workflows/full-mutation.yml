@@ -4,6 +4,25 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '0 3 * * *'
+  pull_request:
+    paths: &full-mutation-risk-paths
+      - 'src/cache.ts'
+      - 'src/crawler-utils.ts'
+      - 'src/options.ts'
+      - 'src/store.ts'
+      - 'src/mcp-server.ts'
+      - 'stryker.config.json'
+      - 'vitest.config.ts'
+      - 'tsconfig.json'
+      - 'tsconfig.test.json'
+      - 'scripts/run-mutation-shards.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/full-mutation.yml'
+  push:
+    branches:
+      - main
+    paths: *full-mutation-risk-paths
 
 permissions:
   contents: read
@@ -14,8 +33,37 @@ concurrency:
 
 jobs:
   mutation:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - json-classify-response
+          - json-content-page-1
+          - json-content-page-2
+          - json-content-page-3
+          - json-dsdb-resource
+          - json-page-data
+          - json-bundle
+          - json-schemas
+          - json-render-markdown-1
+          - json-render-markdown-2
+          - json-render-markdown-3
+          - json-render-markdown-4
+          - json-render-markdown-5
+          - json-render-markdown-6
+          - json-render-markdown-7
+          - json-network
+          - json-diagnostics
+          - json-normalize-routes
+          - json-page-reference-1
+          - json-page-reference-2
+          - json-page-reference-3
+          - json-route-graph
+          - core-cache
+          - core-store-mcp
+          - core-options-utils
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -23,4 +71,30 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run test:mutation:full
+      - run: npm run test:mutation:shard -- full ${{ matrix.shard }}
+      - if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutation-full-${{ matrix.shard }}
+          path: reports/mutation-shards/${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    if: ${{ always() }}
+    needs: mutation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mutation-full-*
+          path: reports/mutation-shards
+          merge-multiple: true
+      - run: npm run test:mutation:aggregate -- full
