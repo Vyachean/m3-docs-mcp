@@ -5,7 +5,6 @@ on:
   pull_request:
     paths: &json-mutation-risk-paths
       - 'src/json-extraction/**'
-      - 'tests/**'
       - 'stryker-json-extraction.config.json'
       - 'vitest.config.ts'
       - 'tsconfig.json'
