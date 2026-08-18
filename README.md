@@ -4,17 +4,17 @@ MCP server that provides agents with locally cached documentation from the offic
 
 This repository is intended to be used directly from GitHub through `npx`. The package is not planned to be published to npm, so examples intentionally use `github:Vyachean/m3-docs-mcp`. Do not use `npx -y m3-docs-mcp ...` unless you have made a local or global install yourself.
 
-The package does **not** vendor a full copy of Material documentation. It fetches the official Material 3 JSON content and stores a cache on the user's machine, with Playwright kept as a fallback path for route discovery and pages whose JSON output is missing or suspicious. This keeps the Git package lightweight and avoids publishing a public copy of Google's documentation text and images.
+The package does **not** vendor a full copy of Material documentation. It fetches the official Material 3 JSON/DSDB content and stores a cache on the user's machine. The normal `update` path is deterministic and does not require a browser; Playwright is reserved for the strict browser-oracle verification path and an explicitly enabled fallback/recovery mode. This keeps the Git package lightweight and avoids publishing a public copy of Google's documentation text and images.
 
 ## Why this exists
 
-`m3.material.io` is a JavaScript application. Simple fetch/curl-based agents often cannot read the documentation reliably. This server makes the docs available through deterministic MCP tools backed by a local cache, using the site's JSON/DSDB responses first and browser extraction only when needed.
+`m3.material.io` is a JavaScript application. Simple fetch/curl-based agents often cannot read the documentation reliably. This server makes the docs available through deterministic MCP tools backed by a local cache, using the site's JSON/DSDB responses as the normal extraction path. Browser capture is a validation layer and an explicit fallback, not the default crawler.
 
 ## Requirements
 
 - Node.js 20 or newer.
-- Playwright Chromium for cache refreshes.
-- On Linux, Playwright may also need host system packages.
+- Playwright Chromium only for `verify:cache:full` / browser-oracle verification or when `--allow-browser-fallback` is explicitly enabled.
+- On Linux, those browser-backed paths may also need Playwright host system packages.
 
 ## Recommended setup
 
@@ -31,31 +31,25 @@ Add the server to your MCP client config. No global install is required.
 }
 ```
 
-The MCP server starts without downloading a browser during package installation. Browser installation is still needed for fallback extraction and route coverage discovery during cache refreshes, but normal page content extraction is now JSON-first. This keeps normal MCP startup fast enough for clients with short stdio initialization timeouts.
+The MCP server starts without downloading a browser during package installation, and the normal deterministic cache refresh does not require Chromium. This keeps MCP startup and ordinary refreshes independent of browser installation.
 
-Install the Playwright-managed Chromium browser required by this Git package version before the first cache refresh:
-
-```bash
-npx -y github:Vyachean/m3-docs-mcp install-browser
-```
-
-On Linux, use this variant when Playwright reports missing host dependencies:
-
-```bash
-npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps
-```
-
-Then build or refresh the documentation cache:
+Build or refresh the documentation cache directly:
 
 ```bash
 npx -y github:Vyachean/m3-docs-mcp update
 ```
 
-On startup, the server checks the local cache. If the cache is missing or stale and Playwright Chromium is installed, it starts a Playwright refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client tool timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
+On startup, the server checks the local cache. If the cache is missing or stale, it starts the same deterministic JSON-based refresh in the background. Normal read/search tool calls do not wait for the crawl and therefore should not hit short MCP client tool timeouts. While the first cache is being built, read/search tools return cache status and ask the client to retry after the background refresh completes.
 
-If the cache exists but is stale, tools continue answering from the existing cache and include cache status plus background refresh metadata. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
+If the cache exists but is stale, tools continue answering from the existing cache while the refresh runs. A failed background refresh leaves that stale cache available and exposes the error through refresh status. Concurrent startup and manual refresh requests are deduplicated inside the running server so only one crawl promotes the cache at a time.
 
-If Playwright Chromium is missing, background refresh cannot build the cache. Run `install-browser` first, then run `update` or restart the MCP server.
+Install Playwright Chromium only when you need strict browser-oracle/full verification or intentionally opt into browser fallback:
+
+```bash
+npx -y github:Vyachean/m3-docs-mcp install-browser
+# On supported Linux systems, install host dependencies too:
+npx -y github:Vyachean/m3-docs-mcp install-browser --with-deps
+```
 
 ## Codex setup
 
@@ -72,10 +66,9 @@ tool_timeout_sec = 300
 enabled = true
 ```
 
-For a first-time setup, run the browser/cache prewarm outside Codex:
+For a first-time setup, prewarm the cache outside Codex:
 
 ```bash
-npx -y github:Vyachean/m3-docs-mcp install-browser
 npx -y github:Vyachean/m3-docs-mcp update
 ```
 
@@ -95,7 +88,8 @@ npx -y github:Vyachean/m3-docs-mcp update --min-pages 25
 npx -y github:Vyachean/m3-docs-mcp update --concurrency 2
 npx -y github:Vyachean/m3-docs-mcp update --force
 npx -y github:Vyachean/m3-docs-mcp update --promote-partial
-npx -y github:Vyachean/m3-docs-mcp update --headed
+npx -y github:Vyachean/m3-docs-mcp update --allow-browser-fallback
+npx -y github:Vyachean/m3-docs-mcp update --allow-browser-fallback --headed
 npx -y github:Vyachean/m3-docs-mcp update --include-blog
 npx -y github:Vyachean/m3-docs-mcp serve
 npx -y github:Vyachean/m3-docs-mcp serve --cache-dir /path/to/cache
@@ -127,7 +121,7 @@ For crawler, extraction, route-coverage, token-table, or cache-tooling work, use
 npm run verify:cache:full
 ```
 
-`verify:cache:full` builds the project, runs the built CLI against the live Material 3 site with an isolated temporary cache directory, uses production refresh settings (`--concurrency 6 --min-pages 150`, with no `--force`, no `--max-pages`, and no `--include-blog`), then checks that the resulting cache reports verified coverage, zero failed/unresolved/partial route coverage, required component pages, no unresolved token-table placeholders in generated specs pages, and manifest counts that match their persisted artifact/graph/index owners.
+`verify:cache:full` builds the project, runs the built CLI against the live Material 3 site with an isolated temporary cache directory, uses production refresh settings (`--concurrency 6 --min-pages 150`, with no `--force`, no `--max-pages`, no `--include-blog`, and no browser fallback), then performs the strict live Playwright browser oracle and the remaining validation stages. Chromium is therefore required for this verification command even though it is not required for the normal `update` path. The gate checks verified coverage, zero failed/unresolved/partial route coverage, required component pages, rendered token-table quality, and manifest counts that match their persisted artifact/graph/index owners.
 
 On failure, it preserves the temp cache directory and prints:
 
@@ -142,15 +136,17 @@ The default minimum is 10 pages, so interrupting the command or crawling fewer t
 
 `--max-age-hours` marks cache status as fresh/stale and controls whether startup auto-update is needed. The default is 168 hours, or 7 days. It does not make read/search tool calls block on a refresh.
 
-`--concurrency` controls the maximum number of simultaneous page workers across **all** crawl phases — both the direct JSON fetch phase and the browser crawl fallback phase. The default is 1 (sequential). Values above 8 are rejected. A higher value speeds up the crawl at the cost of more network connections; the same limit applies uniformly to every phase so no single phase can silently exceed the requested cap.
+`--concurrency` controls the maximum number of simultaneous crawl workers. The normal deterministic JSON phases use that limit directly; if `--allow-browser-fallback` is explicitly enabled, the browser fallback/recovery phases obey the same cap. The default is 1 (sequential), values above 8 are rejected, and higher values trade more network concurrency for faster refreshes.
+
+`--allow-browser-fallback` explicitly opts the `update` CLI into Playwright network/DOM fallback when deterministic JSON extraction cannot cover a route. It is off by default. `--headed` only changes how that explicitly enabled fallback browser is launched and has no effect on the normal browser-free update path.
 
 Progress output is printed to stderr throughout the crawl and shows which phase is active, how long the crawl has been running, the approximate ETA and pages/s rate, and how many pages have been saved, failed, and queued. Example:
 
 ```
-Material 3 docs cache refresh: phase=browser-crawl elapsed=42s eta≈1m18s rate=0.42/s saved=12/20 failed=4 attempted=22 queued=58 active=6/6 current=https://m3.material.io/components/buttons/specs
+Material 3 docs cache refresh: phase=fetch-page-data elapsed=42s eta=1m18s rate=0.42/s saved=12/20 failed=0 attempted=22 queued=58 active=6/6 current=https://m3.material.io/components/buttons/specs
 ```
 
-ETA is calculated from the elapsed average rate and is only shown after at least 3 pages have been processed and 10 seconds have elapsed. During the browser-crawl phase, where the queue size is still growing, ETA is prefixed with `≈` to indicate it is approximate. When insufficient data is available the field shows `eta=calculating`.
+ETA is calculated from the elapsed average rate and is only shown after at least 3 pages have been processed and 10 seconds have elapsed. If an explicitly enabled browser fallback phase is active, ETA is prefixed with `≈` because its queue can still grow. When insufficient data is available the field shows `eta=calculating`.
 
 `update` refuses to replace an existing cache when the new crawl is suspiciously degraded: fewer than 80% of the previous cache pages, more than 20% failed attempted pages after at least 10 attempts, duplicate page bodies, or component URLs that rendered unrelated/parent content. Use `--force` only when you intentionally want to replace the existing cache despite these safeguards.
 
@@ -402,7 +398,7 @@ Cache refresh is staged in a temporary directory and promoted only after the cra
 
 The crawler tracks two separate quality dimensions:
 
-- **extraction quality**: whether the accepted page content was extracted correctly (JSON vs DOM path, token tables rendered, status tables resolved, unknown chunk types).
+- **extraction quality**: whether the accepted page content was extracted correctly (deterministic JSON/DSDB path, or an explicitly enabled browser fallback, plus token/status/resource resolution quality).
 - **coverage quality**: whether enough public Material documentation URLs were discovered and crawled to treat the cache as broadly representative.
 
 ### Coverage health states
@@ -413,23 +409,22 @@ Each cache index stores a `coverageHealth` field alongside `coverageWarnings` in
 |---|---|
 | `verified` | Discovery found all expected URLs and the crawl accepted all of them without gaps or regressions. |
 | `partial` | The crawl was intentionally limited by `--max-pages`. Coverage is incomplete by design. |
-| `unverified` | The crawl extracted content successfully but coverage cannot be confirmed — for example, because Playwright was unavailable or URL discovery returned nothing. |
+| `unverified` | The crawl extracted content successfully but coverage could not be confirmed, for example because route discovery or validation inputs were incomplete. |
 | `failed` | A significant unexpected coverage gap or regression was detected. Promotion is blocked unless `--force` is used. |
 
 A `partial` or `unverified` cache remains fully usable for search and page retrieval. `material_docs_cache_status` exposes `coverageHealth` directly so agents can decide how to interpret results without receiving the full diagnostics payload by default.
 
 First-cache coverage policy: if a crawl that was not intentionally limited by `--max-pages` discovers substantially more public documentation URLs than it accepted, the cache promotion is rejected — the same coverage gap check that applies to subsequent crawls is also enforced on the first cache. Use `--force` to promote anyway if you have confirmed the gap is expected.
 
-The crawler now tries JSON extraction first for discovered Material documentation routes:
+The default crawler uses deterministic JSON/DSDB extraction for discovered Material documentation routes:
 
 - it reads `/page-data/.../page-data.json` when available;
 - it resolves `/_dsm/content/m3/...` content JSON when available;
-- it resolves referenced DSDB resources such as token tables from `/_dsm/data/dsdb-m3/...`;
-- it falls back to Playwright DOM extraction only when JSON extraction fails or looks incomplete.
+- it resolves referenced DSDB resources such as token tables from `/_dsm/data/dsdb-m3/...`.
 
-Direct JSON is a fast content path, not the only coverage source. During `update`, the crawler also performs public URL discovery from sitemap data, rendered site navigation/shell links, Angular route metadata hints, and previous cache routes. A direct JSON success can still trigger browser discovery on a first cache build so route coverage is checked independently from per-page extraction quality.
+Browser fallback is **not** part of the normal `update` or `refresh_material_docs` path. When `update --allow-browser-fallback` is explicitly requested, Playwright network/DOM recovery may be used for routes that deterministic extraction cannot cover. Route discovery and coverage planning otherwise use the deterministic site metadata/bundle/sitemap/navigation sources and previous-cache information already captured by the crawler.
 
-The browser crawler still opens links exactly as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` as a fallback when the discovered route does not render stable matching content. Before extraction, it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
+When browser fallback is explicitly enabled, the browser crawler opens links as discovered on `m3.material.io`. For component landing links such as `/components/buttons`, it may also try `/components/buttons/overview` when the discovered route does not render stable matching content. Before extraction it waits for rendered `main` content, final browser URL, page title, and text snapshot to stabilize. Cached lookup accepts both landing and overview forms, so `components/buttons` and `components/buttons/overview.md` resolve to the same cached page when the overview page was stored.
 
 Each refreshed cache now writes:
 
@@ -437,9 +432,9 @@ Each refreshed cache now writes:
 - `pages/**/*.md` as the cached page bodies;
 - `diagnostics/latest-update.json` as the verbose refresh/debug record, including extraction and coverage diagnostics.
 
-This helps diagnose both SPA route failures such as `/components/buttons` rendering the parent `Components` listing instead of the Buttons documentation, and JSON-shape drift where a page had to fall back to the browser path.
+This helps diagnose both SPA route/content mismatches and JSON-shape drift, including cases where an explicitly enabled browser fallback was needed.
 
-When `--max-pages` intentionally limits the crawl, the refresh can still succeed, but the stored diagnostics mark the cache as partial instead of silently treating `min-pages` as proof of full coverage. Likewise, if Playwright is unavailable and direct JSON still produces a usable partial cache, the cache metadata records that coverage was left unverified.
+When `--max-pages` intentionally limits the crawl, the refresh can still succeed, but the stored diagnostics mark the cache as partial instead of silently treating `min-pages` as proof of full coverage. Browser availability does not affect the normal deterministic refresh. If `--allow-browser-fallback` is explicitly requested but Chromium is unavailable, that fallback cannot run and the diagnostics record the resulting recovery/coverage state.
 
 Raw JSON debug output is sanitized for extraction audits. When JSON payloads are captured for an accepted page, the cache stores only the response URL/path, classified type, stable ID, and payload. It does not store request headers, cookies, or full HAR files.
 
@@ -505,7 +500,7 @@ Returns explicit cache diagnostics from `diagnostics/latest-update.json`. Summar
 
 ### `refresh_material_docs`
 
-Forces a cache refresh through Playwright. This is an explicit long-running operation. Set `force` only when intentionally replacing an existing cache despite safety checks.
+Runs the deterministic JSON-based cache refresh. Browser fallback is disabled for this MCP tool. This is an explicit long-running operation. Set `force` only when intentionally replacing an existing cache despite safety checks.
 
 Arguments:
 
@@ -526,7 +521,8 @@ Arguments:
 - Cached docs are stored locally for the user running the MCP server.
 - The Git package should not include a full public mirror of Material documentation.
 - Normal read/search tools must not trigger or wait for a long crawl.
-- Startup cache warming may run a crawl in the background when Playwright Chromium is installed.
+- Startup cache warming may run the deterministic refresh in the background when the cache is missing or stale; it must not require Playwright Chromium.
+- Playwright Chromium is required only for the strict browser oracle/full verification or an explicitly enabled CLI browser fallback.
 - Package installation must not download Playwright browsers, because MCP clients such as Codex can time out before the stdio handshake completes.
 
 ## Current limitations

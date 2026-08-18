@@ -404,7 +404,7 @@ function createStartupRefreshController(store: MaterialDocsStore, maxPages: numb
 
   async function refreshIfNeeded(maxAgeHours: number): Promise<void> {
     const status = await store.getStatus(maxAgeHours);
-    if (status.hasCache) return;
+    if (status.hasCache && status.isFresh) return;
     start();
   }
 

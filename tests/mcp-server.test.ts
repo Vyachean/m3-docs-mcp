@@ -251,7 +251,18 @@ describe('serveMcp', () => {
     await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledTimes(1));
   });
 
-  it('serves stale cache without starting an implicit startup refresh', async () => {
+  it('does not refresh a fresh existing cache on startup', async () => {
+    const store = mocks.makeStore(mocks.makeStatus({ isFresh: true }));
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache' });
+    await vi.waitFor(() => expect(store.getStatus).toHaveBeenCalledWith(168));
+
+    expect(store.refresh).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a stale cache in the background while continuing to serve it', async () => {
+    let resolveRefresh: (index: MaterialIndex) => void = () => undefined;
     const searchResult: SearchResult = {
       title: 'Dialogs',
       url: 'https://m3.material.io/components/dialogs/overview',
@@ -262,14 +273,21 @@ describe('serveMcp', () => {
       excerpt: 'Dialogs provide guidance.'
     };
     const store = mocks.makeStore(mocks.makeStatus({ isFresh: false, ageMs: 48 * 60 * 60 * 1000 }));
+    store.refresh.mockImplementation(() => new Promise<MaterialIndex>((resolve) => { resolveRefresh = resolve; }));
     store.searchDocs.mockResolvedValue([searchResult]);
     mocks.nextStores.push(store);
 
     await serveMcp({ cacheDir: '/cache', startupMaxPages: 250 });
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledWith(expect.objectContaining({
+      maxPages: 250,
+      concurrency: 1,
+      maxPagesExplicit: true,
+      promotePartial: false
+    })));
 
     const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
-
     expect(result).toMatchObject({
+      cache: { hasCache: true, isFresh: false },
       results: [{
         title: searchResult.title,
         path: searchResult.path,
@@ -279,12 +297,33 @@ describe('serveMcp', () => {
         excerpt: searchResult.excerpt,
         score: searchResult.score
       }],
-      refresh: { running: false, completedAt: null, error: null }
+      refresh: { running: true, completedAt: null, error: null }
     });
-    expect(result).not.toHaveProperty('status');
-    expect(store.getStatus).toHaveBeenCalledTimes(2);
     expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
-    expect(store.refresh).not.toHaveBeenCalled();
+
+    resolveRefresh(mocks.makeIndex());
+  });
+
+  it('keeps a stale cache readable and reports a failed background refresh', async () => {
+    const store = mocks.makeStore(mocks.makeStatus({ isFresh: false, ageMs: 48 * 60 * 60 * 1000 }));
+    store.refresh.mockRejectedValue(new Error('refresh failed'));
+    store.searchDocs.mockResolvedValue([]);
+    mocks.nextStores.push(store);
+
+    await serveMcp({ cacheDir: '/cache' });
+    await vi.waitFor(() => expect(store.refresh).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => {
+      const status = await callTool('material_docs_cache_status', {});
+      expect(status).toMatchObject({ refresh: { running: false, error: 'refresh failed' } });
+    });
+
+    const result = await callTool('search_material_docs', { query: 'dialogs', limit: 10 });
+    expect(result).toMatchObject({
+      cache: { hasCache: true, isFresh: false },
+      results: [],
+      refresh: { running: false, error: 'refresh failed' }
+    });
+    expect(store.searchDocs).toHaveBeenCalledWith('dialogs', 10);
   });
 
   it('uses the same store refresh path for explicit long-running refresh requests', async () => {
